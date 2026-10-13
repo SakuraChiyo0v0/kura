@@ -1,0 +1,10 @@
+node_modules/
+# 构建与打包产物
+dist/
+out/
+release/
+*.exe
+# 日志与凭据
+*.log
+.env
+.env.local

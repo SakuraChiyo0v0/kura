@@ -1,0 +1,8 @@
+# 检出统一用 LF；PowerShell 脚本保持 CRLF
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.exe binary
+*.png binary
+*.ico binary
+*.tgz binary
