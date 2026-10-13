@@ -1,0 +1,239 @@
+import { useEffect, useState } from 'react'
+import {
+  Button,
+  EmptyState,
+  PageTransition,
+  SakuraProvider,
+  SelectField,
+  SidebarNav,
+  SwitchField,
+  ToastProvider,
+} from '@sakura-ui/react'
+import {
+  SettingsPage,
+  SettingsRow,
+  SettingsSection,
+  TitleBar,
+  WindowControls,
+  useSettings,
+} from '@sakura-ui/electron-react'
+// 样式需显式引入，顺序：地基 → 通用组件 → Electron 组件
+import '@sakura-ui/tokens/tokens.css'
+import '@sakura-ui/react/styles.css'
+import '@sakura-ui/electron-react/styles.css'
+import type { ConnectionSummary } from '../shared/ipc.js'
+import { kuraSettingsDefaults, type KuraSettings, type ThemePreference } from '../shared/settings.js'
+import { ConnectionForm } from './ConnectionForm.js'
+import { MirrorView } from './MirrorView.js'
+import { OverviewView } from './OverviewView.js'
+import { findPage, pages, type PageDef, type PageId } from './pages.js'
+import { useConnection, useMirrorSnapshot } from './use-mirror.js'
+
+const darkQuery = '(prefers-color-scheme: dark)'
+
+/** 「跟随系统 / 浅色 / 深色」解析成实际亮暗；跟随系统时监听系统切换。 */
+function useResolvedTheme(theme: ThemePreference): 'light' | 'dark' {
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia(darkQuery).matches)
+  useEffect(() => {
+    const query = window.matchMedia(darkQuery)
+    const onChange = () => setSystemDark(query.matches)
+    query.addEventListener('change', onChange)
+    return () => query.removeEventListener('change', onChange)
+  }, [])
+  const resolved = theme === 'system' ? (systemDark ? 'dark' : 'light') : theme
+  // <html> 也带上主题：滚动条与 SakuraProvider 外的底色同步
+  useEffect(() => {
+    document.documentElement.dataset.skTheme = resolved
+  }, [resolved])
+  return resolved
+}
+
+const themeOptions = [
+  { value: 'system', label: '跟随系统' },
+  { value: 'light', label: '浅色' },
+  { value: 'dark', label: '深色' },
+] as const
+
+function SettingsView({
+  settings,
+  set,
+  connection,
+  onConnectionSaved,
+  onConnectionCleared,
+}: {
+  settings: KuraSettings
+  set: <K extends keyof KuraSettings>(key: K, value: KuraSettings[K]) => void
+  connection: ConnectionSummary | undefined
+  onConnectionSaved: (summary: ConnectionSummary) => void
+  onConnectionCleared: () => void
+}) {
+  return (
+    <SettingsPage title="设置" description="改动立即生效并保存。">
+      <SettingsSection title="外观">
+        <SettingsRow
+          label="主题"
+          description="跟随系统时按 Windows 的亮暗偏好自动切换"
+          control={
+            <SelectField
+              label="主题"
+              value={settings.theme}
+              options={themeOptions}
+              onValueChange={(value) => set('theme', value as ThemePreference)}
+            />
+          }
+        />
+      </SettingsSection>
+      <SettingsSection title="运行">
+        <SwitchField
+          label="关闭窗口时退到托盘"
+          description="服务映射在后台继续运行；从托盘菜单选「退出」才会真正关闭"
+          checked={settings.closeToTray}
+          onCheckedChange={(value) => set('closeToTray', value)}
+        />
+      </SettingsSection>
+      <SettingsSection title="NAS 连接">
+        <div className="kura-settings-connection">
+          {connection?.configured ? (
+            <ConnectionForm summary={connection} onSaved={onConnectionSaved} submitLabel="保存并重新连接" />
+          ) : (
+            <p className="kura-form__note">还没有连接 NAS。</p>
+          )}
+          {connection?.configured && (
+            <div className="kura-form__actions">
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  if (!window.confirm('清除已保存的连接与凭据？映射会立即停止，需要重新走一遍引导。')) return
+                  void window.kura?.connection.clear().then(onConnectionCleared)
+                }}
+              >
+                清除连接与凭据
+              </Button>
+            </div>
+          )}
+        </div>
+      </SettingsSection>
+    </SettingsPage>
+  )
+}
+
+/** 尚未实现的页面：说清楚它将来做什么、哪个版本做，而不是一片空白。 */
+function PlannedView({ page }: { page: PageDef }) {
+  return (
+    <div className="kura-placeholder">
+      <EmptyState icon={page.icon} title={`${page.label} · ${page.plannedIn} 实现`} description={page.summary} />
+    </div>
+  )
+}
+
+/** 首次启动：没有连接配置时整窗只显示引导，不让人对着一排空页面猜该干什么。 */
+function Onboarding({ onSaved }: { onSaved: (summary: ConnectionSummary) => void }) {
+  return (
+    <main className="kura-onboarding">
+      <header className="kura-page-header">
+        <p className="kura-eyebrow">欢迎使用 Kura 蔵</p>
+        <h1 className="kura-page-title" data-testid="page-title">
+          连接你的绿联 NAS
+        </h1>
+        <p className="kura-page-summary">
+          填一次就好：之后 Kura 会在后台登录、续期，把 NAS 上的服务映射到本机 127.0.0.1，在家走局域网、在外走中继，自动切换。
+        </p>
+      </header>
+      <ConnectionForm summary={undefined} onSaved={onSaved} />
+    </main>
+  )
+}
+
+function Shell() {
+  const { settings, set } = useSettings<KuraSettings>(kuraSettingsDefaults)
+  const [activeId, setActiveId] = useState<PageId>('overview')
+  const { summary, reload, setSummary } = useConnection()
+  const configured = summary?.configured === true
+  const { snapshot, refresh } = useMirrorSnapshot(configured)
+  const page = findPage(activeId)
+
+  if (summary === undefined && window.kura) return null // 首帧：等主进程回话，避免引导页一闪而过
+  if (!configured) {
+    return (
+      <Onboarding
+        onSaved={(next) => {
+          setSummary(next)
+          setActiveId('mirror')
+        }}
+      />
+    )
+  }
+
+  const content = (() => {
+    switch (page.id) {
+      case 'settings':
+        return (
+          <SettingsView
+            settings={settings}
+            set={set}
+            connection={summary}
+            onConnectionSaved={(next) => {
+              setSummary(next)
+              void refresh()
+            }}
+            onConnectionCleared={() => void reload()}
+          />
+        )
+      case 'overview':
+      case 'mirror':
+        if (!snapshot) {
+          return (
+            <div className="kura-placeholder">
+              <EmptyState title="映射正在启动" description="正在登录 NAS 并挂载服务" />
+            </div>
+          )
+        }
+        return page.id === 'overview' ? (
+          <OverviewView snapshot={snapshot} onOpenMirror={() => setActiveId('mirror')} />
+        ) : (
+          <MirrorView snapshot={snapshot} refresh={refresh} />
+        )
+      default:
+        return <PlannedView page={page} />
+    }
+  })()
+
+  return (
+    <div className="kura-body">
+      <SidebarNav
+        items={pages}
+        activeId={activeId}
+        onNavigate={(id) => setActiveId(id as PageId)}
+        collapsed={settings.sidebarCollapsed}
+        onCollapsedChange={(value) => set('sidebarCollapsed', value)}
+        header={<span className="kura-brand">Kura 蔵</span>}
+      />
+      <main className="kura-main">
+        <PageTransition routeKey={page.id}>
+          <header className="kura-page-header">
+            <h1 className="kura-page-title" data-testid="page-title">
+              {page.label}
+            </h1>
+            {page.id !== 'settings' && <p className="kura-page-summary">{page.summary}</p>}
+          </header>
+          {content}
+        </PageTransition>
+      </main>
+    </div>
+  )
+}
+
+export function App() {
+  const { settings } = useSettings<KuraSettings>(kuraSettingsDefaults)
+  const theme = useResolvedTheme(settings.theme)
+  return (
+    <SakuraProvider theme={theme} motionPreset="soft">
+      <ToastProvider>
+        <div className="kura-app">
+          <TitleBar title="Kura" actions={<WindowControls />} />
+          <Shell />
+        </div>
+      </ToastProvider>
+    </SakuraProvider>
+  )
+}

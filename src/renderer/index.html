@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    />
+    <title>Kura</title>
+    <!-- index.css：esbuild 从 CSS import 抽出的库样式；shell.css：本应用外壳，放后面便于覆盖 -->
+    <link rel="stylesheet" href="./index.css" />
+    <link rel="stylesheet" href="./shell.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="./index.js"></script>
+  </body>
+</html>
