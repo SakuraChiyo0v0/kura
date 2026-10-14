@@ -122,6 +122,28 @@ describe('kura-shell：只认内部令牌', () => {
     b.close()
   })
 
+  it('令牌给的是函数：换了令牌不重启就跟上（watchtower 单独重建 kura-server 的场景）', async () => {
+    let current = 'token-1'
+    const rotating = createShellServer({ token: () => current, audit, spawnPty: (o) => new FakePty(o) })
+    await new Promise<void>((r) => rotating.listen(0, '127.0.0.1', () => r()))
+    const rotatingPort = (rotating.address() as { port: number }).port
+    const connect = (token: string): Promise<WebSocket> =>
+      new Promise((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${rotatingPort}/api/tty`, { headers: { 'x-kura-token': token } })
+        ws.on('open', () => resolve(ws))
+        ws.on('unexpected-response', (_req, res) => reject(Object.assign(new Error('rejected'), { status: res.statusCode })))
+        ws.on('error', reject)
+      })
+    const first = await connect('token-1')
+    first.close()
+    current = 'token-2'
+    await expect(connect('token-1')).rejects.toMatchObject({ status: 401 })
+    const second = await connect('token-2')
+    second.close()
+    rotating.closeAllConnections()
+    await new Promise<void>((r) => rotating.close(() => r()))
+  })
+
   it('health 不用令牌（kura-server 拿它判活）', async () => {
     const res = await fetch(`http://127.0.0.1:${port}/api/health`)
     expect(res.status).toBe(200)

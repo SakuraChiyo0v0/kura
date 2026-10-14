@@ -58,6 +58,29 @@ function fatal(message: string): never {
   process.exit(1)
 }
 
+/**
+ * 读共享卷上的内部令牌；没有才生成并写下去。
+ *
+ * 持久化不是为了「少生成一次」，是为了自动更新不出事：watchtower 只重建镜像变了的那个容器，
+ * 单独重建 kura-server 时若换了令牌，还在跑的 kura-shell 就拿旧令牌 —— 终端全线 401。
+ */
+function readOrCreateToken(file: string, log: (message: string, fields?: LogFields) => void): string {
+  try {
+    const existing = readFileSync(file, 'utf8').trim()
+    if (existing) return existing
+  } catch {
+    // 首次启动：文件还不存在
+  }
+  const token = internalToken()
+  try {
+    mkdirSync(join(file, '..'), { recursive: true })
+    writeFileSync(file, token, { mode: 0o600 })
+  } catch (error) {
+    log('写内部令牌失败，终端会不可用', { 文件: file, err: (error as Error).message })
+  }
+  return token
+}
+
 /** 探 kura-shell 在不在（拿它的免认证 /api/health）。 */
 async function probeShell(base: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -109,17 +132,15 @@ async function serve(): Promise<void> {
   const tokens = new TokenStore(join(state, 'tokens.json'))
 
   // 终端：kura-server 生成内部令牌、经共享卷给 kura-shell；对客户端暴露 nas-console 那套接口。
+  //
+  // **令牌要持久**：共享卷上已有就沿用，没有才生成。watchtower 只重建**变了镜像的那个**容器 ——
+  // 如果 kura-server 每次启动都换新令牌，watchtower 单独重建它之后，还在跑的 kura-shell 拿的是
+  // 上一个令牌，终端会全线 401（容器都在跑，但连不上，最难查的那种）。沿用旧令牌就没这个问题。
   const shellAddress = process.env.KURA_SHELL?.trim() ?? ''
   const tokenFile = process.env.KURA_SHELL_TOKEN_FILE?.trim() || '/run/kura-shell/token'
   let consoleHandler: ReturnType<typeof createConsoleHandler> | undefined
   if (shellAddress) {
-    const shellToken = internalToken()
-    try {
-      mkdirSync(join(tokenFile, '..'), { recursive: true })
-      writeFileSync(tokenFile, shellToken, { mode: 0o600 })
-    } catch (error) {
-      log('写内部令牌失败，终端会不可用', { 文件: tokenFile, err: (error as Error).message })
-    }
+    const shellToken = readOrCreateToken(tokenFile, log)
     consoleHandler = createConsoleHandler({ auth, tokens, shell: () => shellAddress, internalToken: shellToken, log })
   } else {
     log('没有配 KURA_SHELL，终端不可用（这是正常的：没起 kura-shell 容器）')
@@ -174,23 +195,34 @@ async function serve(): Promise<void> {
  */
 async function shell(): Promise<void> {
   const tokenFile = process.env.KURA_SHELL_TOKEN_FILE?.trim() || '/run/kura-shell/token'
-  let token = ''
-  // 令牌是 kura-server 启动时才写的：起来晚了就轮询等一会儿，别急着重启容器
+  // 令牌是 kura-server 写进共享卷的：起来晚了就轮询等一会儿，别急着重启容器。
+  // 启动后也**每次请求现读**（下面给的是函数）：这样 kura-server 单独重建、换了令牌时，
+  // 这个还在跑的容器不用重启就跟上，终端不会因为一次自动更新而断掉。
+  let ready = false
   for (let i = 0; i < 60; i++) {
     try {
-      token = readFileSync(tokenFile, 'utf8').trim()
-      if (token) break
+      if (readFileSync(tokenFile, 'utf8').trim()) {
+        ready = true
+        break
+      }
     } catch {
       // 还没写
     }
     await new Promise((r) => setTimeout(r, 1_000))
   }
-  if (!token) fatal(`等不到内部令牌（${tokenFile}）：先起 kura-server`)
+  if (!ready) fatal(`等不到内部令牌（${tokenFile}）：先起 kura-server`)
+  const readToken = (): string => {
+    try {
+      return readFileSync(tokenFile, 'utf8').trim()
+    } catch {
+      return ''
+    }
+  }
   const auditFile = process.env.KURA_AUDIT_FILE?.trim() || '/audit/audit.log'
   const port = Number(process.env.KURA_SHELL_PORT ?? 8890)
   const max = Number(process.env.KURA_SHELL_MAX ?? 4)
   const bin = process.env.KURA_SHELL_BIN?.trim() || '/bin/bash'
-  const server = createShellServer({ token, audit: new AuditLog(auditFile), maxSessions: max, shell: bin, log })
+  const server = createShellServer({ token: readToken, audit: new AuditLog(auditFile), maxSessions: max, shell: bin, log })
   // 只监听内部网络（默认绑 0.0.0.0，但容器不发布端口、只在 kura-internal 上）
   server.listen(port, () => log('kura-shell 已启动', { 端口: port, 并发上限: max, 审计: auditFile }))
   const stop = () => server.close(() => process.exit(0))

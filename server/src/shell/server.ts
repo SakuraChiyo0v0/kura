@@ -20,8 +20,11 @@ import { AuditLog, type AuditEntry } from './audit.js'
  *   POST /api/exec       —— `{cmd,cwd?,timeout?}` → `{exitCode,stdout,stderr,durationMs}`
  */
 export interface ShellOptions {
-  /** 内部令牌；空字符串 = 拒绝一切（配置没送到时宁可不开） */
-  token: string
+  /**
+   * 内部令牌；空字符串 = 拒绝一切（配置没送到时宁可不开）。
+   * 给函数时**每次请求现取** —— 令牌文件是共享卷上的，kura-server 换了令牌这里不用重启就跟上。
+   */
+  token: string | (() => string)
   audit: AuditLog
   /** 并发上限，默认 4 */
   maxSessions?: number
@@ -94,6 +97,8 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
 
 export function createShellServer(options: ShellOptions): http.Server {
   const maxSessions = options.maxSessions ?? 4
+  /** 现取当前令牌（给的是函数就调一次，给的是字符串就用它）。 */
+  const currentToken = (): string => (typeof options.token === 'function' ? options.token() : options.token)
   const spawnPty = options.spawnPty ?? nodePtySpawner
   const shell = options.shell ?? '/bin/bash'
   const log = options.log ?? (() => {})
@@ -121,7 +126,7 @@ export function createShellServer(options: ShellOptions): http.Server {
       // 令牌从 Authorization: Bearer 或 X-Kura-Token 头来
       const bearer = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization ?? ''))?.[1]?.trim()
       const given = bearer ?? String(req.headers['x-kura-token'] ?? '').trim()
-      if (!tokenMatches(options.token, given)) {
+      if (!tokenMatches(currentToken(), given)) {
         json(res, 401, { error: '内部令牌不对' })
         return
       }
@@ -174,7 +179,7 @@ export function createShellServer(options: ShellOptions): http.Server {
     }
     const bearer = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization ?? ''))?.[1]?.trim()
     const given = bearer ?? String(req.headers['x-kura-token'] ?? '').trim()
-    if (!tokenMatches(options.token, given)) {
+    if (!tokenMatches(currentToken(), given)) {
       socket.end('HTTP/1.1 401 Unauthorized\r\nconnection: close\r\n\r\n')
       return
     }

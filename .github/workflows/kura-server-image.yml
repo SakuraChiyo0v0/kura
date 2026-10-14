@@ -1,0 +1,74 @@
+# kura-server 镜像自动发布链路（与 NAS 上其它 app 同一套，见 NAS-PROJECTS 里的 nas-hello 样例）：
+#   push 到 main（命中 server / src/core 等路径）
+#     -> GitHub Actions 构建 Docker 镜像（server/Dockerfile，上下文是仓库根）
+#     -> 推 ghcr.io/sakurachiyo0v0/kura-server:{latest, <version>, <sha7>}
+#     -> NAS 上 watchtower 轮询到 latest digest 变化后自动 pull + 重建
+#
+# 这个仓库一个镜像两个入口（serve / shell），compose 里两个容器都用它，所以只此一份工作流。
+#
+# 触发路径要跟着 Dockerfile 的依赖走：镜像里 `node server/build.mjs` 会把 server/src 连同
+# src/core/* 打成一个文件，所以 server/** 与 src/core/** 都要触发。日后 server 若又从 src 的
+# 别处 import，记得把那个目录也加进来 —— 漏了就是「改了代码但镜像不重建」这种最难发现的坑。
+#
+# 版本号取自仓库根 package.json（客户端与 kura-server 是同一个产品，共用一个版本）。
+name: kura-server-image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "server/**"
+      - "src/core/**"
+      - "package.json"
+      - "package-lock.json"
+      - "vendor/**"
+      - ".dockerignore"
+      - ".github/workflows/kura-server-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Resolve metadata
+        id: meta
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          SHA=${GITHUB_SHA::7}
+          OWNER=$(echo "${{ github.repository_owner }}" | tr 'A-Z' 'a-z')
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${OWNER}/kura-server" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            ${{ steps.meta.outputs.image }}:latest
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}

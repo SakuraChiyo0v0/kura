@@ -1,0 +1,28 @@
+# 构建上下文里不该出现的东西（Dockerfile 里 npm ci / node server/build.mjs 会自己产出）。
+
+# 本机装好的依赖：Linux 原生二进制（node-pty 等）进不了 Alpine 镜像，容器里重装
+node_modules
+**/node_modules
+
+# 构建产物：镜像里重新构建
+dist
+out
+release
+
+# 版本控制与本机状态
+.git
+.gitignore
+.claude
+
+# 测试与文档（镜像不需要）
+docs
+*.md
+scripts
+coverage
+
+# 部署目录里的运行时状态与凭据（compose 挂的是宿主上的 ./state，不该烤进镜像）
+server/deploy/state
+server/deploy/.env
+
+# 日志
+*.log

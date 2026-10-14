@@ -4,11 +4,13 @@
 #
 #   docker network create sso-net        # 已有就跳过：其他应用容器都在这上面
 #   cp .env.example .env && 填好
-#   docker build -f server/Dockerfile -t kura-server:local .   # 在仓库根执行
 #   docker compose up -d
+#
+# 镜像来自 ghcr（CI 构建，见 .github/workflows/kura-server-image.yml），不再本机构建。
+# 要临时用本机构建的镜像：docker build -f server/Dockerfile -t kura-server:local . 然后改下面的 image。
 services:
   kura-server:
-    image: kura-server:local
+    image: ghcr.io/sakurachiyo0v0/kura-server:latest
     container_name: kura-server
     restart: unless-stopped
     ports:
@@ -27,17 +29,23 @@ services:
       - { type: tmpfs, target: /host/proc }
       - { type: tmpfs, target: /host/sys }
       - { type: tmpfs, target: /host/dev }
-      # 内部令牌经这个卷传给 kura-shell（每次启动换一个）
+      # 内部令牌经这个卷传给 kura-shell；**持久**（不是每次启动换），
+      # 所以 watchtower 单独重建 kura-server 时，还在跑的 kura-shell 照样认（见 main.ts readOrCreateToken）
       - shell-token:/run/kura-shell
       # 可选：只读，只用来查端口映射（代码里只调 GET /containers/json）
       # - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
     networks:
       - sso-net
       - kura-internal
 
   # 特权容器：只跑终端 / exec，不发布端口，只在 kura-internal 上，只认内部令牌。
+  #
+  # 开了 watchtower：重建这个容器会掐断正在开的终端会话（宿主进程本身不动）。
+  # 令牌是持久的，所以重建它不会牵连 kura-server；只是新终端要重连一下。
   kura-shell:
-    image: kura-server:local
+    image: ghcr.io/sakurachiyo0v0/kura-server:latest
     container_name: kura-shell
     command: ["shell"]
     restart: unless-stopped
@@ -50,6 +58,8 @@ services:
     volumes:
       - shell-token:/run/kura-shell:ro
       - ./state/audit:/audit
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
     networks:
       - kura-internal
 

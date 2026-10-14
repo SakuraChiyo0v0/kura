@@ -22,21 +22,29 @@ RUN npm init -y >/dev/null && npm i --build-from-source node-pty@1.1.0
 
 FROM node:24-alpine AS build
 WORKDIR /src
+# vendor/ 必须跟 package.json 一起先到：依赖里有 file:./vendor/sakura-ui/*.tgz，
+# npm ci 在这一步就会去解析它们，晚一步就是 ENOENT（早先漏了，构建直接失败）。
 COPY package.json package-lock.json ./
+COPY vendor ./vendor
 RUN npm ci --ignore-scripts
-COPY . .
+COPY tsconfig.json ./
+COPY src ./src
+COPY server ./server
 RUN node server/build.mjs
 
 FROM node:24-alpine
 # rclone 要用 `-L` 跟随符号链接；kura-shell 要 nsenter / bash 进宿主
 RUN apk add --no-cache ca-certificates tzdata bash util-linux
 COPY --from=rclone /usr/local/bin/rclone /usr/local/bin/rclone
-COPY --from=pty /pty/node_modules /app/node_modules
+# WORKDIR 必须在 COPY 之前：不然 node_modules 会落到 /node_modules，node 找不到（模块解析从 /app 往上找）
 WORKDIR /app
+COPY --from=pty /pty/node_modules ./node_modules
 COPY --from=build /src/dist/server/ ./
 ENV KURA_STATE=/state KURA_PORT=8080 NODE_ENV=production
 EXPOSE 8080 8890
-# 健康检查打免认证的 /api/health（serve 与 shell 都有；shell 用环境变量换端口）
-HEALTHCHECK --interval=30s --timeout=5s CMD sh -c 'wget -qO- "http://127.0.0.1:${KURA_PORT:-${KURA_SHELL_PORT:-8080}}/api/health" >/dev/null || exit 1'
+# 健康检查打免认证的 /api/health（serve 与 shell 都有）。
+# 一个镜像两个入口，端口来源不同：serve 用 KURA_PORT，shell 用 KURA_SHELL_PORT。
+# 上面 ENV 里 KURA_PORT=8080 对 shell 容器同样生效，所以不能只看 KURA_PORT —— 两个都试。
+HEALTHCHECK --interval=30s --timeout=5s CMD sh -c 'wget -qO- "http://127.0.0.1:${KURA_PORT:-8080}/api/health" >/dev/null || wget -qO- "http://127.0.0.1:${KURA_SHELL_PORT:-8890}/api/health" >/dev/null || exit 1'
 ENTRYPOINT ["node", "main.mjs"]
 CMD ["serve"]
