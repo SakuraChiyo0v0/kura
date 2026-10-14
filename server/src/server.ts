@@ -126,10 +126,16 @@ export function createKuraServer(options: ServerOptions): http.Server {
       return
     }
 
-    // 旧客户端（v0.3 及以前）会先登录再访问。这一层已经删了，但直接 404 会让客户端
-    // 报「未知错误」；回一个明确的「不需要登录」由客户端识别成「无需凭据，继续」。
+    // 旧客户端（v0.3 及以前）启动时会先登录一次，且 autheliaLogin 对「200 但没有
+    // authelia* cookie」直接抛错（它按前缀收集 set-cookie）。所以这里必须种一个占位 cookie，
+    // 否则服务端换成新镜像那一刻，还在跑的旧客户端会全面失联。
+    //
+    // ⚠️ kura-server 重启会重新随机，旧客户端手上的旧值随即对不上 —— 但服务端本来就不校验它，
+    // 回一个固定的即可，别改成随机值。
     if (path === '/api/firstfactor' && req.method === 'POST') {
-      send(res, 200, { status: 'OK', message: 'kura-server 不做认证，直接访问即可' })
+      send(res, 200, { status: 'OK', message: 'kura-server 不做认证，直接访问即可' }, {
+        'set-cookie': 'authelia_session=kura-no-auth; Path=/; HttpOnly; SameSite=Lax',
+      })
       return
     }
     if (path === '/api/logout' && req.method === 'POST') {

@@ -158,18 +158,21 @@ describe('kura-server：不做认证，客户端也不需要凭据', () => {
     expect((await get('/_kura/')).status).toBe(200)
   })
 
-  it('旧客户端先登录也不碍事：/api/firstfactor 回 200 OK（不再校验）', async () => {
-    const res = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+  it('旧客户端先登录也不碍事：/api/firstfactor 回 200 OK + 占位 cookie', async () => {
+    const res = await new Promise<{ status: number; body: string; cookies: string[] }>((resolve, reject) => {
       const req = http.request(`${base}/api/firstfactor`, { method: 'POST', headers: { 'content-type': 'application/json' } }, (r) => {
         let body = ''
         r.on('data', (c) => (body += c))
-        r.on('end', () => resolve({ status: r.statusCode ?? 0, body }))
+        r.on('end', () => resolve({ status: r.statusCode ?? 0, body, cookies: r.headers['set-cookie'] ?? [] }))
       })
       req.on('error', reject)
       req.end(JSON.stringify({ username: 'anything', password: 'whatever' }))
     })
     expect(res.status).toBe(200)
     expect(JSON.parse(res.body).status).toBe('OK')
+    // 这个 cookie 不是认证，是给旧客户端看的：它按 authelia 前缀收集 set-cookie，
+    // 一个都没收到就直接抛错。删了它，老版本客户端会在换镜像那一刻全面失联。
+    expect(res.cookies.some((c) => c.startsWith('authelia_session='))).toBe(true)
   })
 
   it('X-Nas-Service 分流；路径前缀剥掉；应用看不到绿联令牌', async () => {
