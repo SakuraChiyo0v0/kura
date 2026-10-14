@@ -70,10 +70,18 @@ export function excludeMatches(path: string, rule: string): boolean {
   return pattern.every((seg, i) => segmentMatches(seg, parts[i]!))
 }
 
-/** 规范化并去重一组规则；非法的抛出（界面上逐条报错）。 */
+/**
+ * 规范化并去重一组规则；非法的抛出（界面上逐条报错）。
+ *
+ * **空规则要拒绝，不能当成 `/`**。`normalizeDavPath('')` 会返回 `/`，对「路径」是对的（根本身就是 /），
+ * 但对「规则」是灾难：`include` 里一条空白会变成「放行整个文件系统」（只读关了就是整盘可写），
+ * `exclude` 里一条空白则会变成「挡住一切」。界面提交空白、或 `state/webdav.json` 被写成 `""` 都可能触发，
+ * 所以在这里硬拦 —— 规则本来就不该是空的。
+ */
 export function normalizeRules(rules: readonly string[]): string[] {
   const out: string[] = []
   for (const rule of rules) {
+    if (rule.trim() === '') throw new Error('规则不能为空')
     const p = normalizeDavPath(rule)
     if (!out.includes(p)) out.push(p)
   }

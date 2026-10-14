@@ -42,30 +42,41 @@ interface ScopeResponse {
 const stringList = (value: unknown): string[] => (Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [])
 
 /**
- * 把服务端返回的 JSON 收成界面用的形状；缺字段就退成空/默认，不抛错。
+ * 一段范围字段必须是「非空数组」。**不能退回空范围**：契约是整体替换，界面一旦拿到一段空范围
+ * 又照常渲染成「范围是空的」，用户点保存就把服务端真实范围覆盖成空了。
+ * `include` 更必须非空 —— 空等于放行一切（服务端 `resolveScope` 也据此回 400）。
+ */
+function requireScope(raw: unknown, what: string): { include: string[]; exclude: string[]; readOnly: boolean } {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new Error(`服务端返回的${what}不是对象，可能不是 kura-server`)
+  }
+  const limits = raw as ScopeLimits
+  if (!Array.isArray(limits.include) || limits.include.length === 0) {
+    throw new Error(`服务端返回的${what}里没有放行目录，可能不是 kura-server`)
+  }
+  if (!Array.isArray(limits.exclude)) throw new Error(`服务端返回的${what}里没有排除字段，可能不是 kura-server`)
+  return { include: stringList(limits.include), exclude: stringList(limits.exclude), readOnly: limits.readOnly === true }
+}
+
+/**
+ * 把服务端返回的 JSON 收成界面用的形状。
  *
  * 注意是 `limits` 那一层，不是顶层 —— 读错层级会得到一个「空的当前范围」，
- * 界面上看起来像范围被清空了，再一保存就真把服务端的范围覆盖掉。
+ * 界面上看起来像范围被清空了，再一保存就真把服务端的范围覆盖掉。所以读不到就**抛错**，
+ * 让界面走「读不到范围」的提示，而不是拿一份空范围当真。
  */
 export function parseScope(body: Buffer): NasScopeView {
-  let parsed: ScopeResponse
+  let parsed: unknown
   try {
-    parsed = JSON.parse(body.toString('utf8')) as ScopeResponse
+    parsed = JSON.parse(body.toString('utf8'))
   } catch {
     throw new Error('服务端返回的不是 JSON，可能不是 kura-server')
   }
-  const limits = parsed.limits ?? {}
-  const defaults = parsed.defaults ?? {}
-  return {
-    include: stringList(limits.include),
-    exclude: stringList(limits.exclude),
-    readOnly: limits.readOnly === true,
-    defaults: {
-      include: stringList(defaults.include),
-      exclude: stringList(defaults.exclude),
-      readOnly: defaults.readOnly === true,
-    },
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('服务端返回的不是范围对象，可能不是 kura-server')
   }
+  const response = parsed as ScopeResponse
+  return { ...requireScope(response.limits, '范围'), defaults: requireScope(response.defaults, '默认范围') }
 }
 
 /** 按范围算一条路径可不可见、能不能写。算法与本机那套是同一份 `dav-scope`。 */

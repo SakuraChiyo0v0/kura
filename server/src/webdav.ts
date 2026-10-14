@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import { handleDavRequest, type DavLimits } from '../../src/core/dav-server.js'
-import type { DavScope } from '../../src/core/dav-scope.js'
+import { normalizeRules, type DavScope } from '../../src/core/dav-scope.js'
 import { silentLogger, type Logger } from '../../src/core/log.js'
 import { ServiceStats } from '../../src/core/stats.js'
 import { hashFile } from './hash.js'
@@ -234,14 +234,26 @@ function readJson(file: string): Partial<WebdavSettings> | undefined {
   }
 }
 
-function mergeSettings(base: WebdavSettings, saved: Partial<WebdavSettings>): WebdavSettings {
-  const scope: DavScope = {
-    include: Array.isArray(saved.include) ? saved.include.map(String) : base.include,
-    exclude: Array.isArray(saved.exclude) ? saved.exclude.map(String) : base.exclude,
+/**
+ * 读盘时收一遍规则：`state/webdav.json` 是**可以手改**的（设计上就写着「改在管理页 / state/webdav.json」），
+ * 所以这里当外部输入对待。空规则会被 `normalizeRules` 拒绝 —— 一条空白 include 等于放行整个文件系统。
+ * 整份读不回来（JSON 坏了、规则非法、include 空了）就退回代码里的默认范围，绝不放一个空范围进去。
+ */
+function readScope(base: WebdavSettings, saved: Partial<WebdavSettings>): DavScope {
+  try {
+    const include = Array.isArray(saved.include) ? normalizeRules(saved.include.map(String)) : base.include
+    const exclude = Array.isArray(saved.exclude) ? normalizeRules(saved.exclude.map(String)) : base.exclude
+    if (include.length === 0) throw new Error('include 不能为空')
+    return { include, exclude }
+  } catch {
+    return { include: [...base.include], exclude: [...base.exclude] }
   }
+}
+
+function mergeSettings(base: WebdavSettings, saved: Partial<WebdavSettings>): WebdavSettings {
   return {
     ...base,
-    ...scope,
+    ...readScope(base, saved),
     readOnly: typeof saved.readOnly === 'boolean' ? saved.readOnly : base.readOnly,
     port: typeof saved.port === 'number' && saved.port > 0 ? saved.port : base.port,
   }

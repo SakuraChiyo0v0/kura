@@ -16,6 +16,14 @@ describe('dav-scope', () => {
     expect(normalizeRules(['/b/', 'b', '/a'])).toEqual(['/a', '/b'])
   })
 
+  it('空规则要被拒绝：空白 include 会变成放行整个文件系统', () => {
+    // 关键：空串规范化成 '/'，一旦当成规则，include 就是「放行一切」、exclude 就是「挡住一切」
+    expect(normalizeDavPath('')).toBe('/')
+    expect(() => normalizeRules(['/volume1', ''])).toThrow(/不能为空/)
+    expect(() => normalizeRules(['   '])).toThrow(/不能为空/)
+    expect(() => normalizeRules([''])).toThrow(/不能为空/)
+  })
+
   it('放行目录及其子项完全可见；排除优先；上级只能路过；其余隐藏', () => {
     expect(visibilityOf('/volume1/照片/2024', scope).visibility).toBe('full')
     expect(visibilityOf('/volume1/照片/私密/x.jpg', scope).visibility).toBe('hidden')

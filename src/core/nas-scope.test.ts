@@ -21,10 +21,17 @@ describe('NAS 侧暴露范围', () => {
     expect(view.defaults.include).toEqual(['/volume1', '/home'])
   })
 
-  it('字段缺了也不炸：退成空列表 / 非只读', () => {
-    expect(parseScope(buf({}))).toEqual({ include: [], exclude: [], readOnly: false, defaults: { include: [], exclude: [], readOnly: false } })
+  it('缺了 limits / defaults 就报错，不退成空范围（空范围一保存就把真的覆盖掉）', () => {
+    expect(() => parseScope(buf({}))).toThrow(/范围/)
+    expect(() => parseScope(buf({ limits: { include: ['/volume1'], exclude: [] } }))).toThrow(/默认范围/)
+    // include 空数组同样不行：空 include 等于放行一切
+    expect(() => parseScope(buf({ limits: { include: [], exclude: [] }, defaults: { include: ['/'], exclude: [] } }))).toThrow(/没有放行目录/)
+    // 数组 / 字符串这类非对象 JSON 也要挡住
+    expect(() => parseScope(buf([]))).toThrow(/不是范围对象/)
     // 数组里混了非字符串要滤掉，不能把脏值带进范围层
-    expect(parseScope(buf({ limits: { include: ['/volume1', 42, null] } })).include).toEqual(['/volume1'])
+    expect(
+      parseScope(buf({ limits: { include: ['/volume1', 42, null], exclude: [] }, defaults: { include: ['/'], exclude: [] } })).include,
+    ).toEqual(['/volume1'])
   })
 
   it('不是 JSON 就说清「可能不是 kura-server」，别报 JSON 解析错', () => {
