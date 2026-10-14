@@ -318,15 +318,23 @@ export class DavServer {
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     this.stats.noteRequest()
-    await handleDavRequest(req, res, {
-      limits: () => this.settings,
-      upstream: this.options.upstream,
-      log: this.log,
-      stats: this.stats,
-      checkHost: true,
-      onUpstreamResult: (error) => {
-        this.upstreamError = error
-      },
-    })
+    try {
+      await handleDavRequest(req, res, {
+        limits: () => this.settings,
+        upstream: this.options.upstream,
+        log: this.log,
+        stats: this.stats,
+        checkHost: true,
+        onUpstreamResult: (error) => {
+          this.upstreamError = error
+        },
+      })
+    } catch (error) {
+      // 调用点用的是 `void this.handle(...)`：这里不接住的话异常会变成未处理拒绝（Node 15+ 直接终止进程），
+      // 而且客户端连一个响应都收不到。范围计算、上游地址解析都可能在这里抛。
+      this.stats.noteError(error)
+      this.log.warn('WebDAV 请求处理失败', { err: errorMessage(error) })
+      reply(res, 500, errorMessage(error))
+    }
   }
 }

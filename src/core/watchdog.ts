@@ -35,6 +35,8 @@ export interface ProbeTarget {
 export function probeHttp(address: string, timeoutMs = probeTimeoutMs): Promise<number> {
   return new Promise((resolve, reject) => {
     const req = http.get(`http://${address}/`, (res) => {
+      // 先挂 error 再 resume：连接中途被重置时 res 会发 'error'，没有监听器就会冒成未捕获异常
+      res.on('error', reject)
       res.resume()
       resolve(res.statusCode ?? 0)
     })

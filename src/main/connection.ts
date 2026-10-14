@@ -192,11 +192,24 @@ export class ConnectionService {
   async start(): Promise<void> {
     const config = this.loadConfig()
     if (!config || this.mirror) return
-    this.mirror = new Mirror({ ...this.mirrorOptions, config })
-    this.onMirrorCreated?.(this.mirror)
+    const mirror = new Mirror({ ...this.mirrorOptions, config })
+    this.mirror = mirror
+    this.onMirrorCreated?.(mirror)
     // 先告诉订阅方「换实例了」再启动：启动过程中的变化（缓存挂上、清单到达）也要推得出去
     this.emitMirror()
-    await this.mirror.start()
+    try {
+      await mirror.start()
+    } catch (error) {
+      // 启动失败就把实例清掉，否则 this.mirror 一直为真、后续 start() 直接 return，永远起不来。
+      // 只在还是这同一个实例时清：启动期间可能有 stop() 或新的 start() 换了实例。
+      if (this.mirror === mirror) {
+        this.mirror = undefined
+        this.emitMirror()
+      }
+      throw error
+    }
+    // 启动期间被 stop() 换掉了：这个实例已经不属于我们了，别再报「已启动」
+    if (this.mirror !== mirror) return
     this.log.info('映射已启动', { 模式: config.mode, 网关端口: config.gatewayPort })
   }
 

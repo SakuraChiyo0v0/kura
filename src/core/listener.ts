@@ -155,17 +155,22 @@ export class ServiceListener {
     })
   }
 
+  /** 把还挂着的连接（普通请求 + 被接管的 WebSocket）一律断掉。 */
+  private destroySockets(): void {
+    for (const socket of this.sockets) socket.destroy()
+  }
+
   private async stop(): Promise<void> {
     const server = this.server
     if (!server) return
     this.server = undefined
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        // 等不完就强关：被接管的 WebSocket 连接 close() 不会等它，但也不会自己断，这里一并断掉
-        for (const socket of this.sockets) socket.destroy()
-      }, shutdownTimeoutMs)
+      const timer = setTimeout(() => this.destroySockets(), shutdownTimeoutMs)
       server.close(() => {
         clearTimeout(timer)
+        // close() 的回调只等「普通连接」排空 —— 被接管的 WebSocket 不算在内，所以它可能立刻触发，
+        // 让上面那个强关定时器永远等不到。这里直接补一刀：走到回调时剩下的正是那些升级连接。
+        this.destroySockets()
         resolve()
       })
       server.closeIdleConnections()

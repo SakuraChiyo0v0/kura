@@ -358,9 +358,14 @@ export class ModuleManager {
       ? this.options.spawnMount(status.rclone.path, args)
       : spawn(status.rclone.path, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     this.child = child
+    // spawn 失败只发 'error'、不发 'exit'。不在这里清掉 child 的话，下面的等待循环条件永远成立，
+    // 会白等满 15 秒，而且 this.child 一直指着这个死掉的进程 —— 再点挂载会被 `if (this.child) return` 永久卡住。
+    let spawnFailed = false
     child.stdout?.on('data', (c: Buffer) => this.pushLog(c.toString()))
     child.stderr?.on('data', (c: Buffer) => this.pushLog(c.toString()))
     child.on('error', (error) => {
+      spawnFailed = true
+      if (this.child === child) this.child = undefined
       this.mountState = { ...this.mountState, state: 'error', error: errorMessage(error) }
     })
     child.on('exit', (code) => {
@@ -375,7 +380,7 @@ export class ModuleManager {
     })
     // rclone mount 成功时不会主动报告；等盘符出现（WinFsp 挂好后 X:\ 就能访问）
     const until = Date.now() + 15_000
-    while (Date.now() < until && this.child === child) {
+    while (Date.now() < until && this.child === child && !spawnFailed) {
       if (this.options.spawnMount || (await driveExists(drive))) {
         this.mountState = { ...this.mountState, state: 'mounted' }
         this.log.info('已挂载为磁盘', { 盘符: drive })

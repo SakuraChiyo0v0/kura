@@ -76,6 +76,9 @@ export class ConsoleTerminal {
       this.finish(errorMessage(error))
       return
     }
+    // 握手是异步的，这期间用户可能已经关掉了这个标签（close() 把 closed 置真、ws 清空）。
+    // 不检查就继续建连接的话，这个 ws 永远不会被关（close() 已经跑过了），白白泄漏一条 PTY。
+    if (this.closed) return
     const ws = new WebSocket(target.url, { headers: target.headers, handshakeTimeout: 20_000 })
     this.ws = ws
     ws.on('open', () => this.emit({ type: 'status', status: 'open' }))

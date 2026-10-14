@@ -132,6 +132,8 @@ function showMainWindow(): void {
 }
 
 let stopping: Promise<void> | undefined
+/** 清理跑完了没有。与 stopping（进行中）分开：两者共用一个值会让「进行中」被当成「已完成」。 */
+let stopped = false
 function quitApp(): void {
   quitting = true
   app.quit()
@@ -170,12 +172,20 @@ acquireSingleInstanceLock({
 // 退出前先把本机端口都放掉：下一次启动（或 Go 版）马上就能重新绑定
 app.on('before-quit', (event) => {
   quitting = true
-  if (stopping) return
+  // 清理已完成：放行这次退出（finally 里的 app.quit() 走到这里）
+  if (stopped) return
+  // 清理进行中又被点了一次退出：这次也必须拦下来。以前这里是直接 return，
+  // 没 preventDefault，Electron 会走默认退出流程，在 unmount / close / stop 跑完前就把进程干掉。
   event.preventDefault()
+  if (stopping) return
   terminals.closeAll()
   stopping = Promise.allSettled([modules.unmount(), localDav.close()])
     .then(() => connection.stop())
-    .finally(() => app.quit())
+    .finally(() => {
+      stopped = true
+      stopping = undefined
+      app.quit()
+    })
 })
 
 // 托盘常驻：窗口全部关掉也不退出

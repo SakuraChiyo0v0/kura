@@ -436,8 +436,17 @@ export class Mirror {
     if (localPort === old) return
     const taken = this.byPort.get(localPort)
     if (taken && taken !== mounted) throw new Error(`本机端口 ${localPort} 已被 ${taken.spec.label} 占用`)
-    await mounted.listener.setPort(localPort)
-    this.byPort.delete(old)
+    // 先把新端口占上再 await：端口要到 setPort 返回后才真正听上，中间这段时间后台 syncNow 的 attach
+    // 会看到 byPort 里新端口还空着，于是又建一个监听抢同一个端口。占位要一直留到结果出来。
+    this.byPort.set(localPort, mounted)
+    try {
+      await mounted.listener.setPort(localPort)
+    } catch (error) {
+      // 绑不上：listener 已经退回原端口，byPort 也要退回去，别留个假的占用
+      if (this.byPort.get(localPort) === mounted) this.byPort.delete(localPort)
+      throw error
+    }
+    if (this.byPort.get(old) === mounted) this.byPort.delete(old)
     this.byPort.set(localPort, mounted)
     this.overrides.set(mounted.spec.port, { localPort })
     this.changed()
