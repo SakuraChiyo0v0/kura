@@ -74,7 +74,7 @@ function PortEditor({ view, onSave }: { view: ServiceView; onSave: (port: number
   )
 }
 
-function ServiceCard({ view }: { view: ServiceView }) {
+function ServiceCard({ view, refresh }: { view: ServiceView; refresh: () => Promise<void> }) {
   const toast = useToast()
   const state = serviceState(view)
   const [toggling, setToggling] = useState(false)
@@ -84,6 +84,7 @@ function ServiceCard({ view }: { view: ServiceView }) {
   const run = async (label: string, action: () => Promise<void>) => {
     try {
       await action()
+      void refresh() // 主进程已经改完，立刻拉一次，别等下一轮轮询
     } catch (caught) {
       toast.notify({ title: label, description: (caught as Error).message, tone: 'error', duration: 0 })
       throw caught
@@ -242,6 +243,11 @@ export function MirrorView({ snapshot, refresh }: { snapshot: MirrorSnapshot; re
         </Button>
       </div>
 
+      {snapshot.fromCache && snapshot.phase === 'syncing' && (
+        <p className="kura-banner" data-tone="neutral" data-testid="syncing-banner">
+          正在同步服务端清单…（先按上次的清单运行，本机端口已经可以用）
+        </p>
+      )}
       {snapshot.discovery.lastError && (
         <p className="kura-banner" data-tone="warning">
           服务端清单同步失败：{snapshot.discovery.lastError}（当前按上次的清单运行）
@@ -272,7 +278,7 @@ export function MirrorView({ snapshot, refresh }: { snapshot: MirrorSnapshot; re
       ) : (
         <div className="kura-grid">
           {services.map((view) => (
-            <ServiceCard key={view.key} view={view} />
+            <ServiceCard key={view.key} view={view} refresh={refresh} />
           ))}
         </div>
       )}

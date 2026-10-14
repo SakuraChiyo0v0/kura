@@ -1,8 +1,8 @@
 import { useRef, useState, type FormEvent } from 'react'
-import { CheckCircle2, CircleAlert, CircleDashed } from 'lucide-react'
+import { CheckCircle2, CircleAlert, CircleDashed, Loader2 } from 'lucide-react'
 import { Button, FluidSegmented, TextField, useToast } from '@sakura-ui/react'
 import type { LinkModeSetting } from '../shared/labels.js'
-import type { ConnectionForm as Form, ConnectionSummary, ConnectionTestResult } from '../shared/ipc.js'
+import type { ConnectionForm as Form, ConnectionSummary, ConnectionTestResult, ConnectionTestStep } from '../shared/ipc.js'
 
 const modeOptions = [
   { value: 'auto', label: '自动' },
@@ -12,7 +12,7 @@ const modeOptions = [
 
 function initialForm(summary: ConnectionSummary | undefined): Form {
   return {
-    base: summary?.base ?? '',
+    uglinkId: summary?.uglinkId ?? '',
     ugreenUser: summary?.ugreenUser ?? '',
     ugreenPassword: '',
     lanHost: summary?.lanHost ?? '',
@@ -32,7 +32,7 @@ function initialForm(summary: ConnectionSummary | undefined): Form {
 export function ConnectionForm({
   summary,
   onSaved,
-  submitLabel = '保存并连接',
+  submitLabel = '测试并连接',
 }: {
   summary: ConnectionSummary | undefined
   onSaved: (summary: ConnectionSummary) => void
@@ -43,32 +43,59 @@ export function ConnectionForm({
   const [testing, setTesting] = useState(false)
   const [saving, setSaving] = useState(false)
   const [result, setResult] = useState<ConnectionTestResult | undefined>(undefined)
+  /** 逐条点亮的步骤；主进程每完成一步推一条进来 */
+  const [steps, setSteps] = useState<ConnectionTestStep[]>([])
   const resultRef = useRef<HTMLUListElement>(null)
   const saved = summary?.configured === true
 
   const set = <K extends keyof Form>(key: K, value: Form[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }))
     setResult(undefined) // 改了任何一项，上次的测试结果就不再代表当前填写
+    setSteps([])
   }
 
   const runTest = async (): Promise<ConnectionTestResult | undefined> => {
     if (!window.kura) return undefined
     setTesting(true)
+    setSteps([])
+    // 底部那列结果一开始就在视口外的话，转圈看不见，先滚过去
+    requestAnimationFrame(() => resultRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))
+
+    /** 同名步骤就地更新，新步骤追加 —— 保证「先转圈、后落定」不会重排 */
+    const upsert = (step: ConnectionTestStep) =>
+      setSteps((prev) => {
+        const next = [...prev]
+        const at = next.findIndex((s) => s.name === step.name)
+        if (at >= 0) next[at] = step
+        else next.push(step)
+        return next
+      })
+
+    // 先订阅再开测：否则前面几步的结果可能已经推完、界面没接住
+    const off = window.kura.connection.onTestProgress((progress) => {
+      if (progress.phase === 'plan') {
+        // 还没跑到的步骤先以「转圈」占位，让整列立刻出现、再逐条落定
+        for (const name of progress.names) upsert({ name, ok: false, detail: '', pending: true })
+        return
+      }
+      if (progress.phase === 'step') upsert(progress.step)
+    })
+
     try {
       const next = await window.kura.connection.test(form)
       setResult(next)
-      // 结果在表单底部，按钮也在底部，但长表单里结果可能落在视口外：滚过去，让人看见每一步
-      requestAnimationFrame(() => resultRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))
       return next
     } finally {
+      off()
       setTesting(false)
     }
   }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (!window.kura) return
-    const tested = result ?? (await runTest())
+    if (!window.kura || testing || saving) return
+    // 刚测过且通过就不再测一遍；没测过、或测失败后改过表单（result 已清空）就先测
+    const tested = result?.ok ? result : await runTest()
     if (!tested?.ok) return
     setSaving(true)
     try {
@@ -83,22 +110,27 @@ export function ConnectionForm({
   }
 
   const keepHint = saved ? '留空则沿用已保存的密码' : undefined
-  const needsLan = form.mode !== 'wan'
 
   return (
     <form className="kura-form" onSubmit={(event) => void submit(event)}>
       <fieldset className="kura-form__group">
         <legend>绿联账号</legend>
         <TextField
-          label="设备地址"
-          description="绿联 App「远程访问」里的地址，形如 https://<设备>.cn30.ug.link"
-          placeholder="https://xxxx.cn30.ug.link"
-          value={form.base}
-          onChange={(e) => set('base', e.target.value)}
+          label="UGREENlink ID"
+          description="绿联 App / UGOS「远程访问」里的那串 ID；也可直接粘贴 https://ug.link/<ID>"
+          placeholder="abcd1234-1a2b"
+          value={form.uglinkId}
+          onChange={(e) => set('uglinkId', e.target.value)}
           required
           autoComplete="off"
           spellCheck={false}
         />
+        {summary?.base && (
+          <p className="kura-form__note">
+            当前设备地址：<code>{summary.base}</code>
+            {summary.lanHost ? ` · 局域网 ${summary.lanHost}` : ' · 未记录局域网地址'}
+          </p>
+        )}
         <div className="kura-form__row">
           <TextField label="账号" value={form.ugreenUser} onChange={(e) => set('ugreenUser', e.target.value)} required autoComplete="username" />
           <TextField
@@ -126,10 +158,15 @@ export function ConnectionForm({
         </p>
         <TextField
           label="NAS 局域网地址"
-          description={needsLan ? '用于在家直连，例如 192.168.x.x' : '外网模式下可以不填'}
+          description={
+            form.mode === 'lan'
+              ? '局域网模式必填，例如 192.168.x.x'
+              : '可以不填：留空就用绿联记录的地址，查不到就一直走外网中继。填上能在家直连（快很多）'
+          }
+          placeholder="192.168.1.10"
           value={form.lanHost}
           onChange={(e) => set('lanHost', e.target.value)}
-          required={needsLan}
+          required={form.mode === 'lan'}
           autoComplete="off"
           spellCheck={false}
         />
@@ -164,11 +201,24 @@ export function ConnectionForm({
         </div>
       </fieldset>
 
-      {result && (
+      {steps.length > 0 && (
         <ul className="kura-test" aria-live="polite" data-testid="connection-test" ref={resultRef}>
-          {result.steps.map((step) => (
-            <li key={step.name} className="kura-test__step" data-ok={step.ok}>
-              {step.ok ? <CheckCircle2 size={16} aria-hidden /> : step.name === '局域网可达' ? <CircleDashed size={16} aria-hidden /> : <CircleAlert size={16} aria-hidden />}
+          {steps.map((step) => (
+            <li
+              key={step.name}
+              className="kura-test__step"
+              data-ok={step.pending ? undefined : step.ok}
+              data-pending={step.pending ? 'true' : undefined}
+            >
+              {step.pending ? (
+                <Loader2 className="kura-test__spinner" size={16} aria-hidden />
+              ) : step.ok ? (
+                <CheckCircle2 size={16} aria-hidden />
+              ) : step.name === '局域网可达' ? (
+                <CircleDashed size={16} aria-hidden />
+              ) : (
+                <CircleAlert size={16} aria-hidden />
+              )}
               <span className="kura-test__name">{step.name}</span>
               <span className="kura-test__detail">{step.detail}</span>
             </li>
@@ -177,12 +227,15 @@ export function ConnectionForm({
       )}
 
       <div className="kura-form__actions">
-        <Button type="button" variant="secondary" disabled={testing || saving} onClick={() => void runTest()}>
-          {testing ? '测试中…' : '测试连接'}
+        {/* 一步完成：点一下就测试，全部通过才保存并进入主界面；不通过停在这里看哪一步错了 */}
+        <Button type="submit" disabled={testing || saving}>
+          {testing ? '正在测试…' : saving ? '正在保存…' : submitLabel}
         </Button>
-        <Button type="submit" disabled={testing || saving || result?.ok === false}>
-          {saving ? '保存中…' : submitLabel}
-        </Button>
+        {saved && (
+          <Button type="button" variant="ghost" disabled={testing || saving} onClick={() => void runTest()}>
+            仅测试
+          </Button>
+        )}
       </div>
       <p className="kura-form__note">凭据用 Windows 当前用户的系统加密（DPAPI）保存在本机，不会上传，也不会写进日志。</p>
     </form>

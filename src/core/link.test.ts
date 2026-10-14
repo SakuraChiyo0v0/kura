@@ -75,11 +75,14 @@ describe('LinkRouter：路由', () => {
     expect(r.route({ port: 4533 }).upstream).toBe('http://192.168.1.10:4533')
   })
 
-  it('没有局域网地址：写了 lan 也退回外网，切 lan / auto 报错', async () => {
+  it('没有局域网地址：写了 lan 也退回外网，切 lan 报错但 auto 可以', async () => {
     const { r } = router('lan', '')
     expect(r.mode).toBe('wan')
     await expect(r.setModeSetting('lan')).rejects.toThrow(/局域网地址/)
-    await expect(r.setModeSetting('auto')).rejects.toThrow(/局域网地址/)
+    // auto 缺地址是正常的：一直走中继就好（绿联查不到地址、或用户只想用外网）
+    await expect(r.setModeSetting('auto')).resolves.toBeUndefined()
+    expect(r.mode).toBe('wan')
+    expect(r.isAuto).toBe(true)
   })
 
   it('网关地址：外网、局域网、局域网 Host', () => {

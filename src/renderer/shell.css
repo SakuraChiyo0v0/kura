@@ -197,6 +197,29 @@ body {
   color: var(--sk-danger-text);
 }
 
+/* 进行中的一步：转圈，颜色压淡，别和已通过的绿勾抢注意力 */
+.kura-test__step[data-pending] {
+  color: var(--sk-muted);
+}
+
+.kura-test__spinner {
+  color: var(--sk-accent);
+  animation: kura-spin 0.9s linear infinite;
+  transform-origin: center;
+}
+
+@keyframes kura-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kura-test__spinner {
+    animation-duration: 2.4s;
+  }
+}
+
 .kura-test__name {
   font-weight: 600;
   white-space: nowrap;
@@ -530,4 +553,428 @@ body {
   .kura-main {
     padding: 20px 18px 32px;
   }
+}
+
+/* ---------------- v0.2 文件 ---------------- */
+
+.kura-files,
+.kura-dav,
+.kura-term,
+.kura-modules {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 12px;
+}
+
+.kura-crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.kura-crumbs__seg {
+  display: inline-flex;
+  align-items: center;
+  color: var(--sk-muted);
+}
+
+.kura-crumbs__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sk-ink);
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--sk-fast) var(--sk-ease);
+}
+
+.kura-crumbs__item:hover {
+  background: var(--sk-surface-raised);
+}
+
+.kura-crumbs__item[aria-current='page'] {
+  font-weight: 600;
+}
+
+.kura-files__name-form,
+.kura-rules__add {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.kura-files__name-form .sk-text-field,
+.kura-rules__add .sk-text-field {
+  flex: 1;
+  max-width: 420px;
+}
+
+.kura-files__selection {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--sk-line);
+  border-radius: 10px;
+  background: var(--sk-surface-raised);
+}
+
+.kura-files__selection > span {
+  margin-right: auto;
+  font-weight: 600;
+}
+
+.kura-files__table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--sk-surface);
+  border: 1px solid var(--sk-line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.kura-files__table th,
+.kura-files__table td {
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--sk-line);
+}
+
+.kura-files__table th {
+  color: var(--sk-muted);
+  font-weight: 560;
+  font-size: 12px;
+  background: var(--sk-surface-sunken);
+}
+
+.kura-files__table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.kura-files__table tbody tr:hover,
+.kura-files__table tbody tr[data-selected] {
+  background: var(--sk-surface-raised);
+}
+
+.kura-files__check {
+  width: 32px;
+}
+
+.kura-files__num {
+  text-align: right !important;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.kura-files__time {
+  color: var(--sk-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.kura-files__name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--sk-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.kura-files__name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kura-files__name:hover span {
+  text-decoration: underline;
+}
+
+.kura-files__dir-icon {
+  color: var(--sk-accent);
+}
+
+.kura-transfers ul {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kura-transfers li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.kura-transfers li > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------------- 本机 WebDAV ---------------- */
+
+.kura-dav__basics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px 20px;
+  align-items: end;
+}
+
+.kura-dav__rules {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+  margin-top: 16px;
+}
+
+.kura-rules h3 {
+  margin: 0 0 2px;
+  font-size: 13px;
+}
+
+.kura-rules ul {
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--sk-line);
+  border-radius: 10px;
+  background: var(--sk-surface-sunken);
+}
+
+.kura-rules li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 4px 10px;
+}
+
+.kura-rules li + li {
+  border-top: 1px solid var(--sk-line);
+}
+
+.kura-rules code,
+.kura-dav__probe code {
+  font-family: var(--kura-font-mono);
+  font-size: 12px;
+}
+
+.kura-rules__empty {
+  color: var(--sk-muted);
+  padding: 8px 10px !important;
+}
+
+.kura-dav__probe {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 0;
+}
+
+.kura-dav__probe span {
+  color: var(--sk-muted);
+}
+
+/* ---------------- 终端 ---------------- */
+
+.kura-term {
+  flex: 1;
+  min-height: 0;
+}
+
+.kura-term__bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.kura-term__spacer {
+  flex: 1;
+}
+
+.kura-term__tab {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--sk-line);
+  border-radius: 8px;
+  background: var(--sk-surface);
+  transition: background var(--sk-fast) var(--sk-ease);
+}
+
+.kura-term__tab[data-active] {
+  background: var(--sk-surface-raised);
+  border-color: var(--sk-accent);
+}
+
+.kura-term__tab[data-status='closed'] {
+  opacity: 0.65;
+}
+
+.kura-term__tab button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--sk-ink);
+  font: inherit;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.kura-term__tab .kura-term__close {
+  padding: 4px 6px 4px 2px;
+  color: var(--sk-muted);
+}
+
+.kura-term__panes {
+  flex: 1;
+  min-height: 320px;
+  display: flex;
+  border: 1px solid var(--sk-line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--sk-surface-sunken);
+}
+
+.kura-term__pane {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 4px 8px 10px;
+}
+
+.kura-term__pane[hidden] {
+  display: none;
+}
+
+.kura-term__config {
+  max-width: 640px;
+}
+
+/* ---------------- v0.3 模块 ---------------- */
+
+.kura-module {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px 20px;
+  border: 1px solid var(--sk-line);
+  border-radius: 14px;
+  background: var(--sk-surface);
+}
+
+.kura-module__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.kura-module__head > div {
+  flex: 1;
+}
+
+.kura-module__head h2 {
+  margin: 0 0 2px;
+  font-size: 15px;
+}
+
+.kura-module__head > svg {
+  color: var(--sk-accent);
+  margin-top: 2px;
+}
+
+.kura-reqs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kura-req {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--sk-surface-sunken);
+}
+
+.kura-req > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.kura-req p {
+  margin: 2px 0 0;
+  color: var(--sk-muted);
+  overflow-wrap: anywhere;
+}
+
+.kura-req[data-ok='true'] > svg {
+  color: var(--sk-success);
+}
+
+.kura-req[data-ok='false'] > svg {
+  color: var(--sk-warning);
+}
+
+.kura-module__settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px 20px;
+  align-items: end;
+}
+
+.kura-module__log pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--sk-surface-sunken);
+  font-family: var(--kura-font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+/* ---------------- 启动进度（替代「映射正在启动」空白页） ---------------- */
+
+.kura-startup {
+  max-width: 560px;
+  margin: 32px auto 0;
+  padding: 20px 22px;
+  border: 1px solid var(--sk-line);
+  border-radius: 14px;
+  background: var(--sk-surface);
+}
+
+.kura-startup h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+/* 还没轮到的一步：灰掉、不转（只有当前那步转圈） */
+.kura-test__step[data-step='waiting'] {
+  opacity: 0.55;
 }

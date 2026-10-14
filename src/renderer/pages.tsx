@@ -41,7 +41,7 @@ export const pages: readonly PageDef[] = [
     id: 'terminal',
     label: '终端',
     icon: <SquareTerminal {...iconProps} />,
-    summary: '连接 NAS 的命令行（经 nas-console），支持多标签',
+    summary: '连接 NAS 的命令行（经 nas-console），支持多标签；拿到的是宿主 root shell',
     plannedIn: 'v0.2',
   },
   {

@@ -9,18 +9,88 @@ export interface SmokeContext {
   userData: string
   isTrayCreated(): boolean
   showMainWindow(): void
+  /** 本机 WebDAV 的地址 */
+  davUrl(): string
 }
 
 function httpGet(url: string): Promise<{ status: number; body: string }> {
+  return httpSend('GET', url)
+}
+
+function httpSend(method: string, url: string, headers: Record<string, string> = {}, body?: string): Promise<{ status: number; body: string }> {
   return new Promise((resolve) => {
-    http
-      .get(url, (res) => {
-        let body = ''
-        res.on('data', (c) => (body += c))
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
-      })
-      .on('error', (error) => resolve({ status: 0, body: error.message }))
+    const req = http.request(url, { method, headers }, (res) => {
+      let text = ''
+      res.on('data', (c) => (text += c))
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: text }))
+    })
+    req.on('error', (error) => resolve({ status: 0, body: error.message }))
+    req.end(body)
   })
+}
+
+/**
+ * 第二轮冒烟：用第一轮留下的同一份数据目录**重启**，看「已经配置过」的人每次打开 Kura 看到什么。
+ *
+ * 判据都盯着「第一帧」：
+ * - 不出现引导页（凭据读得到）；
+ * - 页面一加载完就是主界面、且已经有服务卡片（上次缓存的清单，不等网络）；
+ * - 假 NAS 在这一轮故意把清单接口拖慢（SMOKE_SLOW_SERVICES_MS），证明卡片确实来自缓存、
+ *   而之后最新清单一到，界面靠**推送**更新（不靠 3 秒轮询）。
+ */
+export async function runRestartSmoke(ctx: { window: BrowserWindow; startedAt: number }): Promise<boolean> {
+  const { window } = ctx
+  const js = <T>(code: string): Promise<T> => window.webContents.executeJavaScript(code) as Promise<T>
+  const results: Array<[string, boolean, string?]> = []
+  const check = (name: string, ok: boolean, detail?: string) => results.push([name, ok, detail])
+  const timeout = setTimeout(() => {
+    console.error('SMOKE(重启) 超时未完成', JSON.stringify(results))
+    process.exit(1)
+  }, 60_000)
+  timeout.unref()
+  try {
+    if (window.webContents.isLoading()) {
+      await new Promise<void>((resolve) => window.webContents.once('did-finish-load', () => resolve()))
+    }
+    window.show()
+    // 页面脚本刚跑完的那一刻：第一帧画的是什么
+    await delay(50)
+    const first = await js<{ title: string; cards: number; onboarding: boolean; bootstrap: boolean }>(`({
+      title: document.querySelector('[data-testid="page-title"]')?.textContent ?? '',
+      cards: document.querySelectorAll('.kura-service-list li, [data-testid="service-card"]').length,
+      onboarding: document.querySelector('.kura-onboarding') !== null,
+      bootstrap: Boolean(window.kura?.bootstrap?.connection?.configured),
+    })`)
+    check('重启不进引导页', !first.onboarding && first.bootstrap, JSON.stringify(first))
+    check('第一帧就是主界面（无空白等待）', first.title === '概览', JSON.stringify(first))
+    check('第一帧就有服务（来自上次缓存）', first.cards >= 4, JSON.stringify(first))
+    const openedMs = Date.now() - ctx.startedAt
+
+    // 清单接口被拖慢了：这时应该显示「正在同步」而不是空白；到了之后自动刷新（推送）
+    const syncingShown = await js<boolean>(`document.querySelector('.kura-section__foot')?.textContent.includes('同步') ?? false`)
+    const synced = await waitUntil(js, `window.kura.mirror.snapshot().then(s => s?.phase === 'ready')`, 15_000)
+    // 主进程同步完成后，界面在 1 秒内（远小于 3 秒轮询）就该反映出来
+    const pushed = await waitUntil(js, `document.querySelector('.kura-section__foot')?.textContent.includes('秒前') ?? false`, 1_000)
+    check('清单到达后界面立即更新（推送）', synced && pushed, `syncingShown=${syncingShown} synced=${synced} pushed=${pushed}`)
+    check('启动到窗口可用的耗时', openedMs < 8_000, `${openedMs}ms`)
+  } catch (error) {
+    check('执行异常', false, (error as Error).stack)
+  } finally {
+    clearTimeout(timeout)
+  }
+  const passed = results.every(([, ok]) => ok)
+  for (const [name, ok, detail] of results) console.log(`  ${ok ? '✓' : '✗'} ${name}${detail && (!ok || name.includes('耗时')) ? `：${detail}` : ''}`)
+  console.log(`SMOKE(重启) ${results.filter(([, ok]) => ok).length}/${results.length} => ${passed ? 'PASS' : 'FAIL'}`)
+  return passed
+}
+
+async function waitUntil(js: <T>(code: string) => Promise<T>, code: string, timeoutMs: number): Promise<boolean> {
+  const end = Date.now() + timeoutMs
+  while (Date.now() < end) {
+    if (await js<boolean>(code)) return true
+    await delay(100)
+  }
+  return false
 }
 
 /**
@@ -60,13 +130,22 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
       input.dispatchEvent(new Event('input', { bubbles: true }))
       return true
     })()`)
+  /** 假 NAS 自己记的计数（scripts/smoke.mjs 的 /__smoke/counters） */
+  const smokeNasCounter = async (name: string): Promise<number> => {
+    const res = await httpGet(`${process.env.KURA_SMOKE_NAS}/__smoke/counters`)
+    try {
+      return Number((JSON.parse(res.body) as Record<string, number>)[name] ?? -1)
+    } catch {
+      return -1
+    }
+  }
   const clickButton = (text: string) =>
     js<boolean>(`(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(text)} && !b.disabled); b?.click(); return Boolean(b) })()`)
 
   const timeout = setTimeout(() => {
     console.error('SMOKE 超时未完成', JSON.stringify(results))
     process.exit(1)
-  }, 60_000)
+  }, 120_000)
   timeout.unref()
 
   try {
@@ -85,9 +164,9 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     check('首次启动显示引导', onboarding)
     await shot('v0.1-引导.png')
 
-    // ③ 填表 → 测试连接
+    // ③ 填表 → 测试连接（填的是 UGREENlink ID，设备域由主进程查绿联云得到）
     const filled = await Promise.all([
-      fill('设备地址', 'https://smoke-dev.cn30.ug.link'),
+      fill('UGREENlink ID', 'smoke-nas-id'),
       fill('账号', 'smoke-user'),
       fill('密码', 'smoke-pass'),
       fill('NAS 局域网地址', '127.0.0.1'),
@@ -95,15 +174,35 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
       fill('网关密码', 'smoke-gw-pass'),
     ])
     check('表单填写', filled.every(Boolean), JSON.stringify(filled))
-    await clickButton('测试连接')
-    const tested = await waitFor(`document.querySelectorAll('[data-testid="connection-test"] [data-ok="true"]').length >= 3`)
-    check('测试连接三步通过', tested, await js<string>(`document.querySelector('[data-testid="connection-test"]')?.innerText ?? '无结果'`))
-    await shot('v0.1-测试连接.png')
+    const lookupsBefore = await smokeNasCounter('lookups')
+    // 一步完成：点「测试并连接」= 逐条测试 → 全部通过 → 保存 → 进入主界面
+    await clickButton('测试并连接')
+    // 逐条点亮：未跑到的步骤先以转圈（data-pending）出现，跑完才落成 data-ok。
+    // 判据盯的是「同一时刻既有转圈也有结果」——否则等它全绿再断言，等于没测动态效果。
+    const progressive = await waitFor(
+      `(() => {
+         const items = document.querySelectorAll('[data-testid="connection-test"] .kura-test__step')
+         if (items.length < 4) return false
+         const pending = document.querySelectorAll('[data-testid="connection-test"] [data-pending]').length
+         const settled = document.querySelectorAll('[data-testid="connection-test"] [data-ok]').length
+         return pending > 0 && settled > 0
+       })()`,
+      8_000,
+    )
+    check('测试过程逐条点亮（转圈与结果并存）', progressive, await js<string>(`document.querySelector('[data-testid="connection-test"]')?.innerText ?? '无结果'`))
+    // 测试一通过就会自动保存并跳走，所以判据是「各步通过」或「已经进了主界面」（后者只在全部通过时发生）
+    const tested = await waitFor(
+      `document.querySelectorAll('[data-testid="connection-test"] [data-ok="true"]').length >= 4 || document.querySelector('[data-testid="page-title"]')?.textContent === '服务映射'`,
+    )
+    check('测试连接各步通过', tested, await js<string>(`document.querySelector('[data-testid="connection-test"]')?.innerText ?? '无结果'`))
+    if (await js<boolean>(`document.querySelector('[data-testid="connection-test"]') !== null`)) await shot('v0.1-测试连接.png')
 
-    // ④ 保存 → 凭据加密落盘 → 进入映射页
-    await clickButton('保存并连接')
+    // ④ 不用再点第二个按钮：测试通过后自动保存 → 凭据加密落盘 → 进入映射页
     const toMirror = await waitFor(`document.querySelector('[data-testid="page-title"]')?.textContent === '服务映射'`)
-    check('保存后进入服务映射', toMirror)
+    check('一步测试并保存，进入服务映射', toMirror)
+    // 保存时复用测试那次的 ID 解析：整个流程只查一次绿联云
+    const lookups = (await smokeNasCounter('lookups')) - lookupsBefore
+    check('保存时不重复查 UGREENlink ID', lookups === 1, `查询次数=${lookups}`)
     const disk = (() => {
       try {
         return readFileSync(join(ctx.userData, 'credentials.json'), 'utf8')
@@ -111,11 +210,15 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
         return ''
       }
     })()
-    check('凭据已加密落盘', disk.length > 0 && !/smoke-pass|smoke-gw-pass|smoke-user|smoke-dev/.test(disk))
+    check('凭据已加密落盘', disk.length > 0 && !/smoke-pass|smoke-gw-pass|smoke-user|smoke-nas-id/.test(disk))
 
     // ⑤ 服务卡片出现，本机端口真能访问到 NAS 上的应用
-    const cards = await waitFor(`document.querySelectorAll('[data-testid="service-card"]').length === 2`, 15_000)
-    check('清单里的两个服务出现', cards)
+    const cards = await waitFor(`document.querySelectorAll('[data-testid="service-card"]').length === 4`, 15_000)
+    check(
+      '清单里的四个服务出现',
+      cards,
+      `visibility=${await js<string>('document.visibilityState')} 主进程快照服务数=${await js<number>('window.kura.mirror.snapshot().then(s => s?.services.length ?? -1)')} 卡片数=${await js<number>(`document.querySelectorAll('[data-testid="service-card"]').length`)}`,
+    )
     const portA = Number(process.env.SMOKE_PORT_A)
     const viaMirror = await httpGet(`http://127.0.0.1:${portA}/`)
     check('本机端口转发到 NAS 应用', viaMirror.status === 200 && viaMirror.body.includes('fake openlist'), `${viaMirror.status} ${viaMirror.body.slice(0, 80)}`)
@@ -126,13 +229,102 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     await js(`document.querySelector('[data-service="openlist"] [role="switch"]')?.click()`)
     const off = await waitFor(`document.querySelector('[data-service="openlist"]')?.innerText.includes('已关闭')`)
     const afterOff = await httpGet(`http://127.0.0.1:${portA}/`)
-    check('关闭服务后端口释放', off && afterOff.status === 0, `界面=${off} 请求=${afterOff.status}`)
+    check(
+      '关闭服务后端口释放',
+      off && afterOff.status === 0,
+      `界面=${off} 请求=${afterOff.status} 卡片=${JSON.stringify(await js<string>(`document.querySelector('[data-service="openlist"]')?.innerText.slice(0, 160) ?? '无'`))} 开关=${await js<string>(`document.querySelector('[data-service="openlist"] [role="switch"]')?.outerHTML.slice(0, 200) ?? '无'`)}`,
+    )
 
     // ⑦ 概览
     await js(`document.querySelector('.sk-sidebar-item[aria-label="概览"]')?.click()`)
     check('概览页', await waitFor(`document.querySelector('.kura-stats') !== null`))
     await delay(500)
     await shot('v0.1-概览.png')
+
+    // ⑦b v0.2 文件：经映射层的 WebDAV 列出 NAS 目录、进目录、新建文件夹
+    const nav = (label: string) => js(`document.querySelector('.sk-sidebar-item[aria-label="${label}"]')?.click()`)
+    await nav('文件')
+    const listed = await waitFor(`document.querySelector('[data-testid="file-table"] tr[data-name="volume1"]') !== null`, 10_000)
+    check('文件页列出 NAS 根目录', listed, await js<string>(`document.querySelector('.kura-files')?.innerText.slice(0, 200) ?? '无'`))
+    await js(`[...document.querySelectorAll('[data-testid="file-table"] tr[data-name="volume1"] .kura-files__name')][0]?.click()`)
+    const inVolume = await waitFor(`document.querySelector('[data-testid="file-table"] tr[data-name="docs"]') !== null`)
+    check('进入子目录', inVolume)
+    await clickButton('新建文件夹')
+    await delay(200)
+    await fill('名称', 'smoke-新建')
+    await js(`document.querySelector('.kura-files__name-form button[type="submit"]')?.click()`)
+    check('新建文件夹', await waitFor(`document.querySelector('[data-testid="file-table"] tr[data-name="smoke-新建"]') !== null`))
+    await shot('v0.2-文件.png')
+
+    // ⑦c v0.2 本机 WebDAV：只放行 /volume1/docs，外部程序直接发 HTTP 验证范围
+    const dav = ctx.davUrl()
+    const rootBefore = await httpSend('PROPFIND', dav, { depth: '1' })
+    check('本机 WebDAV 可用', rootBefore.status === 207 && rootBefore.body.includes('/volume1/'), `${rootBefore.status}`)
+    await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.includes('本机 WebDAV'))?.click()`)
+    await waitFor(`document.querySelector('[data-testid="dav-include"]') !== null`)
+    // 默认放行 /：先移除，再加 /volume1/docs，并排除一个不存在的子目录（验证排除列表能保存）
+    await js(`document.querySelector('[data-testid="dav-include"] button[aria-label="移除 /"]')?.click()`)
+    await fill('添加放行目录', '/volume1/docs')
+    await js(`document.querySelector('[data-testid="dav-include"] .kura-rules__add button[type="submit"]')?.click()`)
+    await fill('添加排除目录', '/volume1/docs/tmp')
+    await js(`document.querySelector('[data-testid="dav-exclude"] .kura-rules__add button[type="submit"]')?.click()`)
+    await delay(150)
+    await clickButton('保存')
+    await delay(800)
+    const root = await httpSend('PROPFIND', dav, { depth: '1' })
+    const v1 = await httpSend('PROPFIND', `${dav}volume1/`, { depth: '1' })
+    const hidden = await httpGet(`${dav}volume1/private/secret.txt`)
+    const allowed = await httpGet(`${dav}volume1/docs/readme.txt`)
+    check(
+      '暴露范围生效（外部 HTTP）',
+      !root.body.includes('/home/') && v1.body.includes('/volume1/docs/') && !v1.body.includes('private') && hidden.status === 404 && allowed.body === 'hello from smoke nas',
+      `root含home=${root.body.includes('/home/')} v1含private=${v1.body.includes('private')} secret=${hidden.status} readme=${allowed.status}`,
+    )
+    const saved = (() => {
+      try {
+        return JSON.parse(readFileSync(join(ctx.userData, 'webdav.json'), 'utf8')) as { include: string[]; exclude: string[] }
+      } catch {
+        return undefined
+      }
+    })()
+    check('范围设置落盘', saved?.include.join() === '/volume1/docs' && saved?.exclude.join() === '/volume1/docs/tmp', JSON.stringify(saved))
+    await fill('NAS 路径', '/volume1/private')
+    await js(`[...document.querySelectorAll('.kura-dav .kura-rules__add button')].find(b => b.textContent.trim() === '检查')?.click()`)
+    check('可见性自检', await waitFor(`document.querySelector('[data-testid="dav-probe"]')?.dataset.visibility === 'hidden'`))
+    await shot('v0.2-本机WebDAV.png')
+
+    // ⑦d v0.2 终端：填 nas-console 账号 → 测试并保存 → 开标签 → 键入回显
+    await nav('终端')
+    await waitFor(`document.querySelector('.kura-term') !== null`)
+    await fill('nas-console 账号', 'smoke-console')
+    await fill('nas-console 密码', 'smoke-console-pass')
+    await clickButton('测试并保存')
+    const termReady = await waitFor(`[...document.querySelectorAll('button')].some(b => b.textContent.trim() === '打开终端' && !b.disabled)`, 10_000)
+    check('终端登录配置', termReady, await js<string>(`document.querySelector('.kura-term')?.innerText.slice(0, 200) ?? ''`))
+    await clickButton('打开终端')
+    // 读 xterm 缓冲区（不是渲染出的 DOM：窗口不在前台时渲染帧被节流，DOM 会落后 —— 早先这条因此时好时坏）
+    const termText = `document.querySelector('[data-testid="terminal-pane"]')?.kuraText?.() ?? ''`
+    const prompt = await waitFor(`(${termText}).includes('smoke-nas:~#')`, 10_000)
+    // 等 xterm 的输入框真的拿到焦点再按键：sendInputEvent 发给当前焦点，焦点不在就丢了
+    await waitFor(`(() => { const ta = document.querySelector('[data-testid="terminal-pane"] textarea'); ta?.focus(); return document.activeElement === ta })()`)
+    window.webContents.sendInputEvent({ type: 'char', keyCode: 'l' })
+    window.webContents.sendInputEvent({ type: 'char', keyCode: 's' })
+    const echoed = await waitFor(`(${termText}).includes('smoke-nas:~# ls')`)
+    check('终端连接并回显输入', prompt && echoed, `prompt=${prompt} 缓冲区=${JSON.stringify(await js<string>(termText))}`)
+    const consoleDisk = (() => {
+      try {
+        return readFileSync(join(ctx.userData, 'console.json'), 'utf8')
+      } catch {
+        return ''
+      }
+    })()
+    check('终端凭据加密落盘', consoleDisk.length > 0 && !/smoke-console/.test(consoleDisk))
+    await shot('v0.2-终端.png')
+
+    // ⑦e v0.3 模块页：能显示依赖检测结果（不在冒烟里真去下载 rclone）
+    await nav('模块')
+    check('模块页', await waitFor(`document.querySelector('[data-testid="module-rclone"] .kura-req') !== null`))
+    await shot('v0.3-模块.png')
 
     // ⑧ 布局：侧栏撑到窗口底（判据对视口，不对父容器）
     const layout = await js<{ bottom: number; viewport: number }>(

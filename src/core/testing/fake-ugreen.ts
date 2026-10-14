@@ -48,6 +48,11 @@ export class FakeUgreen {
   autheliaRequiredHost = ''
   servicesBody = '{"services":[]}'
   servicesRequests = 0
+  /** UGREENlink ID 查询：认识的 ID（空串 = 一律回「ID 不存在」7022） */
+  uglinkAlias = ''
+  uglinkRelay = 'cn30.ug.link'
+  uglinkIpv4: string[] = []
+  uglinkLookups = 0
 
   constructor() {
     const keys = sharedKeys()
@@ -85,6 +90,21 @@ export class FakeUgreen {
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://fake')
     switch (url.pathname) {
+      // 绿联云的 ID 查询接口（不在设备域上，走 api.ugnas.com）
+      case '/api/p2p/v2/ta/nodeInfo/byAlias': {
+        this.uglinkLookups += 1
+        const { alias } = JSON.parse(await this.readBody(req)) as { alias?: string }
+        if (!this.uglinkAlias || alias !== this.uglinkAlias) {
+          this.json(res, 7022, 'UGREENlink ID不存在')
+          return
+        }
+        this.json(res, 200, 'SUCCESS', {
+          alias: this.uglinkAlias,
+          relayDomain: this.uglinkRelay,
+          netInfo: { ipv4: this.uglinkIpv4 },
+        })
+        return
+      }
       case '/ugreen/v1/verify/check':
         res.setHeader('X-Rsa-Token', this.publicPemB64)
         res.end()

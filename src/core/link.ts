@@ -171,9 +171,14 @@ export class LinkRouter {
     for (const listener of this.listeners) listener(mode, reason)
   }
 
-  /** 供界面使用：auto 表示交回自动探测（并立刻探一次）。 */
+  /**
+   * 供界面使用：auto 表示交回自动探测（并立刻探一次）。
+   *
+   * 只有「局域网」模式必须有地址 —— 那个模式没地址无从下手。auto 缺地址是正常的：
+   * 一直走中继就好（绿联那边查不到局域网地址、或用户只想用外网）。
+   */
   async setModeSetting(setting: LinkModeSetting): Promise<void> {
-    if (setting !== 'wan' && !this.lanHost) {
+    if (setting === 'lan' && !this.lanHost) {
       throw new ModeError('没有配置 NAS 局域网地址，无法使用局域网模式')
     }
     if (setting === 'auto') {

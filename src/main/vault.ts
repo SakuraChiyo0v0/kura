@@ -25,13 +25,13 @@ interface VaultFile {
  * （nas-mirror 泄密事件的结论）。磁盘上只有一段密文，明文不落盘、不进日志。
  * 系统不提供加密（极少见）时拒绝保存，而不是退回明文。
  */
-export class CredentialVault {
+export class CredentialVault<T = ConnectionConfig> {
   constructor(
     private readonly file: string,
     private readonly cipher: Cipher,
   ) {}
 
-  load(): ConnectionConfig | undefined {
+  load(): T | undefined {
     let raw: string
     try {
       raw = readFileSync(this.file, 'utf8')
@@ -41,14 +41,14 @@ export class CredentialVault {
     try {
       const parsed = JSON.parse(raw) as VaultFile
       if (parsed.version !== 1 || typeof parsed.data !== 'string') return undefined
-      return JSON.parse(this.cipher.decryptString(Buffer.from(parsed.data, 'base64'))) as ConnectionConfig
+      return JSON.parse(this.cipher.decryptString(Buffer.from(parsed.data, 'base64'))) as T
     } catch {
       // 坏文件、或换了 Windows 用户（DPAPI 解不开）：当作没配置，引导重新录入
       return undefined
     }
   }
 
-  save(config: ConnectionConfig): void {
+  save(config: T): void {
     if (!this.cipher.isEncryptionAvailable()) {
       throw new Error('系统没有提供加密存储（safeStorage 不可用），为了不把密码明文写盘，拒绝保存')
     }

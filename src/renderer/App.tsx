@@ -24,8 +24,12 @@ import '@sakura-ui/electron-react/styles.css'
 import type { ConnectionSummary } from '../shared/ipc.js'
 import { kuraSettingsDefaults, type KuraSettings, type ThemePreference } from '../shared/settings.js'
 import { ConnectionForm } from './ConnectionForm.js'
+import { FilesView } from './FilesView.js'
 import { MirrorView } from './MirrorView.js'
+import { ModulesView } from './ModulesView.js'
 import { OverviewView } from './OverviewView.js'
+import { StartupProgress } from './StartupProgress.js'
+import { TerminalView } from './TerminalView.js'
 import { findPage, pages, type PageDef, type PageId } from './pages.js'
 import { useConnection, useMirrorSnapshot } from './use-mirror.js'
 
@@ -152,7 +156,8 @@ function Shell() {
   const { snapshot, refresh } = useMirrorSnapshot(configured)
   const page = findPage(activeId)
 
-  if (summary === undefined && window.kura) return null // 首帧：等主进程回话，避免引导页一闪而过
+  // 第一帧就有 summary（preload 同步取好），只有同步通道失败的退路下才会等这一下
+  if (summary === undefined && window.kura) return null
   if (!configured) {
     return (
       <Onboarding
@@ -181,18 +186,21 @@ function Shell() {
         )
       case 'overview':
       case 'mirror':
-        if (!snapshot) {
-          return (
-            <div className="kura-placeholder">
-              <EmptyState title="映射正在启动" description="正在登录 NAS 并挂载服务" />
-            </div>
-          )
+        // 还没有任何服务可显示（首次连接、或连缓存都没有）：给分步进度，而不是一句「正在启动」
+        if (!snapshot || (snapshot.services.length === 0 && snapshot.phase !== 'ready')) {
+          return <StartupProgress snapshot={snapshot} onRetry={() => void window.kura?.mirror.retry().then(() => window.kura?.mirror.sync())} />
         }
         return page.id === 'overview' ? (
           <OverviewView snapshot={snapshot} onOpenMirror={() => setActiveId('mirror')} />
         ) : (
           <MirrorView snapshot={snapshot} refresh={refresh} />
         )
+      case 'files':
+        return <FilesView />
+      case 'terminal':
+        return <TerminalView />
+      case 'modules':
+        return <ModulesView />
       default:
         return <PlannedView page={page} />
     }

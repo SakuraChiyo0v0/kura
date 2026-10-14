@@ -94,8 +94,14 @@ export function OverviewView({ snapshot, onOpenMirror }: { snapshot: MirrorSnaps
           ))}
           {snapshot.services.length === 0 && <li className="kura-service-list__empty">还没有服务，正在等服务端清单</li>}
         </ul>
-        <p className="kura-section__foot">
-          服务端清单：{relative(snapshot.discovery.lastSync)} · 当前 {snapshot.sessions} 份会话
+        <p className="kura-section__foot" data-testid="sync-status">
+          服务端清单：
+          {snapshot.phase === 'syncing'
+            ? '正在同步…（先按上次的清单运行）'
+            : snapshot.phase === 'failed'
+              ? `同步失败，按上次的清单运行（${snapshot.discovery.lastError}）`
+              : relative(snapshot.discovery.lastSync)}{' '}
+          · 当前 {snapshot.sessions} 份会话
         </p>
       </section>
     </div>
