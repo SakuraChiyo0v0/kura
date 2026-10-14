@@ -7,6 +7,17 @@ import type { UgreenClient } from './ugreen.js'
 export const transientBackoffBaseMs = 5_000
 export const transientBackoffMaxMs = 2 * 60_000
 
+/** 网关的 4xx 响应体里通常带 `{error:"…"}`（kura-server 的 api 路由就是这么回的），优先把它读出来。 */
+function gatewayErrorText(body: Buffer, status: number, path: string): string {
+  try {
+    const parsed = JSON.parse(body.toString('utf8')) as { error?: string }
+    if (parsed.error) return parsed.error
+  } catch {
+    // 不是 JSON 就退回状态码
+  }
+  return `网关返回 HTTP ${status}（${path}）`
+}
+
 /**
  * 统一网关。
  *
@@ -225,6 +236,17 @@ export class SessionManager {
    * 收到 302/401 视为会话失效：作废缓存再试一次；仍不行就把状态码报出去（不跟随重定向）。
    */
   async gatewayGet(path: string): Promise<Buffer> {
+    return this.gatewayRequest('GET', path)
+  }
+
+  /**
+   * 任意方法地打网关自己的接口（`gatewayGet` 的通用版）。
+   *
+   * 客户端要在应用里读写 NAS 上的 WebDAV 暴露范围（`/_kura/api/scope`），那是个 POST。
+   * 链路与 Host 头的处理与 establish 一致：局域网拨局域网地址、Host 发公网域名。
+   * 收到 302/401 视为会话失效：作废缓存再试一次；仍不行就把状态码报出去（不跟随重定向）。
+   */
+  async gatewayRequest(method: string, path: string, body?: string, contentType = 'application/json'): Promise<Buffer> {
     if (this.gateway.port === 0) {
       throw new Error('未配置统一网关，取不到服务端清单')
     }
@@ -239,14 +261,21 @@ export class SessionManager {
       }
       const base = this.lan ? this.gateway.lanBase : this.gateway.base
       const host = this.lan ? this.gateway.lanHostHeader : undefined
+      const headers: Record<string, string> = {}
+      if (cookie) headers.cookie = cookie
+      if (body !== undefined) headers['content-type'] = contentType
       let res
       try {
-        res = await this.request({ url: base + path, host, headers: cookie ? { cookie } : {}, timeoutMs: 30_000 })
+        res = await this.request({ url: base + path, method, host, headers, body, timeoutMs: 30_000 })
       } catch (error) {
         lastError = error
         continue
       }
       if (res.status === 200) return res.body
+      // 4xx 是调用方自己的错（参数不对之类），原样交出去，别当成链路问题去退避重试
+      if (res.status >= 400 && res.status < 500 && res.status !== 401) {
+        throw new Error(gatewayErrorText(res.body, res.status, path))
+      }
       lastError = new Error(`网关返回 HTTP ${res.status}（${path}）`)
       if (res.status === 302 || res.status === 401) {
         this.invalidate(this.gateway.port)
@@ -254,7 +283,7 @@ export class SessionManager {
       }
       break
     }
-    throw new Error(`取服务端清单失败：${errorMessage(lastError)}`)
+    throw new Error(`网关请求失败：${errorMessage(lastError)}`)
   }
 
   // ---- 认证退避 ----

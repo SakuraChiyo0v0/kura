@@ -8,12 +8,15 @@ import { errorMessage } from '../core/errors.js'
 import type { HttpRequester } from '../core/http.js'
 import { silentLogger, type Logger } from '../core/log.js'
 import type { Mirror } from '../core/mirror.js'
+import { checkScope, parseScope, scopeApiPath } from '../core/nas-scope.js'
 import { readJson, writeJsonAtomic } from '../core/store.js'
 import type {
   DavCheckResult,
   DavSettingsView,
   DavStatusView,
   FileListing,
+  NasScopeCheck,
+  NasScopeView,
   TerminalEventView,
   Transfer,
 } from '../shared/ipc.js'
@@ -264,6 +267,41 @@ export class LocalDavService {
     const scope = this.server.current()
     const result = visibilityOf(p, scope)
     return { path: p, visibility: result.visibility, reason: result.reason, writable: !writeDenial(p, scope, scope.readOnly, 'PUT') }
+  }
+}
+
+// ---------------------------------------------------------------- NAS 侧暴露范围
+
+/**
+ * NAS 上那份 WebDAV 暴露范围（kura-server 的 `state/webdav.json`）。
+ *
+ * 这是**唯一**一份范围配置：文件页的浏览、本机 WebDAV、rclone 挂载、外部程序看到的都是它裁过的结果。
+ * 读写走统一网关（`session.gatewayRequest`），与 NAS 管理页改的是同一处；本机不再自己存一份。
+ */
+export class NasScopeService {
+  constructor(private readonly deps: FeatureDeps) {}
+
+  async get(): Promise<NasScopeView> {
+    return parseScope(await this.request('GET', scopeApiPath))
+  }
+
+  /** 整体替换：客户端这页是全量列表编辑器，删一条得真的删掉（合并会让删除静默失效）。 */
+  async save(view: NasScopeView): Promise<NasScopeView> {
+    const body = JSON.stringify({ include: view.include, exclude: view.exclude, readOnly: view.readOnly })
+    return parseScope(await this.request('POST', scopeApiPath, body))
+  }
+
+  /**
+   * 自检在客户端本地算：算法与本机那套是同一份 `dav-scope`，没必要多跑一趟网络。
+   * 先读回服务端当前的范围 —— 可能是别人（NAS 管理页）刚改的，别用界面上的草稿。
+   */
+  async check(path: string): Promise<NasScopeCheck> {
+    const scope = await this.get()
+    return checkScope(scope, scope.readOnly, path)
+  }
+
+  private async request(method: string, path: string, body?: string): Promise<Buffer> {
+    return requireMirror(this.deps).gatewayRequest(method, path, body)
   }
 }
 

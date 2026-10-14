@@ -22,10 +22,11 @@ import {
   type KuraBootstrap,
   type ModulesStatusView,
   type MountSettingsView,
+  type NasScopeView,
 } from '../shared/ipc.js'
 import { kuraSettingsDefaults, type KuraSettings } from '../shared/settings.js'
 import { ConnectionService } from './connection.js'
-import { FileService, LocalDavService, TerminalService, safeLocalName } from './features.js'
+import { FileService, LocalDavService, NasScopeService, TerminalService, safeLocalName } from './features.js'
 import { ModuleManager, rcloneRelease, winfspDownloadPage } from './modules.js'
 import { fileLogger } from './file-log.js'
 import { decideWindowClose } from './lifecycle.js'
@@ -66,6 +67,7 @@ const connection = new ConnectionService(
 const featureDeps = { mirror: () => connection.current(), dataDir: userData, log, request: smokeRequester() }
 const files = new FileService(featureDeps)
 const localDav = new LocalDavService(featureDeps)
+const nasScope = new NasScopeService(featureDeps)
 const terminals = new TerminalService(
   featureDeps,
   (event) => windows.broadcast(ch.terminalEvent, event),
@@ -310,6 +312,11 @@ function registerKuraIpc(): void {
   router.handle(ch.davGet, () => localDav.view())
   router.handle(ch.davSave, (_event, settings: DavSettingsView) => localDav.save(settings))
   router.handle(ch.davCheck, (_event, path: string) => localDav.check(String(path)))
+
+  // ---- NAS 侧暴露范围（走网关读写 kura-server 上的那一份）----
+  router.handle(ch.nasScopeGet, () => nasScope.get())
+  router.handle(ch.nasScopeSave, (_event, view: NasScopeView) => nasScope.save(view))
+  router.handle(ch.nasScopeCheck, (_event, path: string) => nasScope.check(String(path)))
 
   // ---- 终端 ----
   router.handle(ch.terminalOpen, () => terminals.open())

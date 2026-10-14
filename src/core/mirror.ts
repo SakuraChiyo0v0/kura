@@ -341,6 +341,11 @@ export class Mirror {
     return this.byKey.has(key)
   }
 
+  /** 打网关自己的接口（不是某个应用）。界面读写在 NAS 上的 WebDAV 暴露范围用它。 */
+  async gatewayRequest(method: string, path: string, body?: string): Promise<Buffer> {
+    return this.sessions.gatewayRequest(method, path, body)
+  }
+
   // ---- 服务端清单 ----
 
   private async applyEntries(entries: RegistryEntry[]): Promise<{ added: number; skipped: string[] }> {

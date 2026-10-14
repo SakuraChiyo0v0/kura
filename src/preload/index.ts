@@ -81,6 +81,11 @@ const kura: KuraBridge = {
     save: (settings) => invoke(ch.davSave, settings),
     check: (path) => invoke(ch.davCheck, path),
   },
+  nasScope: {
+    get: () => invoke(ch.nasScopeGet),
+    save: (view) => invoke(ch.nasScopeSave, view),
+    check: (path) => invoke(ch.nasScopeCheck, path),
+  },
   terminal: {
     open: () => invoke(ch.terminalOpen),
     write: (id, data) => invoke(ch.terminalWrite, id, data),

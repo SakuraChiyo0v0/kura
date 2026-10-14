@@ -37,6 +37,10 @@ export const kuraChannels = {
   davGet: 'kura:dav:get',
   davSave: 'kura:dav:save',
   davCheck: 'kura:dav:check',
+  // ---- v0.2 NAS 侧 WebDAV 暴露范围（放在 NAS 的 kura-server 上，走网关读写）----
+  nasScopeGet: 'kura:nas-scope:get',
+  nasScopeSave: 'kura:nas-scope:save',
+  nasScopeCheck: 'kura:nas-scope:check',
   // ---- v0.2 终端 ----
   terminalOpen: 'kura:terminal:open',
   terminalWrite: 'kura:terminal:write',
@@ -116,6 +120,17 @@ export interface DavCheckResult {
   reason: string
   writable: boolean
 }
+
+/** NAS 侧那份范围（放在 NAS 的 kura-server 上）。界面改的就是它，不再是本机那份。 */
+export interface NasScopeView {
+  include: string[]
+  exclude: string[]
+  readOnly: boolean
+  /** 服务端代码里的默认范围，「恢复默认」用它。 */
+  defaults: { include: string[]; exclude: string[]; readOnly: boolean }
+}
+
+export type NasScopeCheck = DavCheckResult
 
 // ---- v0.2 终端 ----
 
@@ -251,6 +266,12 @@ export interface KuraBridge {
     get(): Promise<DavStatusView>
     save(settings: DavSettingsView): Promise<DavStatusView>
     check(path: string): Promise<DavCheckResult>
+  }
+  /** NAS 侧那份暴露范围（kura-server 上的 `state/webdav.json`）。**唯一**一份范围配置。 */
+  nasScope: {
+    get(): Promise<NasScopeView>
+    save(view: NasScopeView): Promise<NasScopeView>
+    check(path: string): Promise<NasScopeCheck>
   }
   terminal: {
     open(): Promise<string>
