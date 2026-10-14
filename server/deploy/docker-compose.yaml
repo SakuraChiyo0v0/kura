@@ -1,9 +1,10 @@
-# kura-server（S1 草稿：认证 + 反代 + 清单）。S2 加 WebDAV 挂载，S3 加 kura-shell 容器。
+# kura-server（S1 认证 + 反代 + 清单，S2 WebDAV 挂宿主根；S3 起加 kura-shell 容器）。
 #
 # 迁移期先用 8898 与旧 sso-gateway（8897）并行，验收通过再换端口（设计文档 §十）。
 #
 #   docker network create sso-net        # 已有就跳过：其他应用容器都在这上面
 #   cp .env.example .env && 填好
+#   docker build -f server/Dockerfile -t kura-server:local .   # 在仓库根执行
 #   docker compose up -d
 services:
   kura-server:
@@ -15,6 +16,13 @@ services:
     env_file: .env
     volumes:
       - ./state:/state
+      # WebDAV 暴露宿主文件：整个宿主根挂进来（读写），rclone 在里面 serve。
+      # 「哪些目录可见、能不能写」由 kura-server 的范围层裁剪（state/webdav.json），不靠挂载权限。
+      # /proc /sys /dev 必须用 tmpfs 掩掉：rclone 带 -L 会沿 /proc/self/root/... 无限递归。
+      - /:/host
+      - { type: tmpfs, target: /host/proc }
+      - { type: tmpfs, target: /host/sys }
+      - { type: tmpfs, target: /host/dev }
       # 可选：只读，只用来查端口映射（代码里只调 GET /containers/json）
       # - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:

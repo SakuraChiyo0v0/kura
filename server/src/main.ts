@@ -2,10 +2,13 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { stdin, stdout } from 'node:process'
 import { createInterface } from 'node:readline/promises'
+import type { LogFields, Logger } from '../../src/core/log.js'
+import type { BuiltinHandler } from './server.js'
 import { Auth } from './auth.js'
 import { fingerprint, hashPassword, parseHash } from './password.js'
 import { Registry, dockerSocketLister } from './registry.js'
 import { createKuraServer } from './server.js'
+import { WebdavFeature, webdavDefaults } from './webdav.js'
 
 /**
  * kura-server 入口：
@@ -21,9 +24,24 @@ import { createKuraServer } from './server.js'
  *   KURA_TRUST_PROXY     1 = 信任 X-Forwarded-For（前面还有一层反代时才开）
  */
 
-function log(message: string, fields?: Record<string, unknown>): void {
+function emit(level: string, message: string, fields?: LogFields): void {
   const extra = fields ? ' ' + Object.entries(fields).map(([k, v]) => `${k}=${typeof v === 'string' ? JSON.stringify(v) : String(v)}`).join(' ') : ''
-  console.log(`${new Date().toISOString()} ${message}${extra}`)
+  const line = `${new Date().toISOString()} ${level} ${message}${extra}`
+  if (level === 'ERROR' || level === 'WARN') console.error(line)
+  else console.log(line)
+}
+
+/** kura-server 自己的日志（简洁的一行）。 */
+function log(message: string, fields?: LogFields): void {
+  emit('INFO', message, fields)
+}
+
+/** 注入给 core 里那些要 Logger 接口的地方（WebDAV 转发失败之类）。 */
+const logger: Logger = {
+  debug: () => {},
+  info: (message, fields) => emit('INFO', message, fields),
+  warn: (message, fields) => emit('WARN', message, fields),
+  error: (message, fields) => emit('ERROR', message, fields),
 }
 
 function fatal(message: string): never {
@@ -54,12 +72,23 @@ async function serve(): Promise<void> {
   )
   if (registry.error()) fatal(`services.json 读不了：${registry.error()}`)
 
+  // 内置 WebDAV：容器里跑 rclone，前面套客户端那份范围层。范围存 state/webdav.json，改了即时生效。
+  const webdav = new WebdavFeature({
+    settings: webdavDefaults,
+    settingsFile: join(state, 'webdav.json'),
+    log: logger,
+  })
+  const builtins: Record<string, BuiltinHandler> = {
+    webdav: { request: (req, res) => webdav.handle(req, res) },
+  }
+
   const auth = new Auth({ user, passwordHash, sessionFile: join(state, 'sessions.json') })
-  const server = createKuraServer({ auth, registry, log, trustProxy: process.env.KURA_TRUST_PROXY === '1' })
+  const server = createKuraServer({ auth, registry, builtins, log, trustProxy: process.env.KURA_TRUST_PROXY === '1' })
   const port = Number(process.env.KURA_PORT ?? 8080)
   server.listen(port, () => {
     // 凭据指纹：客户端那边对一下就知道密码哈希有没有发错（Authelia entrypoint 留下的做法）
     log('kura-server 已启动', { 端口: port, 用户: user, 凭据指纹: fingerprint(passwordHash), 服务数: registry.list().length })
+    webdav.start()
   })
 
   // services.json 被手改：收到 SIGHUP 重新读（docker kill -s HUP kura-server）
@@ -67,7 +96,10 @@ async function serve(): Promise<void> {
     registry.reload()
     log(registry.error() ? '重新读取 services.json 失败，沿用上一份' : '已重新读取 services.json', { 服务数: registry.list().length, err: registry.error() })
   })
-  const stop = () => server.close(() => process.exit(0))
+  const stop = () => {
+    webdav.stop()
+    server.close(() => process.exit(0))
+  }
   process.on('SIGTERM', stop)
   process.on('SIGINT', stop)
 }

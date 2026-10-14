@@ -144,6 +144,8 @@ let app2: http.Server
 let app2Url: string
 let seen: Array<{ url: string; headers: http.IncomingHttpHeaders }>
 let registry: Registry
+/** 内置 webdav 处理器看到的请求（验证路径前缀被剥掉） */
+let builtinSeen: Array<{ url: string; path: string; user: string }>
 
 async function listen(s: http.Server): Promise<string> {
   await new Promise<void>((resolve) => s.listen(0, '127.0.0.1', resolve))
@@ -177,7 +179,21 @@ beforeEach(async () => {
     { name: 'openlist', backend: appUrl },
     { name: 'hermes', backend: app2Url, rewriteRedirect: true },
   ])
-  server = createKuraServer({ auth: new Auth({ user: 'gw', passwordHash: hash }), registry })
+  // 假的内置 webdav 处理器：只回显它看到的路径，验证前缀剥掉了
+  builtinSeen = []
+  server = createKuraServer({
+    auth: new Auth({ user: 'gw', passwordHash: hash }),
+    registry,
+    builtins: {
+      webdav: {
+        request: (req, res, user, path) => {
+          builtinSeen.push({ url: req.url ?? '', path, user })
+          res.writeHead(200, { 'content-type': 'text/plain' })
+          res.end(`builtin saw ${req.url}`)
+        },
+      },
+    },
+  })
   base = await listen(server)
 })
 
@@ -242,6 +258,19 @@ describe('kura-server：用客户端自己的代码去连', () => {
     const res = await get('/hermes/login-redirect', { cookie })
     expect(res.status).toBe(302)
     expect(res.headers.location).toBe('/hermes/login')
+  })
+
+  it('内置服务（webdav）：走路径前缀时把 /webdav 剥掉再交给处理器；未认证 401', async () => {
+    const cookie = await autheliaLogin({ gatewayBase: base, user: 'gw', password: 's3cret' })
+    const res = await get('/webdav/volume1/photo', { cookie })
+    expect(res.status).toBe(200)
+    expect(res.body).toBe('builtin saw /volume1/photo')
+    expect(builtinSeen.at(-1)).toMatchObject({ url: '/volume1/photo', path: '/volume1/photo', user: 'gw' })
+    // 头模式（X-Nas-Service: webdav）：路径原样
+    const viaHeader = await get('/volume1/photo', { cookie, 'x-nas-service': 'webdav' })
+    expect(viaHeader.body).toBe('builtin saw /volume1/photo')
+    // 未认证不经过处理器
+    expect((await get('/webdav/volume1')).status).toBe(401)
   })
 
   it('WebSocket 透传（终端 / 应用的实时连接）；未认证握手 401', async () => {

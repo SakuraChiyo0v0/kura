@@ -222,7 +222,11 @@ export function createKuraServer(options: ServerOptions): http.Server {
       const user = auth.check(sessionToken(req.headers.cookie))
       if (!user) return unauthorized(req, res)
       const builtin = builtins[target.name]
-      if (builtin) return builtin.request(req, res, user, target.path)
+      if (builtin) {
+        // 路径前缀模式（/webdav/foo）下 req.url 还带着前缀，内置处理器只认 WebDAV 自己的路径
+        req.url = target.path
+        return builtin.request(req, res, user, target.path)
+      }
       if (!registry.find(target.name)) return send(res, 404, `kura-server：没有「${target.name}」这个服务`)
       forward(req, res, target, user)
     })().catch((error: Error) => {
@@ -242,7 +246,10 @@ export function createKuraServer(options: ServerOptions): http.Server {
       return
     }
     const builtin = builtins[target.name]
-    if (builtin?.upgrade) return builtin.upgrade(req, socket, head, user, target.path)
+    if (builtin?.upgrade) {
+      req.url = target.path
+      return builtin.upgrade(req, socket, head, user, target.path)
+    }
     const entry = registry.find(target.name)
     if (!entry) {
       socket.end('HTTP/1.1 404 Not Found\r\nconnection: close\r\n\r\n')
