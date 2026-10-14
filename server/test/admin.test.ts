@@ -137,9 +137,10 @@ describe('管理页', () => {
     expect(registry.find('hermes')).toBeUndefined()
   })
 
-  it('API Token：生成后能在页面上看到，也能吊销', async () => {
+  it('API Token：生成后能在页面上看到，也能吊销（且 Token 不进 URL）', async () => {
     const created = await post('/_kura/tokens/create', { label: '我的脚本' })
-    expect(created.headers.get('location')).toContain('nsc_')
+    // Token 不能出现在跳转地址里：会留在浏览器历史、反代与访问日志中
+    expect(created.headers.get('location')).not.toContain('nsc_')
     const token = tokens.list()[0]!.token
     expect((await get('/_kura/')).body).toContain(token)
     await post('/_kura/tokens/revoke', { token })
@@ -159,5 +160,22 @@ describe('页面模板', () => {
     })
     expect(html).not.toContain('<img src=x onerror=alert(1)>')
     expect(html).toContain('&lt;img')
+  })
+
+  it('服务名里的引号不能从内联 JS 字符串里逃出来', () => {
+    // escapeHtml 会把 ' 变成 &#39;，但浏览器解析内联事件属性时会先还原成 '，于是闭合 JS 字符串
+    const payload = "');alert(1);//"
+    const html = adminPage({
+      webdav: { limits: () => ({ include: ['/volume1'], exclude: [], readOnly: false }), status: () => ({ running: true, error: '', uptimeMs: 1000, restarts: 0, upstreamError: '' }) } as unknown as WebdavFeature,
+      registry: { list: () => [{ name: payload, backend: 'http://x', rewriteRedirect: false }], error: () => '' } as unknown as Registry,
+      tokens: new TokenStore(undefined),
+      audit: [],
+      shellAlive: false,
+    })
+    // 服务名不再插进内联 JS：确认文案放在 data-confirm，由 this.dataset 读，不参与 JS 解析
+    expect(html).not.toContain(`confirm('删除服务`)
+    expect(html).toContain('data-confirm=')
+    // 原始单引号序列不以可执行的形式存在
+    expect(html).not.toContain("');alert(1);//")
   })
 })

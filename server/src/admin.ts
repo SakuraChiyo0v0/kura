@@ -94,7 +94,7 @@ export function adminPage(options: {
     .map(
       (s) =>
         `<tr><td>${escapeHtml(s.name)}</td><td><code>${escapeHtml(s.backend)}</code></td><td>${s.rewriteRedirect ? '是' : ''}</td>
-         <td><form method="post" action="/_kura/services/delete" onsubmit="return confirm('删除服务 ${escapeHtml(s.name)}？')"><input type="hidden" name="name" value="${escapeHtml(s.name)}"><button class="ghost" style="margin:0;padding:4px 10px">删除</button></form></td></tr>`,
+         <td><form method="post" action="/_kura/services/delete" onsubmit="return confirm(this.dataset.confirm)" data-confirm="删除服务 ${escapeHtml(s.name)}？"><input type="hidden" name="name" value="${escapeHtml(s.name)}"><button class="ghost" style="margin:0;padding:4px 10px">删除</button></form></td></tr>`,
     )
     .join('') || '<tr><td colspan="4" class="note">没有配置额外的应用</td></tr>'
 
@@ -293,7 +293,8 @@ export function createAdminHandler(options: AdminOptions): AdminHandler {
       try {
         options.webdav.setLimits(resolveScope(options.webdav.limits(), body as ScopePayload))
         log('客户端改了 WebDAV 范围')
-        json(res, 200, { limits: options.webdav.limits() })
+        // 形状与 GET 一致（也带 defaults）：客户端的解析器两种响应走同一份，缺字段会被当成「不是 kura-server」
+        json(res, 200, { limits: options.webdav.limits(), defaults: defaultWebdavLimits })
       } catch (error) {
         json(res, 400, { error: errorMessage(error) })
       }
@@ -338,7 +339,8 @@ export function createAdminHandler(options: AdminOptions): AdminHandler {
       const form = parseForm(await readBodyText())
       const record = options.tokens.create(form.get('label') ?? '')
       log('管理页生成了 API Token', { 用途: record.label })
-      redirect(res, '/_kura/?ok=' + encodeURIComponent(`已生成：${record.token}`))
+      // Token 不放进 URL：会留在浏览器历史、反代与访问日志里。生成后它就在下面的表格里，看得到。
+      redirect(res, '/_kura/?ok=' + encodeURIComponent('已生成，见下表'))
       return
     }
 

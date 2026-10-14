@@ -20,15 +20,25 @@ export const silentLogger: Logger = {
   error() {},
 }
 
+/**
+ * 把控制字符（含 `\r` / `\n`）转成可见转义，其余原样。日志里不少 message 来自 NAS / 网关的响应，
+ * 是不可信输入；原样拼进去的话，一个带 `\r\n` 的错误信息就能伪造出整行假日志，排查时直接误导。
+ * 只动控制字符、不加引号 —— 正常日志行的形状不变。键名同样处理（键也是外部来的）。
+ */
+function escape(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u0000-\u001f\u007f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+}
+
 function format(level: string, message: string, fields?: LogFields): string {
   const time = new Date().toISOString()
   const extra = fields
     ? ' ' +
       Object.entries(fields)
-        .map(([key, value]) => `${key}=${typeof value === 'string' ? JSON.stringify(value) : String(value)}`)
+        .map(([key, value]) => `${escape(key)}=${typeof value === 'string' ? JSON.stringify(value) : String(value)}`)
         .join(' ')
     : ''
-  return `${time} ${level} ${message}${extra}`
+  return `${time} ${level} ${escape(message)}${extra}`
 }
 
 /** 写到 console；verbose 为假时不打 debug。 */

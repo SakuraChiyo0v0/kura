@@ -38,6 +38,12 @@ describe('rewriteSetCookie', () => {
   it('解析不了的行丢弃', () => {
     expect(rewriteSetCookie(['=novalue', 'ok=1'])).toEqual(['ok=1; Path=/'])
   })
+
+  it('去掉 Secure 后 SameSite=None 改成 Lax（None 必须配 Secure，否则浏览器整个丢掉）', () => {
+    expect(rewriteSetCookie(['sid=abc; Path=/; Secure; SameSite=None; HttpOnly'])).toEqual(['sid=abc; Path=/; SameSite=Lax; HttpOnly'])
+    // 其它值不动
+    expect(rewriteSetCookie(['sid=abc; SameSite=Strict'])).toEqual(['sid=abc; SameSite=Strict; Path=/'])
+  })
 })
 
 describe('rewriteLocation', () => {

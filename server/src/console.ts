@@ -1,5 +1,6 @@
 import http from 'node:http'
 import type net from 'node:net'
+import { errorMessage } from '../../src/core/errors.js'
 import type { TokenStore } from './tokens.js'
 
 /**
@@ -100,7 +101,16 @@ export function createConsoleHandler(options: ConsoleOptions): {
 
     if (path === '/api/exec' && req.method === 'POST') {
       const who = identify(req, url)
-      const raw = await readBody(req)
+      // readBody 必须在 try 里：请求体超限时它 reject 且已经 destroy 了连接，
+      // 异常从这里逃出去客户端什么都收不到，只剩一个被重置的连接
+      let raw: string
+      try {
+        raw = await readBody(req)
+      } catch (error) {
+        res.writeHead(413, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: errorMessage(error) }))
+        return
+      }
       try {
         const result = await execShell({
           method: 'POST',
@@ -127,7 +137,14 @@ export function createConsoleHandler(options: ConsoleOptions): {
       socket.end('HTTP/1.1 404 Not Found\r\nconnection: close\r\n\r\n')
       return
     }
-    const upstream = shellRequest(req, { method: 'GET', path: `/api/tty?cols=${url.searchParams.get('cols') ?? ''}&rows=${url.searchParams.get('rows') ?? ''}`, user: identify(req, url) })
+    // cols / rows 只可能是数字：`searchParams.get` 返回的是**已解码**的值，原样拼进请求行的话
+    // `?cols=%0d%0a...` 解出来就是真的 CRLF，可以往发给 kura-shell 的请求里注入头 / 走私请求。
+    // 非数字一律当没传（kura-shell 那边本来也有默认值 80×24）。
+    const dim = (name: string): string => {
+      const raw = url.searchParams.get(name) ?? ''
+      return /^\d{1,4}$/.test(raw) ? raw : ''
+    }
+    const upstream = shellRequest(req, { method: 'GET', path: `/api/tty?cols=${dim('cols')}&rows=${dim('rows')}`, user: identify(req, url) })
     upstream.on('upgrade', (up, upSocket, upHead) => {
       const lines = [`HTTP/1.1 ${up.statusCode} ${up.statusMessage ?? 'Switching Protocols'}`]
       for (let i = 0; i < up.rawHeaders.length; i += 2) lines.push(`${up.rawHeaders[i]}: ${up.rawHeaders[i + 1]}`)

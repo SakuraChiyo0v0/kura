@@ -68,12 +68,21 @@ export const request: HttpRequester = (options) => {
           chunks.push(chunk.length > room ? chunk.subarray(0, room) : chunk)
           size += Math.min(chunk.length, room)
         })
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }))
+        res.on('end', () => {
+          clearTimeout(timer)
+          resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) })
+        })
         res.on('error', reject)
       },
     )
-    req.setTimeout(timeoutMs, () => req.destroy(new Error(`请求超时（${timeoutMs}ms）：${options.url}`)))
-    req.on('error', reject)
+    // 用独立定时器做**整体**超时，不用 req.setTimeout —— 那个是 socket 空闲超时，
+    // 只要服务器还在慢慢吐字节就会被不断重置，一直拖着不结束的响应能把 timeoutMs 拖成永远。
+    // 这几个调用方（登录、网关请求、探测）的 timeoutMs 都是「整个请求最多多久」的意思。
+    const timer = setTimeout(() => req.destroy(new Error(`请求超时（${timeoutMs}ms）：${options.url}`)), timeoutMs)
+    req.on('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
     req.end(options.body)
   })
 }

@@ -27,6 +27,34 @@ export const anonymousUser = 'kura'
 
 const hopByHop = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'])
 
+/**
+ * 构造转发给后端的请求头。普通请求与 WebSocket 升级共用一份，免得两处规则漂移
+ * （升级那条以前是自己抄一遍，既没过 hop-by-hop 白名单、也没设 x-forwarded-*）。
+ *
+ * `keepUpgrade` 只给升级用：升级握手必须带着 `connection` / `upgrade`（它们本来就是 hop-by-hop，
+ * 普通转发要剔掉）。
+ */
+export function forwardHeaders(
+  req: http.IncomingMessage,
+  forValue: string,
+  options: { keepUpgrade?: boolean } = {},
+): http.OutgoingHttpHeaders {
+  const headers: http.OutgoingHttpHeaders = {}
+  for (const [name, value] of Object.entries(req.headers)) {
+    if (value === undefined || name === 'cookie' || name === 'x-nas-service') continue
+    if (hopByHop.has(name) && !(options.keepUpgrade && (name === 'connection' || name === 'upgrade'))) continue
+    headers[name] = value
+  }
+  const cookie = stripCookies(req.headers.cookie)
+  if (cookie) headers.cookie = cookie
+  // 与现网 protected-prefix.inc 一致的转发头
+  headers['remote-user'] = anonymousUser
+  headers['x-forwarded-proto'] = 'https'
+  headers['x-forwarded-host'] = String(req.headers.host ?? '')
+  headers['x-forwarded-for'] = forValue
+  return headers
+}
+
 export function stripCookies(header: string | undefined): string {
   return (header ?? '')
     .split(';')
@@ -161,18 +189,7 @@ export function createKuraServer(options: ServerOptions): http.Server {
   const forward = (req: http.IncomingMessage, res: http.ServerResponse, target: Target): void => {
     const entry = registry.find(target.name)!
     const backend = new URL(entry.backend)
-    const headers: http.OutgoingHttpHeaders = {}
-    for (const [name, value] of Object.entries(req.headers)) {
-      if (value === undefined || hopByHop.has(name) || name === 'cookie' || name === 'x-nas-service') continue
-      headers[name] = value
-    }
-    const cookie = stripCookies(req.headers.cookie)
-    if (cookie) headers.cookie = cookie
-    // 与现网 protected-prefix.inc 一致的转发头
-    headers['remote-user'] = anonymousUser
-    headers['x-forwarded-proto'] = 'https'
-    headers['x-forwarded-host'] = String(req.headers.host ?? '')
-    headers['x-forwarded-for'] = source(req)
+    const headers = forwardHeaders(req, source(req))
 
     const lib = backend.protocol === 'https:' ? https : http
     const upstream = lib.request({
@@ -247,14 +264,7 @@ export function createKuraServer(options: ServerOptions): http.Server {
       return
     }
     const backend = new URL(entry.backend)
-    const headers: http.OutgoingHttpHeaders = {}
-    for (const [name, value] of Object.entries(req.headers)) {
-      if (value === undefined || name === 'cookie' || name === 'x-nas-service') continue
-      headers[name] = value
-    }
-    const cookie = stripCookies(req.headers.cookie)
-    if (cookie) headers.cookie = cookie
-    headers['remote-user'] = anonymousUser
+    const headers = forwardHeaders(req, source(req), { keepUpgrade: true })
     const upstream = (backend.protocol === 'https:' ? https : http).request({
       hostname: backend.hostname,
       port: backend.port || undefined,

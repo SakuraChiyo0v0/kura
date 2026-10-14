@@ -36,7 +36,11 @@ export function rewriteSetCookie(lines: readonly string[]): string[] {
   for (const line of lines) {
     const cookie = parseSetCookie(line)
     if (!cookie) continue
-    const kept = cookie.attributes.filter((attr) => attr.key !== 'domain' && attr.key !== 'secure')
+    const kept = cookie.attributes
+      .filter((attr) => attr.key !== 'domain' && attr.key !== 'secure')
+      // 去掉 Secure 之后 SameSite=None 就是非法的 —— 浏览器要求 None 必须配 Secure，会直接丢弃整个 cookie，
+      // 登录态照样建不起来。我们这里全部同源（都在 127.0.0.1 上），Lax 够用，改掉它。
+      .map((attr) => (attr.key === 'samesite' && /^none$/i.test(attr.raw.split('=').slice(1).join('=').trim()) ? { key: 'samesite', raw: 'SameSite=Lax' } : attr))
     if (!kept.some((attr) => attr.key === 'path')) kept.push({ key: 'path', raw: 'Path=/' })
     out.push([`${cookie.name}=${cookie.value}`, ...kept.map((attr) => attr.raw)].join('; '))
   }

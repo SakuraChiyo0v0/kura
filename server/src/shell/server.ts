@@ -230,7 +230,13 @@ export function createShellServer(options: ShellOptions): http.Server {
         }
         return
       }
-      proc.write(text)
+      // PTY 已经退出时 write 可能抛（写已销毁的 socket）。这是 ws 的事件回调，抛出去就是未捕获异常，
+      // 会把整个 kura-shell 进程带走 —— 所有终端会话一起断。写不进去就关掉这个会话。
+      try {
+        proc.write(text)
+      } catch {
+        closeConnection(id)
+      }
     })
     ws.on('close', () => closeConnection(id))
     ws.on('error', () => closeConnection(id))
