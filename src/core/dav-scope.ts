@@ -40,6 +40,36 @@ export function isUnder(path: string, root: string): boolean {
   return path === root || path.startsWith(root + '/')
 }
 
+/** 一条规则里有没有通配符。 */
+export function hasWildcard(rule: string): boolean {
+  return rule.includes('*') || rule.includes('?')
+}
+
+/**
+ * 单段通配：`*` 匹配段内任意字符（不跨 `/`），`?` 匹配一个字符。
+ * 转成正则时把其余字符转义，免得 `.`、`+` 这类在目录名里被当成元字符。
+ */
+function segmentMatches(pattern: string, segment: string): boolean {
+  if (!hasWildcard(pattern)) return pattern === segment
+  const source = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')
+  return new RegExp(`^${source}$`).test(segment)
+}
+
+/**
+ * 带通配的规则匹配：规则看成「路径前缀」，逐段比。
+ * 只有**排除**规则会用到它 —— 放行目录一律是从目录树里勾出来的字面路径。
+ *
+ * 存在的原因：默认要挡掉 `/volume1/@*`（所有 `@` 开头的系统目录，含以后新建的）。
+ * files-admin 那套靠 rclone glob 表达，这里自己实现是为了不引第二套语义。
+ */
+export function excludeMatches(path: string, rule: string): boolean {
+  if (!hasWildcard(rule)) return isUnder(path, rule)
+  const parts = path.split('/').filter(Boolean)
+  const pattern = rule.split('/').filter(Boolean)
+  if (parts.length < pattern.length) return false
+  return pattern.every((seg, i) => segmentMatches(seg, parts[i]!))
+}
+
 /** 规范化并去重一组规则；非法的抛出（界面上逐条报错）。 */
 export function normalizeRules(rules: readonly string[]): string[] {
   const out: string[] = []
@@ -52,12 +82,12 @@ export function normalizeRules(rules: readonly string[]): string[] {
 
 export function visibilityOf(path: string, scope: DavScope): VisibilityResult {
   const p = normalizeDavPath(path)
-  const excluded = scope.exclude.find((rule) => isUnder(p, rule))
+  const excluded = scope.exclude.find((rule) => excludeMatches(p, rule))
   if (excluded) return { visibility: 'hidden', reason: `被排除规则 ${excluded} 挡住` }
   const included = scope.include.find((rule) => isUnder(p, rule))
   if (included) return { visibility: 'full', reason: `在放行目录 ${included} 之内` }
   // 是某个（本身没被排除的）放行目录的上级：可以路过
-  const leadsTo = scope.include.find((rule) => isUnder(rule, p) && !scope.exclude.some((ex) => isUnder(rule, ex)))
+  const leadsTo = scope.include.find((rule) => isUnder(rule, p) && !scope.exclude.some((ex) => excludeMatches(rule, ex)))
   if (leadsTo) return { visibility: 'ancestor', reason: `是放行目录 ${leadsTo} 的上级，只露出通往它的路径、不能写` }
   return { visibility: 'hidden', reason: '不在任何放行目录里（白名单兜底）' }
 }

@@ -2,7 +2,7 @@ import http from 'node:http'
 import { PassThrough, Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DavClient, encodeDavPath, parseMultistatus } from './dav-client.js'
-import { normalizeDavPath, normalizeRules, visibilityOf, writeDenial } from './dav-scope.js'
+import { excludeMatches, normalizeDavPath, normalizeRules, visibilityOf, writeDenial } from './dav-scope.js'
 import { DavServer, davServerDefaults, filterMultistatus, isLoopbackHost, type DavServerSettings } from './dav-server.js'
 import { FakeWebdav } from './testing/fake-webdav.js'
 
@@ -28,6 +28,27 @@ describe('dav-scope', () => {
 
   it('整个放行目录都被排除时，它的上级也不再露出', () => {
     expect(visibilityOf('/volume1', { include: ['/volume1/a'], exclude: ['/volume1/a'] }).visibility).toBe('hidden')
+  })
+
+  it('排除规则支持单段通配：/volume1/@* 挡掉所有 @ 目录（含以后新建的）', () => {
+    expect(excludeMatches('/volume1/@appstore', '/volume1/@*')).toBe(true)
+    expect(excludeMatches('/volume1/@appstore/x', '/volume1/@*')).toBe(true)
+    expect(excludeMatches('/volume1/照片', '/volume1/@*')).toBe(false)
+    expect(excludeMatches('/volume1', '/volume1/@*')).toBe(false) // 规则比路径长，不匹配
+    // 通配不跨段
+    expect(excludeMatches('/volume1/a/b', '/volume1/*')).toBe(true)
+    expect(excludeMatches('/volume1/a/c', '/volume1/a/*')).toBe(true)
+    expect(excludeMatches('/volume1/b/c', '/volume1/a/*')).toBe(false) // 字面段必须对上
+    // 无通配的规则仍按前缀（字面），行为与以前一致
+    expect(excludeMatches('/volume1/lost+found', '/volume1/lost+found')).toBe(true)
+    expect(excludeMatches('/volume1/lost+found/x', '/volume1/lost+found')).toBe(true)
+    // 目录名里的正则元字符不该被当元字符
+    expect(excludeMatches('/volume1/lost1found', '/volume1/lost+found')).toBe(false)
+
+    const scope = { include: ['/volume1'], exclude: ['/volume1/@*', '/volume1/.fscrypt', '/volume1/lost+found'] }
+    expect(visibilityOf('/volume1/@appstore', scope).visibility).toBe('hidden')
+    expect(visibilityOf('/volume1/@appstore/foo', scope).visibility).toBe('hidden')
+    expect(visibilityOf('/volume1/照片', scope).visibility).toBe('full')
   })
 
   it('写：只读全拒；范围外拒；放行目录本身不能删或移走', () => {
