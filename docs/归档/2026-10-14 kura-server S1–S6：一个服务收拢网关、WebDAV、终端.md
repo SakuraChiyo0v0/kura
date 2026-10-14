@@ -95,6 +95,21 @@ NAS 上的 watchtower 轮询到 `latest` digest 变了就自动 pull + 重建。
 Dockerfile 的 HEALTHCHECK 原写成只看 `KURA_PORT`，于是 shell 容器的健康检查一直探测错端口 ——
 改成两个都试。这条同样是靠读代码发现的，本机构建不了没法实测。
 
+### 7. 坑：Dockerfile 里 `ARG RCLONE_VERSION` 会让 rclone 起不来
+
+镜像从没在本机构建过，第一次真构建（CI）就炸在取 rclone 那步：
+
+```
+CRITICAL: Invalid value when setting --version from environment variable RCLONE_VERSION="v1.75.2":
+invalid argument "v1.75.2" for "--version" flag: strconv.ParseBool: parsing "v1.75.2": invalid syntax
+```
+
+原因是 **`ARG` 在 `RUN` 期间就是环境变量**，而 rclone 把所有 `RCLONE_*` 环境变量当成同名命令行
+开关 —— `RCLONE_VERSION=v1.75.2` 被读成 `--version v1.75.2`，而 `--version` 是布尔开关，解析
+`v1.75.2` 直接失败。改了变量名（`RC_VERSION`）就好。
+
+这条只有真构建才会撞到，纯读代码看不出来。也是"交给 CI 真跑一次"的价值。
+
 ## 没验证过的
 
 - **镜像从没在本机构建过**（本机 Docker 没起）。Dockerfile 是照着设计文档写的，node-pty 那段
