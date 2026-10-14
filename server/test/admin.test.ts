@@ -47,6 +47,9 @@ const get = (path: string, headers: Record<string, string> = {}): Promise<{ stat
   fetch(`${base}${path}`, { headers, redirect: 'manual' }).then(async (r) => ({ status: r.status, headers: r.headers, body: await r.text() }))
 const post = (path: string, form: Record<string, string>): Promise<{ status: number; headers: Headers }> =>
   fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(form), redirect: 'manual' }).then((r) => ({ status: r.status, headers: r.headers }))
+/** JSON 接口（客户端用的那个）。 */
+const json = (path: string, body: unknown): Promise<{ status: number; body: string }> =>
+  fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(async (r) => ({ status: r.status, body: await r.text() }))
 
 describe('管理页', () => {
   it('不需要登录：直接打开就渲染出范围、清单、Token、审计四块', async () => {
@@ -72,6 +75,41 @@ describe('管理页', () => {
     const res = await post('/_kura/scope', { include: '/volume1/../etc' })
     expect(res.headers.get('location')).toContain('err=')
     expect(webdav.limits()).toEqual(before)
+  })
+
+  it('JSON 接口：GET 读得到当前范围与默认值，POST 整体替换', async () => {
+    const first = await get('/_kura/api/scope')
+    expect(first.status).toBe(200)
+    const parsed = JSON.parse(first.body) as { limits: { include: string[] }; defaults: { include: string[] } }
+    expect([...parsed.limits.include].sort()).toEqual(['/home', '/volume1'])
+    // 默认值也回给客户端：界面上「恢复默认」不用把默认表抄一遍
+    expect(parsed.defaults.include).toEqual(['/volume1', '/home'])
+
+    const saved = await json('/_kura/api/scope', { include: ['/volume1/影视'], exclude: [] })
+    expect(saved.status).toBe(200)
+    expect(webdav.limits().include).toEqual(['/volume1/影视'])
+    expect(webdav.limits().exclude).toEqual([])
+  })
+
+  it('JSON 接口是整体替换：删掉一条再保存必须真的删掉', async () => {
+    await json('/_kura/api/scope', { include: ['/home', '/volume1', '/volume1/影视'], exclude: [] })
+    expect(webdav.limits().include).toEqual(['/home', '/volume1', '/volume1/影视'])
+    // 界面上移除 /home 后保存：提交的是剩下两条，/home 必须消失
+    await json('/_kura/api/scope', { include: ['/volume1', '/volume1/影视'], exclude: [] })
+    expect(webdav.limits().include).toEqual(['/volume1', '/volume1/影视'])
+  })
+
+  it('JSON 接口挡住了坏输入：空放行 / 非数组 / 超量都不改现状', async () => {
+    const before = webdav.limits()
+    expect((await json('/_kura/api/scope', { include: ['/volume1/../etc'], exclude: [] })).status).toBe(400)
+    expect((await json('/_kura/api/scope', { include: [], exclude: [] })).status).toBe(400)
+    expect((await json('/_kura/api/scope', { include: 'nope', exclude: [] })).status).toBe(400)
+    expect((await json('/_kura/api/scope', { include: Array.from({ length: 300 }, (_, i) => `/v/${i}`), exclude: [] })).status).toBe(400)
+    expect((await json('/_kura/api/scope', { include: ['/volume1'] })).status).toBe(400) // 缺 exclude：不替客户端猜
+    expect(webdav.limits()).toEqual(before)
+    // 请求体不是 JSON 也要给 400，别把服务打挂
+    const bad = await fetch(`${base}/_kura/api/scope`, { method: 'POST', body: '{oops' })
+    expect(bad.status).toBe(400)
   })
 
   it('可见性自检：算出这条路径可见不可见、哪条规则决定的', async () => {

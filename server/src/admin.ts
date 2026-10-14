@@ -4,6 +4,8 @@ import type { AuditEntry } from './shell/audit.js'
 import type { TokenStore } from './tokens.js'
 import type { WebdavFeature } from './webdav.js'
 import { excludeMatches, normalizeDavPath, normalizeRules, visibilityOf, type DavScope } from '../../src/core/dav-scope.js'
+import type { DavLimits } from '../../src/core/dav-server.js'
+import { defaultWebdavLimits } from './webdav.js'
 import { errorMessage } from '../../src/core/errors.js'
 
 /**
@@ -175,6 +177,34 @@ function parseLines(text: string): string[] {
     .filter((line) => line !== '' && !line.startsWith('#'))
 }
 
+/** `/_kura/api/scope` 的请求体：客户端提交的**完整**范围（include/exclude 都按现状发全）。 */
+interface ScopePayload {
+  include?: unknown
+  exclude?: unknown
+  readOnly?: boolean
+}
+
+const maxRules = 200
+
+/**
+ * 校验并规范化客户端提交的范围。
+ *
+ * 是**整体替换**，不是增量合并：客户端那页是个全量列表编辑器，用户删掉一条再保存必须真的删掉 ——
+ * 用合并的话「删除」这类操作会静默失效，这是最难发现的一类 bug。
+ */
+export function resolveScope(current: DavLimits, payload: ScopePayload): DavLimits {
+  const strings = (key: 'include' | 'exclude'): string[] => {
+    const raw = payload[key]
+    if (!Array.isArray(raw) || raw.some((r) => typeof r !== 'string')) throw new Error(`${key} 必须是字符串数组`)
+    return normalizeRules(raw as string[])
+  }
+  const include = strings('include')
+  const exclude = strings('exclude')
+  if (include.length === 0) throw new Error('至少要放行一个目录')
+  if (include.length > maxRules || exclude.length > maxRules) throw new Error(`规则太多（每类最多 ${maxRules} 条）`)
+  return { include, exclude, readOnly: payload.readOnly ?? current.readOnly }
+}
+
 function parseForm(body: string): URLSearchParams {
   return new URLSearchParams(body)
 }
@@ -192,6 +222,10 @@ export function createAdminHandler(options: AdminOptions): AdminHandler {
   const html = (res: http.ServerResponse, status: number, body: string): void => {
     res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
     res.end(body)
+  }
+  const json = (res: http.ServerResponse, status: number, body: unknown): void => {
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+    res.end(JSON.stringify(body))
   }
 
   const handle = async (req: http.IncomingMessage, res: http.ServerResponse, path: string): Promise<void> => {
@@ -238,6 +272,30 @@ export function createAdminHandler(options: AdminOptions): AdminHandler {
         redirect(res, '/_kura/?ok=' + encodeURIComponent('范围已保存，立即生效'))
       } catch (error) {
         redirect(res, '/_kura/?err=' + encodeURIComponent(errorMessage(error)))
+      }
+      return
+    }
+
+    // 客户端「文件」页要能在应用里改同一份范围，所以给一个 JSON 接口。
+    // 上面那个 form 版本给浏览器直接用；两者读写的是同一处 `state/webdav.json`。
+    if (path === '/api/scope' && req.method === 'GET') {
+      json(res, 200, { limits: options.webdav.limits(), defaults: defaultWebdavLimits })
+      return
+    }
+    if (path === '/api/scope' && req.method === 'POST') {
+      let body: unknown
+      try {
+        body = JSON.parse(await readBodyText())
+      } catch {
+        json(res, 400, { error: '请求体不是 JSON' })
+        return
+      }
+      try {
+        options.webdav.setLimits(resolveScope(options.webdav.limits(), body as ScopePayload))
+        log('客户端改了 WebDAV 范围')
+        json(res, 200, { limits: options.webdav.limits() })
+      } catch (error) {
+        json(res, 400, { error: errorMessage(error) })
       }
       return
     }
