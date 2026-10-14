@@ -91,6 +91,16 @@ export class ServiceListener {
       if (!this.server) {
         this.port = port
         this.lastError = ''
+        // 「开着但监听失败」（原端口被占）时改端口，就是想让它在新端口上起来 —— 界面上就是这么引导的。
+        // 以前只记下端口、要再拨一次开关才真绑上（kura-server 集成测试里撞出来的）。
+        if (this.enabled) {
+          try {
+            await this.start()
+          } catch (error) {
+            // 新端口也起不来：端口照样记下（用户的意图），原因留在 lastError，界面显示
+            throw new Error(`本机端口 ${port} 绑定失败：${(error as Error).message}`)
+          }
+        }
         return
       }
       await this.stop()

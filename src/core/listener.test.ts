@@ -91,6 +91,13 @@ describe('ServiceListener', () => {
     await expect(l.setEnabled(true)).rejects.toThrow(/绑定失败/)
     expect(l.status()).toMatchObject({ enabled: true, running: false })
     expect(l.status().lastError).toMatch(/EADDRINUSE/)
+
+    // 界面上的处置就是「就地改端口」：改完应当直接在新端口起来，不用再拨一次开关
+    const other = await freePort()
+    await l.setPort(other)
+    expect(l.status()).toMatchObject({ enabled: true, running: true, port: other, lastError: '' })
+    expect(await get(other)).toBe('ok')
+    await l.close()
     await new Promise<void>((resolve) => blocker.close(() => resolve()))
   })
 
