@@ -1,5 +1,6 @@
 import http from 'node:http'
 import { readFileSync } from 'node:fs'
+import { writeJsonAtomic } from '../../src/core/store.js'
 
 /**
  * 服务清单：kura-server 能反代到哪些应用。
@@ -109,6 +110,15 @@ export class Registry {
   set(services: ServiceEntry[]): void {
     this.services = services
     this.loadError = ''
+  }
+
+  /** 管理页保存：写回 services.json（原子替换，写坏了不影响已加载的一份）。 */
+  save(services: ServiceEntry[]): void {
+    if (!this.file) throw new Error('没有配置 services.json 路径')
+    // 先过一遍校验，坏数据不落盘
+    parseServices(JSON.stringify({ services }))
+    writeJsonAtomic(this.file, { services })
+    this.set(services)
   }
 
   error(): string {

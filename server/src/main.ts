@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import http from 'node:http'
 import { join } from 'node:path'
 import { stdin, stdout } from 'node:process'
 import { createInterface } from 'node:readline/promises'
@@ -13,6 +14,7 @@ import { createShellServer, internalToken } from './shell/server.js'
 import { AuditLog } from './shell/audit.js'
 import { TokenStore } from './tokens.js'
 import { WebdavFeature, webdavDefaults } from './webdav.js'
+import { createAdminHandler, loginPage } from './admin.js'
 
 /**
  * kura-server 入口（同一个镜像两个入口，发布一次）：
@@ -54,6 +56,24 @@ const logger: Logger = {
 function fatal(message: string): never {
   console.error(`FATAL: ${message}`)
   process.exit(1)
+}
+
+/** 探 kura-shell 在不在（拿它的免认证 /api/health）。 */
+async function probeShell(base: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const url = new URL(base)
+      const req = http.request({ hostname: url.hostname, port: url.port, path: '/api/health', method: 'GET', timeout: 3_000 }, (res) => {
+        res.resume()
+        resolve((res.statusCode ?? 0) === 200)
+      })
+      req.on('timeout', () => req.destroy(new Error('超时')))
+      req.on('error', () => resolve(false))
+      req.end()
+    } catch {
+      resolve(false)
+    }
+  })
 }
 
 async function serve(): Promise<void> {
@@ -110,7 +130,19 @@ async function serve(): Promise<void> {
     ...(consoleHandler ? { 'nas-console': { request: (req, res) => consoleHandler!.handle(req, res), upgrade: (req, socket, head) => consoleHandler!.upgrade(req, socket, head) } } : {}),
   }
 
-  const server = createKuraServer({ auth, registry, builtins, log, trustProxy: process.env.KURA_TRUST_PROXY === '1' })
+  // 管理页：范围、服务清单、API Token、状态与审计。认证复用 kura-server 的会话（Authelia 协议）。
+  const audit = new AuditLog(join(state, 'audit', 'audit.log'))
+  const admin = createAdminHandler({
+    auth,
+    registry,
+    webdav,
+    tokens,
+    auditTail: (n) => audit.tail(n),
+    shellAlive: shellAddress ? () => probeShell(shellAddress) : undefined,
+    log,
+  })
+
+  const server = createKuraServer({ auth, registry, builtins, admin, log, trustProxy: process.env.KURA_TRUST_PROXY === '1' })
   const port = Number(process.env.KURA_PORT ?? 8080)
   server.listen(port, () => {
     // 凭据指纹：客户端那边对一下就知道密码哈希有没有发错（Authelia entrypoint 留下的做法）

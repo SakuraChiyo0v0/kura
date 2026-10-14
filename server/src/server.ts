@@ -38,10 +38,20 @@ export interface BuiltinHandler {
   upgrade?(req: http.IncomingMessage, socket: net.Socket, head: Buffer, user: string, path: string): void
 }
 
+/** 管理页 `/_kura/`（含登录页）。由 main 注入，测试可以只给一个假的。 */
+export interface AdminHandler {
+  handle(req: http.IncomingMessage, res: http.ServerResponse, user: string, path: string): Promise<void>
+  /** 登录页 HTML（未认证时浏览器被 302 到这里） */
+  loginPage(redirect: string, error?: string): string
+  /** 处理登录表单：成功返回 Set-Cookie 值，失败返回错误文案 */
+  login(source: string, body: string): Promise<{ ok: true; cookie: string } | { ok: false; error: string }>
+}
+
 export interface ServerOptions {
   auth: Auth
   registry: Registry
   builtins?: Record<string, BuiltinHandler>
+  admin?: AdminHandler
   /** 测试注入：后端请求用的 agent */
   log?: (message: string, fields?: Record<string, unknown>) => void
   /** 信任这些来源的 X-Forwarded-For（默认不信任，用 socket 地址做防爆破的键） */
@@ -116,7 +126,7 @@ export function createKuraServer(options: ServerOptions): http.Server {
   }
 
   const handlePortal = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
-    const path = (req.url ?? '/').split('?')[0]
+    const path = (req.url ?? '/').split('?')[0] ?? '/'
     if (path === '/api/firstfactor' && req.method === 'POST') {
       let body: unknown
       try {
@@ -147,10 +157,35 @@ export function createKuraServer(options: ServerOptions): http.Server {
       return
     }
 
+    // 登录页与登录表单：浏览器被 302 到这里（免认证）
+    if (options.admin && (path === '/_kura/login' || path === '/_kura/login/')) {
+      if (req.method === 'GET') {
+        const rd = new URL(req.url ?? '/', 'http://x').searchParams.get('rd') ?? '/_kura/'
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(options.admin.loginPage(rd))
+        return
+      }
+      if (req.method === 'POST') {
+        const result = await options.admin.login(source(req), await readBody(req))
+        if (!result.ok) {
+          res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(options.admin.loginPage('/_kura/', result.error))
+          return
+        }
+        res.writeHead(302, { location: '/_kura/', 'set-cookie': result.cookie, 'cache-control': 'no-store' })
+        res.end()
+        return
+      }
+    }
+
     // 以下都要登录
     const user = auth.check(sessionToken(req.headers.cookie))
     if (!user) {
       unauthorized(req, res)
+      return
+    }
+    if (options.admin && (path === '/_kura' || path.startsWith('/_kura/'))) {
+      await options.admin.handle(req, res, user, path.slice('/_kura'.length) || '/')
       return
     }
     if (path === '/__services' && req.method === 'GET') {
