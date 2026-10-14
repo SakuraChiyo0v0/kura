@@ -13,7 +13,9 @@ import { Watchdog, type ProbeResult } from './watchdog.js'
 
 /** 连接配置：引导页收集、凭据加密保存，由主进程交给核心。 */
 export interface ConnectionConfig {
-  /** 设备域 https://<设备>.cn30.ug.link */
+  /** UGREENlink ID（用户填的那串，如 <设备ID>）；老配置可能没有 */
+  uglinkId?: string
+  /** 设备域 https://<设备>.cn30.ug.link（由 ID 解析得到，存下来以便离线可用） */
   base: string
   ugreenUser: string
   ugreenPassword: string
@@ -62,8 +64,20 @@ export interface DiscoveryState {
   skipped: string[]
 }
 
+/**
+ * 启动到哪一步了，给界面画进度用（而不是一片空白）：
+ * - starting：刚起，还没挂任何东西
+ * - syncing：上次缓存的服务已经挂上（fromCache），正在登录并拉最新清单
+ * - ready：至少成功同步过一次清单
+ * - failed：首次同步失败（仍按缓存运行，原因在 discovery.lastError）
+ */
+export type MirrorPhase = 'starting' | 'syncing' | 'ready' | 'failed'
+
 export interface MirrorSnapshot {
   running: boolean
+  phase: MirrorPhase
+  /** 当前的服务是不是上次缓存的清单挂出来的（最新清单还没到） */
+  fromCache: boolean
   mode: LinkMode
   modeSetting: LinkModeSetting
   lanHost: string
@@ -117,7 +131,13 @@ interface Mounted {
   spec: ServiceSpec
   listener: ServiceListener
   stats: ServiceStats
+  handlers: ReturnType<typeof createServiceProxy>
+  /** Kura 自己用的内部通道（见 internalEndpoint），按需才建 */
+  internal?: ServiceListener
 }
+
+/** 服务端清单里还没有这个服务（没部署、或清单还没拉到）。 */
+export class ServiceMissingError extends Error {}
 
 /**
  * 端口映射的总装：会话、链路、反代、监听、发现、探测都在这里接起来。
@@ -142,6 +162,28 @@ export class Mirror {
   private running = false
   private modeSetting: LinkModeSetting
   private discoveryState: DiscoveryState = { lastSync: 0, lastError: '', entries: 0, added: 0, skipped: [] }
+  private phase: MirrorPhase = 'starting'
+  private fromCache = false
+  private readonly changeListeners = new Set<() => void>()
+
+  /**
+   * 状态有变化（挂上新服务、开关、改端口、同步结果、链路切换）时回调。
+   * 主进程用它主动把快照推给界面，不让界面靠轮询干等。
+   */
+  onChange(listener: () => void): () => void {
+    this.changeListeners.add(listener)
+    return () => this.changeListeners.delete(listener)
+  }
+
+  private changed(): void {
+    for (const listener of this.changeListeners) {
+      try {
+        listener()
+      } catch {
+        // 订阅方自己的错，不影响映射
+      }
+    }
+  }
 
   constructor(options: MirrorOptions) {
     this.options = options
@@ -212,7 +254,7 @@ export class Mirror {
       enabled: override.enabled ?? spec.enabled ?? true,
       handlers: proxy,
     })
-    const mounted: Mounted = { key, spec, listener, stats }
+    const mounted: Mounted = { key, spec, listener, stats, handlers: proxy }
     this.byKey.set(key, mounted)
     this.byPort.set(localPort, mounted)
     this.sessions.addRefreshPort(this.router.route(spec).sessionPort)
@@ -242,7 +284,15 @@ export class Mirror {
       }
     }
     const discover = this.options.discover ?? true
-    if (discover) await this.applyCache()
+    if (discover) {
+      await this.applyCache()
+      this.fromCache = this.byKey.size > 0
+      this.phase = 'syncing'
+    } else {
+      this.phase = 'ready'
+    }
+    this.stops.push(this.router.onModeChange(() => this.changed()))
+    this.changed()
 
     // 网关端口本身也要续期：零服务配置时续期集合是空的，凭据坏了也照样显示「就绪」
     if (this.config.gatewayPort) this.sessions.addRefreshPort(this.config.gatewayPort)
@@ -272,7 +322,32 @@ export class Mirror {
     this.running = false
     for (const stop of this.stops) stop()
     this.stops = []
-    await Promise.all([...this.byKey.values()].map((m) => m.listener.close()))
+    await Promise.all([...this.byKey.values()].flatMap((m) => [m.listener.close(), m.internal?.close()]))
+    for (const m of this.byKey.values()) m.internal = undefined
+  }
+
+  /**
+   * Kura 自己的功能（文件管理器、本机 WebDAV、终端、rclone）连一个服务时用的地址。
+   *
+   * 和服务卡片上那个本机端口分开：那个是给外部程序的，用户可以关、可以改端口；
+   * Kura 自己的功能不该因为用户关了卡片就坏掉。这里另起一个只在回环、端口由系统随机分配的监听，
+   * 走的是同一套反代（会话、链路切换、认证全复用），流量也记在同一张卡片上。
+   */
+  async internalEndpoint(key: string): Promise<string> {
+    if (!this.running) throw new Error('映射没有在运行')
+    const mounted = this.byKey.get(key)
+    if (!mounted) throw new ServiceMissingError(`服务端清单里没有「${key}」服务`)
+    if (!mounted.internal) {
+      const internal = new ServiceListener({ port: 0, enabled: true, handlers: mounted.handlers })
+      await internal.applyIntent()
+      mounted.internal = internal
+    }
+    return `http://${mounted.internal.address()}`
+  }
+
+  /** 服务端清单里有没有这个服务（界面用来决定「终端 / WebDAV 可不可用」）。 */
+  hasService(key: string): boolean {
+    return this.byKey.has(key)
   }
 
   // ---- 服务端清单 ----
@@ -319,7 +394,9 @@ export class Mirror {
       if (!Array.isArray(doc.services)) throw new Error('清单里没有 services 数组')
     } catch (error) {
       this.discoveryState = { ...this.discoveryState, lastError: errorMessage(error) }
+      if (this.phase !== 'ready') this.phase = 'failed'
       this.log.warn('拉取服务端清单失败', { err: errorMessage(error) })
+      this.changed()
       throw error
     }
     try {
@@ -329,7 +406,10 @@ export class Mirror {
     }
     const { added, skipped } = await this.applyEntries(doc.services!)
     this.discoveryState = { lastSync: Date.now(), lastError: '', entries: doc.services!.length, added, skipped }
+    this.phase = 'ready'
+    this.fromCache = false
     if (added > 0) this.log.info('服务端清单里有新服务，已自动挂上', { 新增: added })
+    this.changed()
     return added
   }
 
@@ -346,7 +426,11 @@ export class Mirror {
     // 先落盘再动监听：意图要记下来，哪怕起不来
     this.overrides.set(mounted.spec.port, { enabled })
     if (!enabled) this.watchdog.forget(key)
-    await mounted.listener.setEnabled(enabled)
+    try {
+      await mounted.listener.setEnabled(enabled)
+    } finally {
+      this.changed()
+    }
   }
 
   async setServicePort(key: string, localPort: number): Promise<void> {
@@ -360,11 +444,13 @@ export class Mirror {
     this.byPort.delete(old)
     this.byPort.set(localPort, mounted)
     this.overrides.set(mounted.spec.port, { localPort })
+    this.changed()
   }
 
   async setMode(setting: LinkModeSetting): Promise<void> {
     await this.router.setModeSetting(setting)
     this.modeSetting = setting
+    this.changed()
   }
 
   /** 用户修好凭据或要求重试时：清掉退避并立刻重建会话。 */
@@ -395,6 +481,8 @@ export class Mirror {
     services.sort((a, b) => a.spec.label.localeCompare(b.spec.label))
     return {
       running: this.running,
+      phase: this.phase,
+      fromCache: this.fromCache,
       mode: this.router.mode,
       modeSetting: this.modeSetting,
       lanHost: this.router.lanHost,

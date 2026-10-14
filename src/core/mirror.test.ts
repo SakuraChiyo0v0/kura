@@ -207,6 +207,91 @@ describe('Mirror：端到端', () => {
     expect(again.snapshot().services[0]!.listener.port).toBe(b)
   })
 
+  it('内部通道：用户关掉卡片也照样能用，走同一套会话与分流头，流量记在同一张卡片', async () => {
+    let seen: { service?: string; cookie?: string } = {}
+    const upstreamFake = http.createServer((req, res) => {
+      seen = { service: req.headers['x-nas-service'] as string, cookie: req.headers.cookie }
+      res.end('dav')
+    })
+    await new Promise<void>((resolve) => upstreamFake.listen(0, '127.0.0.1', resolve))
+    const upstreamUrl = `http://127.0.0.1:${(upstreamFake.address() as AddressInfo).port}`
+    mirror = new Mirror({
+      config: config(),
+      dataDir,
+      request: redirectRequester(),
+      probeIntervalMs: 0,
+      discover: false,
+      localServices: [{ port: await freePort(), service: 'webdav', label: 'webdav', source: 'local' }],
+    })
+    const realRoute = mirror.router.route.bind(mirror.router)
+    mirror.router.route = (svc) => ({ ...realRoute(svc), upstream: upstreamUrl })
+    await mirror.start()
+    await mirror.setServiceEnabled('webdav', false)
+
+    const endpoint = await mirror.internalEndpoint('webdav')
+    expect(endpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+    expect(await mirror.internalEndpoint('webdav')).toBe(endpoint) // 复用同一个
+    const body = await new Promise<string>((resolve, reject) => {
+      http.get(`${endpoint}/`, (res) => {
+        let text = ''
+        res.on('data', (c) => (text += c))
+        res.on('end', () => resolve(text))
+      }).on('error', reject)
+    })
+    expect(body).toBe('dav')
+    expect(seen.service).toBe('webdav')
+    expect(seen.cookie).toContain('authelia_session=')
+    expect(mirror.snapshot().services[0]!.stats.requests).toBe(1)
+    await expect(mirror.internalEndpoint('nas-console')).rejects.toThrow(/没有「nas-console」/)
+
+    await mirror.stop()
+    // 停掉后内部通道也释放了
+    const after = await new Promise<number>((resolve) => http.get(`${endpoint}/`, (res) => resolve(res.statusCode ?? 0)).on('error', () => resolve(0)))
+    expect(after).toBe(0)
+    await new Promise<void>((resolve) => upstreamFake.close(() => resolve()))
+  })
+
+  it('启动阶段：先按缓存挂上（syncing + fromCache），清单到了变 ready；每次变化都通知', async () => {
+    const port = await freePort()
+    fake.servicesBody = JSON.stringify({ services: [{ name: 'svc', container_port: port }] })
+    const first = newMirror()
+    await first.syncNow() // 留下缓存
+    await first.stop()
+
+    const m = newMirror()
+    let changes = 0
+    m.onChange(() => (changes += 1))
+    // 拦住首次同步，好看清「缓存已挂、清单未到」那一刻
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const realSync = m.syncNow.bind(m)
+    m.syncNow = async () => {
+      await gate
+      return realSync()
+    }
+    await m.start()
+    expect(m.snapshot()).toMatchObject({ phase: 'syncing', fromCache: true })
+    expect(m.snapshot().services.map((s) => s.key)).toEqual(['svc'])
+    const before = changes
+    expect(before).toBeGreaterThan(0)
+    release()
+    await new Promise((r) => setTimeout(r, 300))
+    expect(m.snapshot()).toMatchObject({ phase: 'ready', fromCache: false })
+    expect(changes).toBeGreaterThan(before)
+
+    await m.setServiceEnabled('svc', false)
+    expect(changes).toBeGreaterThan(before + 1)
+  })
+
+  it('没有缓存、首次同步失败：phase=failed，不是一直「同步中」', async () => {
+    fake.servicesBody = 'not json'
+    const m = newMirror()
+    await m.start()
+    await new Promise((r) => setTimeout(r, 300))
+    expect(m.snapshot()).toMatchObject({ phase: 'failed', fromCache: false })
+    expect(m.snapshot().discovery.lastError).not.toBe('')
+  })
+
   it('外链按设备域推导', async () => {
     const port = await freePort()
     fake.servicesBody = JSON.stringify({ services: [{ name: 'svc', container_port: port }] })
