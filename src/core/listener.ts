@@ -133,6 +133,8 @@ export class ServiceListener {
       server.once('error', onError)
       server.listen(this.port, this.host, () => {
         server.off('error', onError)
+        // 端口 0 = 让系统挑一个空闲端口（Kura 内部用的通道），记下真实端口
+        if (this.port === 0) this.port = (server.address() as net.AddressInfo).port
         server.on('error', (error) => {
           this.lastError = error.message
         })
