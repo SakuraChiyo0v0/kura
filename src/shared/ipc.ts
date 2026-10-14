@@ -92,6 +92,7 @@ export interface Transfer {
 
 // ---- v0.2 本机 WebDAV ----
 
+/** 本机 WebDAV 的设置。范围（include/exclude/readOnly）由 NAS 那份统一管，见 NasScopeView。 */
 export interface DavSettingsView {
   enabled: boolean
   port: number

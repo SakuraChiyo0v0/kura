@@ -254,21 +254,24 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     check('新建文件夹', await waitFor(`document.querySelector('[data-testid="file-table"] tr[data-name="smoke-新建"]') !== null`))
     await shot('v0.2-文件.png')
 
-    // ⑦c v0.2 本机 WebDAV：只放行 /volume1/docs，外部程序直接发 HTTP 验证范围
+    // ⑦c v0.2 本机 WebDAV：范围现在由 NAS 那份统一管，改范围 → 外部 HTTP 验证
     const dav = ctx.davUrl()
     const rootBefore = await httpSend('PROPFIND', dav, { depth: '1' })
     check('本机 WebDAV 可用', rootBefore.status === 207 && rootBefore.body.includes('/volume1/'), `${rootBefore.status}`)
     await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.includes('本机 WebDAV'))?.click()`)
-    await waitFor(`document.querySelector('[data-testid="dav-include"]') !== null`)
+    await waitFor(`document.querySelector('[data-testid="scope-include"]') !== null`)
     // 默认放行 /：先移除，再加 /volume1/docs，并排除一个不存在的子目录（验证排除列表能保存）
-    await js(`document.querySelector('[data-testid="dav-include"] button[aria-label="移除 /"]')?.click()`)
+    await js(`document.querySelector('[data-testid="scope-include"] button[aria-label="移除 /"]')?.click()`)
     await fill('添加放行目录', '/volume1/docs')
-    await js(`document.querySelector('[data-testid="dav-include"] .kura-rules__add button[type="submit"]')?.click()`)
+    await js(`document.querySelector('[data-testid="scope-include"] .kura-rules__add button[type="submit"]')?.click()`)
     await fill('添加排除目录', '/volume1/docs/tmp')
-    await js(`document.querySelector('[data-testid="dav-exclude"] .kura-rules__add button[type="submit"]')?.click()`)
+    await js(`document.querySelector('[data-testid="scope-exclude"] .kura-rules__add button[type="submit"]')?.click()`)
     await delay(150)
-    await clickButton('保存')
-    await delay(800)
+    await js(`document.querySelector('[data-testid="scope-save"]')?.click()`)
+    await delay(900)
+    // 范围是**整体替换**：删掉的 / 必须真的没了（合并式实现这里会失败）
+    const scopeAfter = await js<{ include: string[]; exclude: string[] }>(`window.kura.nasScope.get().then(s => ({ include: s.include, exclude: s.exclude }))`)
+    check('范围保存是整体替换（删掉的条目真的没了）', scopeAfter.include.join() === '/volume1/docs' && scopeAfter.exclude.join() === '/volume1/docs/tmp', JSON.stringify(scopeAfter))
     const root = await httpSend('PROPFIND', dav, { depth: '1' })
     const v1 = await httpSend('PROPFIND', `${dav}volume1/`, { depth: '1' })
     const hidden = await httpGet(`${dav}volume1/private/secret.txt`)
@@ -278,17 +281,9 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
       !root.body.includes('/home/') && v1.body.includes('/volume1/docs/') && !v1.body.includes('private') && hidden.status === 404 && allowed.body === 'hello from smoke nas',
       `root含home=${root.body.includes('/home/')} v1含private=${v1.body.includes('private')} secret=${hidden.status} readme=${allowed.status}`,
     )
-    const saved = (() => {
-      try {
-        return JSON.parse(readFileSync(join(ctx.userData, 'webdav.json'), 'utf8')) as { include: string[]; exclude: string[] }
-      } catch {
-        return undefined
-      }
-    })()
-    check('范围设置落盘', saved?.include.join() === '/volume1/docs' && saved?.exclude.join() === '/volume1/docs/tmp', JSON.stringify(saved))
     await fill('NAS 路径', '/volume1/private')
     await js(`[...document.querySelectorAll('.kura-dav .kura-rules__add button')].find(b => b.textContent.trim() === '检查')?.click()`)
-    check('可见性自检', await waitFor(`document.querySelector('[data-testid="dav-probe"]')?.dataset.visibility === 'hidden'`))
+    check('可见性自检', await waitFor(`document.querySelector('[data-testid="scope-probe"]')?.dataset.visibility === 'hidden'`))
     await shot('v0.2-本机WebDAV.png')
 
     // ⑦d v0.2 终端：**不需要任何凭据**（认的是映射层的网关会话）→ 直接开标签 → 键入回显

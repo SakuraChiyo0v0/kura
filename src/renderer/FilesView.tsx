@@ -25,7 +25,7 @@ import {
   useToast,
 } from '@sakura-ui/react'
 import { humanBytes } from '../core/stats.js'
-import type { DavCheckResult, DavSettingsView, DavStatusView, FileEntry, Transfer } from '../shared/ipc.js'
+import type { DavSettingsView, DavStatusView, FileEntry, NasScopeCheck, NasScopeView, Transfer } from '../shared/ipc.js'
 
 const icon = { size: 16, strokeWidth: 1.7, 'aria-hidden': true } as const
 
@@ -415,8 +415,6 @@ function LocalDavPanel() {
   const [status, setStatus] = useState<DavStatusView | null>(null)
   const [draft, setDraft] = useState<DavSettingsView | null>(null)
   const [saving, setSaving] = useState(false)
-  const [probe, setProbe] = useState('/volume1')
-  const [probeResult, setProbeResult] = useState<DavCheckResult | null>(null)
 
   const refresh = useCallback(async () => {
     if (!window.kura) return
@@ -449,7 +447,7 @@ function LocalDavPanel() {
         </header>
         <p className="kura-form__note">
           给本机其他程序用：资源管理器「映射网络驱动器」、播放器、同步工具都填这个地址，无需账号密码，只能从本机访问。
-          看到的是下面「暴露范围」裁剪后的 NAS 目录。
+          看到的是「暴露范围」裁剪后的 NAS 目录 —— 范围和文件页、Z: 盘共用同一份，改在下面。
         </p>
         <div className="kura-card__addr">
           <code className="kura-card__local" data-testid="dav-url">
@@ -469,11 +467,10 @@ function LocalDavPanel() {
 
       <section className="kura-section">
         <header className="kura-section__head">
-          <h2>设置</h2>
+          <h2>本机服务设置</h2>
         </header>
         <div className="kura-dav__basics">
           <SwitchField label="启用" description="关掉后本机端口释放，文件页的浏览不受影响" checked={draft.enabled} onCheckedChange={(v) => set('enabled', v)} />
-          <SwitchField label="只读" description="外部程序只能看、不能改（不影响 Kura 自己的文件页）" checked={draft.readOnly} onCheckedChange={(v) => set('readOnly', v)} />
           <TextField
             label="本机端口"
             inputMode="numeric"
@@ -481,22 +478,7 @@ function LocalDavPanel() {
             onChange={(e) => set('port', Number(e.target.value.replace(/\D/g, '').slice(0, 5)) || 0)}
           />
         </div>
-        <div className="kura-dav__rules">
-          <RuleList
-            testId="dav-include"
-            label="放行目录"
-            description="这些目录及其下所有内容可见。只放行 / 等于整个 NAS WebDAV。上级目录会自动露出通往它的路径（只读）。"
-            rules={draft.include}
-            onChange={(v) => set('include', v)}
-          />
-          <RuleList
-            testId="dav-exclude"
-            label="排除目录"
-            description="优先于放行：放行了 /volume1 又想挡住其中一个子目录，就加在这里。按路径前缀判断，写目录本身即可。"
-            rules={draft.exclude}
-            onChange={(v) => set('exclude', v)}
-          />
-        </div>
+        <p className="kura-form__note">范围与只读都在下面那两节，它们影响的不只是本机 WebDAV，所以没放在这里。</p>
         <div className="kura-form__actions">
           <Button
             disabled={!dirty || saving}
@@ -507,7 +489,7 @@ function LocalDavPanel() {
                 .then((next) => {
                   setStatus(next)
                   setDraft(next.settings)
-                  toast.notify({ title: '已保存', description: '新的范围对下一个请求立即生效', tone: 'success' })
+                  toast.notify({ title: '已保存', tone: 'success' })
                 })
                 .catch((caught: Error) => toast.notify({ title: '保存失败', description: caught.message, tone: 'error', duration: 0 }))
                 .finally(() => setSaving(false))
@@ -521,17 +503,133 @@ function LocalDavPanel() {
         </div>
       </section>
 
+      <NasScopePanel />
+    </div>
+  )
+}
+
+/**
+ * NAS 侧那份暴露范围。放在 NAS 的 kura-server 上，客户端走网关读写 ——
+ * 它是**唯一**一份范围：文件页的浏览、本机 WebDAV、Z: 盘、外部程序都由它裁。
+ *
+ * 保存是整体替换（服务端契约如此）：删一条再保存必须真的删掉。
+ */
+function NasScopePanel() {
+  const toast = useToast()
+  const [scope, setScope] = useState<NasScopeView | null>(null)
+  const [draft, setDraft] = useState<NasScopeView | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const [probe, setProbe] = useState('/volume1')
+  const [probeResult, setProbeResult] = useState<NasScopeCheck | null>(null)
+
+  const refresh = useCallback(async () => {
+    if (!window.kura) return
+    try {
+      const next = await window.kura.nasScope.get()
+      setScope(next)
+      setLoadError('')
+      setDraft((prev) => prev ?? next)
+    } catch (caught) {
+      // 读不到就说清为什么（映射没起来 / 网关没有这个接口 —— 旧版 kura-server）
+      setLoadError((caught as Error).message)
+    }
+  }, [])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  if (loadError) {
+    return (
+      <section className="kura-section">
+        <header className="kura-section__head">
+          <h2>暴露范围</h2>
+        </header>
+        <p className="kura-banner" data-tone="warning">
+          读不到 NAS 上的暴露范围：{loadError}
+          <br />
+          范围存在 NAS 的 kura-server 上。确认映射已在运行，且 NAS 上的镜像够新（旧版还没有这个接口）。
+        </p>
+      </section>
+    )
+  }
+  if (!scope || !draft) return null
+
+  const dirty = JSON.stringify(draft) !== JSON.stringify(scope)
+  const set = <K extends keyof NasScopeView>(key: K, value: NasScopeView[K]) => setDraft({ ...draft, [key]: value })
+
+  return (
+    <>
+      <section className="kura-section">
+        <header className="kura-section__head">
+          <h2>暴露范围</h2>
+          <span className="kura-form__note">存在 NAS 上，与 NAS 管理页共用同一份</span>
+        </header>
+        <p className="kura-form__note">
+          文件页的浏览、本机 WebDAV、Z: 盘、以及给其他程序用的 WebDAV，看到的都是这份范围裁剪后的结果。改完立即生效。
+        </p>
+        <div className="kura-dav__rules">
+          <RuleList
+            testId="scope-include"
+            label="放行目录"
+            description="这些目录及其下所有内容可见。上级目录会自动露出通往它的路径（只读）。"
+            rules={draft.include}
+            onChange={(v) => set('include', v)}
+          />
+          <RuleList
+            testId="scope-exclude"
+            label="排除目录"
+            description="优先于放行：放行了 /volume1 又想挡住其中一个子目录，就加在这里。按路径前缀判断，写目录本身即可，支持 * 通配。"
+            rules={draft.exclude}
+            onChange={(v) => set('exclude', v)}
+          />
+        </div>
+        <SwitchField
+          label="只读"
+          description="所有走 WebDAV 的读写都变成只读（文件页、本机 WebDAV、Z: 盘都受影响）"
+          checked={draft.readOnly}
+          onCheckedChange={(v) => set('readOnly', v)}
+        />
+        <div className="kura-form__actions">
+          <Button
+            data-testid="scope-save"
+            disabled={!dirty || saving}
+            onClick={() => {
+              setSaving(true)
+              void window
+                .kura!.nasScope.save(draft)
+                .then((next) => {
+                  setScope(next)
+                  setDraft(next)
+                  toast.notify({ title: '已保存', description: '新的范围对下一个请求立即生效', tone: 'success' })
+                })
+                .catch((caught: Error) => toast.notify({ title: '保存失败', description: caught.message, tone: 'error', duration: 0 }))
+                .finally(() => setSaving(false))
+            }}
+          >
+            {saving ? '保存中…' : '保存'}
+          </Button>
+          <Button variant="ghost" disabled={JSON.stringify(draft) === JSON.stringify(scope)} onClick={() => setDraft({ ...scope, ...scope.defaults })}>
+            恢复默认
+          </Button>
+          <Button variant="ghost" disabled={!dirty} onClick={() => setDraft(scope)}>
+            撤销改动
+          </Button>
+        </div>
+      </section>
+
       <section className="kura-section">
         <header className="kura-section__head">
           <h2>可见性自检</h2>
         </header>
-        <p className="kura-form__note">输一个 NAS 路径，看它按当前已保存的规则能不能被外部程序看到、写入，以及是哪条规则决定的。</p>
+        <p className="kura-form__note">输一个 NAS 路径，看它按当前已保存的规则能不能被看到、写入，以及是哪条规则决定的。</p>
         <form
           className="kura-rules__add"
           onSubmit={(event) => {
             event.preventDefault()
             void window
-              .kura!.dav.check(probe)
+              .kura!.nasScope.check(probe)
               .then(setProbeResult)
               .catch((caught: Error) => toast.notify({ title: '自检失败', description: caught.message, tone: 'error' }))
           }}
@@ -542,7 +640,7 @@ function LocalDavPanel() {
           </Button>
         </form>
         {probeResult && (
-          <p className="kura-dav__probe" data-testid="dav-probe" data-visibility={probeResult.visibility}>
+          <p className="kura-dav__probe" data-testid="scope-probe" data-visibility={probeResult.visibility}>
             <StatusBadge tone={probeResult.visibility === 'full' ? 'success' : probeResult.visibility === 'ancestor' ? 'warning' : 'neutral'} size="sm">
               {probeResult.visibility === 'full' ? (probeResult.writable ? '可见 · 可写' : '可见 · 只读') : probeResult.visibility === 'ancestor' ? '仅路过' : '不可见'}
             </StatusBadge>
@@ -551,12 +649,12 @@ function LocalDavPanel() {
           </p>
         )}
       </section>
-    </div>
+    </>
   )
 }
 
 export function FilesView() {
-  // MotionTabs 切走会卸载内容：浏览位置放在 Browser 里随它重置是可以接受的，设置草稿在 LocalDavPanel 里同理
+  // MotionTabs 切走会卸载内容：浏览位置放在 Browser 里随它重置是可以接受的，范围草稿在面板里同理
   const [tab, setTab] = useState('browse')
   return (
     <MotionTabs

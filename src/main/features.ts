@@ -208,8 +208,11 @@ export class LocalDavService {
     const saved = readJson<Partial<DavServerSettings>>(this.file)
     // 冒烟时换一个空闲端口：默认 18006 可能被日常在跑的 Kura 占着
     const smokePort = process.env.KURA_SMOKE === '1' ? Number(process.env.SMOKE_DAV_PORT) || undefined : undefined
+    // 范围（include/exclude/readOnly）**不在这里配**：只有 NAS 侧那一份说了算（见 NasScopeService）。
+    // 本机这层只做端口转发，范围由上游 kura-server 裁剪 —— 从磁盘读回来的旧 include/exclude 一律丢掉，
+    // 免得老配置文件把 NAS 的范围又收窄一次（那种「文件页看得见、Z: 盘看不见」最难查）。
     this.server = new DavServer({
-      settings: { ...davServerDefaults, ...saved, ...(smokePort ? { port: smokePort } : {}) },
+      settings: { ...davServerDefaults, ...saved, include: davServerDefaults.include, exclude: davServerDefaults.exclude, readOnly: false, ...(smokePort ? { port: smokePort } : {}) },
       upstream: () => requireMirror(deps).internalEndpoint(webdavService),
       log: deps.log,
     })
@@ -244,29 +247,19 @@ export class LocalDavService {
     }
   }
 
+  /** 只存传输层设置（启用 / 端口），范围不归这层管。 */
   async save(input: DavSettingsView): Promise<DavStatusView> {
     const port = Number(input.port)
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`端口 ${input.port} 不合法`)
     const next: DavServerSettings = {
+      ...this.server.current(),
       enabled: Boolean(input.enabled),
       port,
-      readOnly: Boolean(input.readOnly),
-      include: normalizeRules(input.include.filter((r) => r.trim())),
-      exclude: normalizeRules(input.exclude.filter((r) => r.trim())),
     }
-    if (next.include.length === 0) throw new Error('至少要放行一个目录（想全部关掉就关「启用」开关）')
-    if (next.include.length > 200 || next.exclude.length > 200) throw new Error('规则太多（每类最多 200 条）')
-    // 端口等运行时改动先做，成功了才落盘：失败时磁盘上留的是仍在生效的那份
+    // 运行时改动先做，成功了才落盘：失败时磁盘上留的是仍在生效的那份
     await this.server.apply(next)
     writeJsonAtomic(this.file, this.server.current())
     return this.view()
-  }
-
-  check(path: string): DavCheckResult {
-    const p = normalizeDavPath(path)
-    const scope = this.server.current()
-    const result = visibilityOf(p, scope)
-    return { path: p, visibility: result.visibility, reason: result.reason, writable: !writeDenial(p, scope, scope.readOnly, 'PUT') }
   }
 }
 

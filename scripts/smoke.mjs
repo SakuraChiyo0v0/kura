@@ -52,6 +52,19 @@ function davEntry(p) {
     dir ? '<D:resourcetype><D:collection/></D:resourcetype>' : `<D:resourcetype/><D:getcontentlength>${data.length}</D:getcontentlength>`
   }<D:getlastmodified>${new Date().toUTCString()}</D:getlastmodified></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`
 }
+// NAS 侧的暴露范围（kura-server 的 state/webdav.json）。真机上这层在 rclone 前面，
+// 冒烟里就由这个假 NAS 自己扮演：文件和列表都按它裁 —— 这样「改范围 → 外部程序看到的变化」
+// 才是真在测服务端契约，而不是测客户端自己算的。
+let scope = { include: ['/'], exclude: [], readOnly: false }
+const inScope = (p) => {
+  const norm = p.length > 1 ? p.replace(/\/+$/, '') : '/'
+  const covered = (r) => norm === r || norm.startsWith(r === '/' ? '/' : r + '/')
+  if (scope.include.some((r) => r !== '/' && covered(r) && !scope.exclude.some((e) => norm === e || norm.startsWith(e + '/')))) return true
+  if (scope.include.some(covered)) return !scope.exclude.some((e) => norm === e || norm.startsWith(e + '/'))
+  // 上级「路过」：某个放行目录在这个路径下面，就露出来（只读）—— 与 dav-scope 的 ancestor 一致
+  return scope.include.some((r) => r.startsWith(norm === '/' ? '/' : norm + '/'))
+}
+
 async function handleDav(req, res, body) {
   const raw = decodeURIComponent(new URL(req.url, 'http://x').pathname)
   const p = raw.length > 1 ? raw.replace(/\/+$/, '') : '/'
@@ -59,11 +72,13 @@ async function handleDav(req, res, body) {
     res.statusCode = status
     res.end(text)
   }
+  if (!inScope(p)) return end(404, 'not in scope')
   const exists = davFiles.has(p)
   switch (req.method) {
     case 'PROPFIND': {
       if (!exists) return end(404)
-      const kids = davFiles.get(p) === null && req.headers.depth === '1' ? [...davFiles.keys()].filter((k) => k !== p && davParent(k) === p) : []
+      // 范围外的子项要从列表里滤掉，不是只挡直接访问 —— 真 rclone 前面那层就是这么裁的
+      const kids = davFiles.get(p) === null && req.headers.depth === '1' ? [...davFiles.keys()].filter((k) => k !== p && davParent(k) === p && inScope(k)) : []
       res.setHeader('content-type', 'application/xml; charset=utf-8')
       return end(207, `<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">${[p, ...kids].map(davEntry).join('')}</D:multistatus>`)
     }
@@ -179,6 +194,19 @@ const nas = http.createServer(async (req, res) => {
     case '/api/firstfactor':
       // 旧客户端会先登录；kura-server 不做认证，照 Authelia 的形状回 200
       return json({ status: 'OK' })
+    case '/_kura/api/scope': {
+      // 客户端「文件」页读写 NAS 上的暴露范围；契约见 server/src/admin.ts（整体替换）
+      if (req.method === 'GET') {
+        return json({ limits: scope, defaults: { include: ['/'], exclude: [], readOnly: false } })
+      }
+      const patch = JSON.parse(body.toString() || '{}')
+      if (!Array.isArray(patch.include) || !Array.isArray(patch.exclude) || patch.include.length === 0) {
+        res.statusCode = 400
+        return json({ error: '至少要放行一个目录' })
+      }
+      scope = { include: patch.include, exclude: patch.exclude, readOnly: patch.readOnly === true }
+      return json({ limits: scope })
+    }
     case '/__services':
       // 第二轮（重启）故意拖慢清单：证明界面第一帧的卡片来自缓存，而不是等到了网络
       if (slowServicesMs) await new Promise((resolve) => setTimeout(resolve, slowServicesMs))

@@ -311,7 +311,7 @@ function registerKuraIpc(): void {
   // ---- 本机 WebDAV ----
   router.handle(ch.davGet, () => localDav.view())
   router.handle(ch.davSave, (_event, settings: DavSettingsView) => localDav.save(settings))
-  router.handle(ch.davCheck, (_event, path: string) => localDav.check(String(path)))
+  router.handle(ch.davCheck, (_event, path: string) => nasScope.check(String(path)))
 
   // ---- NAS 侧暴露范围（走网关读写 kura-server 上的那一份）----
   router.handle(ch.nasScopeGet, () => nasScope.get())
