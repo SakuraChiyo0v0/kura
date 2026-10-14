@@ -6,7 +6,7 @@
 代码在 `server/`，设计见 `docs/kura-server 设计.md`。设置页、`repo` 结构都在设计文档里，
 这里只写**做了什么、踩了什么坑**。
 
-S1–S5 全在本机做、没碰 NAS；**真机部署（S6）还没做**，每条命令要用户确认。
+S1–S5 全在本机做、没碰 NAS；S6 的镜像链路也已接通（CI 构建推 ghcr），**真机部署仍待做**，每条命令要用户确认。
 
 ## 做了什么
 
@@ -17,7 +17,7 @@ S1–S5 全在本机做、没碰 NAS；**真机部署（S6）还没做**，每�
 | S3 | kura-shell：特权容器里的真 PTY 终端 + exec + 内部令牌 | 已做，resize 生效 |
 | S4 | 管理页 `/_kura/` 与登录页 | 已做 |
 | S5 | 客户端合并凭据、打开 resize、终端不再提 nas-console | 已做 |
-| S6 | 镜像、compose、NAS 并行部署 | **未做**（要碰 NAS） |
+| S6 | 镜像自动发布、compose、NAS 并行部署 | 镜像链路已接通；**NAS 部署未做**（要碰 NAS） |
 
 一个镜像两个入口：`kura-server serve`（网关那套）与 `kura-server shell`（终端执行器）。
 
@@ -67,10 +67,40 @@ resize 被当输入」。这是**服务端**的限制，不是客户端的。kur
   和密码哈希不是一回事。
 - **会话 cookie 不绑域名**（比 Authelia 宽松）：入口只有绿联中继与局域网，设计文档 §十三已记，供判断。
 
+## S6：镜像怎么发、怎么自动更新（沿用现成那套）
+
+镜像不由本机 `docker build`，改由 **GitHub Actions** 构建推 `ghcr.io/sakurachiyo0v0/kura-server`
+（`.github/workflows/kura-server-image.yml`，照 NAS-PROJECTS 里 account-panel 那份改的）：
+push 到 main 命中 `server/**` 或 `src/core/**` 就重建，推 `:latest` / `:<版本>` / `:<sha7>`。
+NAS 上的 watchtower 轮询到 `latest` digest 变了就自动 pull + 重建。整条链路与 NAS 上其它 app 一致。
+
+**一个仓库两个入口、两个容器，都开 watchtower。**
+
+### 6. 坑：watchtower 只重建「镜像变了的那一个」，内部令牌不能每次启动都换
+
+这是接通链路时发现的真问题。watchtower 是**按容器各自重建**的，不是重读 compose 起一套：
+它比对每个容器自己的镜像 digest。早先 kura-server 每次启动都 `internalToken()` 生成新令牌、
+经共享卷写给 kura-shell；kura-shell 启动时**读一次**记住。
+
+于是：只改了 kura-server、watchtower 单独重建它 → 换了新令牌 → 还在跑的 kura-shell 拿的是旧令牌
+→ 它 401 拒掉所有请求 → **终端全断**。容器都在 `Up`，日志也不报错，最难查的那种。
+
+改法两条，缺一不可：
+
+- kura-server 侧 `readOrCreateToken`：共享卷上**已经有令牌就沿用**，没有（首次启动）才生成并写下去。
+- kura-shell 侧把令牌做成**每次请求现读**（`ShellOptions.token` 接受 `() => string`）：
+  万一还是换了（比如清了卷），不用重启 kura-shell 就跟上。
+
+顺带一个：`kura-shell` 容器里镜像 ENV `KURA_PORT=8080` 同样生效，而它实际监听 `8890`。
+Dockerfile 的 HEALTHCHECK 原写成只看 `KURA_PORT`，于是 shell 容器的健康检查一直探测错端口 ——
+改成两个都试。这条同样是靠读代码发现的，本机构建不了没法实测。
+
 ## 没验证过的
 
 - **镜像从没在本机构建过**（本机 Docker 没起）。Dockerfile 是照着设计文档写的，node-pty 那段
-  （Alpine 里 `python3 make g++` 编译）尤其没跑过。
-- **绿联中继是否支持 WebSocket** 仍未实测 —— 决定外网下终端能不能用。S6 第一件事测它。
+  （Alpine 里 `python3 make g++` 编译）尤其没跑过 —— 现在交给 CI 真跑一次，成败以 CI 为准。
+- **node-pty 二进制建于 Alpine(musl)，要在 UGOS 宿主机内核上跑**：这是最可能出问题的一处，
+  真机部署时终端能不能开、能不能 resize，看它。
+- **绿联中继是否支持 WebSocket** 仍未实测 —— 决定外网下终端能不能用。部署后第一件事测它。
 - **`pid: host` + `nsenter` 在 node:24-alpine 上**：nas-console 在别的基础镜像上实测可行，换镜像要重测。
 - 客户端 v0.2–v0.3 归档里那条「清单里四个服务偶尔不出现」的偶发问题，与本次无关，仍未定位。
