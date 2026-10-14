@@ -176,4 +176,32 @@ describe('ConsoleTerminal', () => {
     await expect(new ConsoleSession(async () => fake.url, () => ({ token: 'nsc_bad' })).check()).rejects.toThrow(/无效/)
     expect(await new ConsoleSession(async () => fake.url, () => ({ user: 'admin', password: 'pw' })).check()).toMatch(/成功/)
   })
+
+  it('check：凭据留空时吃网关会话 —— 网关认就可用，不认就明确报错', async () => {
+    // kura-server 部署：映射层把网关会话注入了请求，/api/me 直接 200，不需要这一层凭据
+    const gateway = await new GatewayConsole().start()
+    expect(await new ConsoleSession(async () => gateway.url, () => ({} as ConsoleCredentials)).check()).toMatch(/无需单独凭据/)
+    await gateway.stop()
+
+    // 还是独立 nas-console、且没填凭据：/api/me 401 → 给出「要填账号密码」的明确提示，别让用户瞎猜
+    await expect(new ConsoleSession(async () => fake.url, () => ({} as ConsoleCredentials)).check()).rejects.toThrow(/独立的 nas-console/)
+  })
 })
+
+/** 只认网关会话（不看请求里的凭据）：/api/me 一律 200，对应 kura-server 的效果。 */
+class GatewayConsole {
+  readonly server = http.createServer((_req, res) => {
+    res.setHeader('content-type', 'application/json')
+    res.end('{"user":"gw"}')
+  })
+  url = ''
+  async start(): Promise<this> {
+    await new Promise<void>((resolve) => this.server.listen(0, '127.0.0.1', resolve))
+    this.url = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}`
+    return this
+  }
+  async stop() {
+    this.server.closeAllConnections()
+    await new Promise<void>((resolve) => this.server.close(() => resolve()))
+  }
+}

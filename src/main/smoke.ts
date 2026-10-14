@@ -293,14 +293,11 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     check('可见性自检', await waitFor(`document.querySelector('[data-testid="dav-probe"]')?.dataset.visibility === 'hidden'`))
     await shot('v0.2-本机WebDAV.png')
 
-    // ⑦d v0.2 终端：填终端账号（独立 nas-console 那套）→ 测试并保存 → 开标签 → 键入回显
+    // ⑦d v0.2 终端：**不需要任何凭据**（认的是映射层的网关会话）→ 直接开标签 → 键入回显
     await nav('终端')
     await waitFor(`document.querySelector('.kura-term') !== null`)
-    await fill('终端账号', 'smoke-console')
-    await fill('终端密码', 'smoke-console-pass')
-    await clickButton('测试并保存')
     const termReady = await waitFor(`[...document.querySelectorAll('button')].some(b => b.textContent.trim() === '打开终端' && !b.disabled)`, 10_000)
-    check('终端凭据配置', termReady, await js<string>(`document.querySelector('.kura-term')?.innerText.slice(0, 200) ?? ''`))
+    check('终端无需凭据即可用', termReady, await js<string>(`document.querySelector('.kura-term')?.innerText.slice(0, 200) ?? ''`))
     await clickButton('打开终端')
     // 读 xterm 缓冲区（不是渲染出的 DOM：窗口不在前台时渲染帧被节流，DOM 会落后 —— 早先这条因此时好时坏）
     const termText = `document.querySelector('[data-testid="terminal-pane"]')?.kuraText?.() ?? ''`
@@ -314,14 +311,8 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     // resize 真的发出去了（服务端是真 PTY，尺寸不对会错位）；开标签后 xterm 首次 fit 就会发
     const resizeCount = await smokeNasCounter('terminalResize')
     check('终端发送窗口尺寸', resizeCount > 0, `resize 帧数=${resizeCount}`)
-    const consoleDisk = (() => {
-      try {
-        return readFileSync(join(ctx.userData, 'console.json'), 'utf8')
-      } catch {
-        return ''
-      }
-    })()
-    check('终端凭据加密落盘', consoleDisk.length > 0 && !/smoke-console/.test(consoleDisk))
+    // 终端页不再有凭据表单：整页不该出现输入框，也不该留独立凭据文件
+    check('终端页没有凭据表单', await js<boolean>(`document.querySelectorAll('.kura-term input').length === 0`))
     await shot('v0.2-终端.png')
 
     // ⑦e v0.3 模块页：能显示依赖检测结果（不在冒烟里真去下载 rclone）

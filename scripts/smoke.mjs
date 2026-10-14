@@ -32,7 +32,7 @@ const counters = { lookups: 0, terminalResize: 0, terminalResizeCols: 0 }
 let slowServicesMs = 0
 // 假 NAS 上的应用：像真网关那样按 X-Nas-Service 分流到不同的「容器」
 //   webdav      → 内存里的 WebDAV（形态照 rclone serve webdav：href 绝对路径、Destination 带 host 要匹配）
-//   nas-console → /api/login 发 session cookie，WS /api/tty 回显输入
+//   nas-console → 模拟 kura-server：认网关会话（authelia_session），WS /api/tty 回显输入
 //   其它        → 一段 HTML
 const davFiles = new Map([
   ['/', null],
@@ -99,31 +99,25 @@ async function handleDav(req, res, body) {
   }
 }
 
-const consoleSessions = new Set()
 const appServer = http.createServer(async (req, res) => {
   const chunks = []
   for await (const c of req) chunks.push(c)
   const body = Buffer.concat(chunks)
   const service = req.headers['x-nas-service']
   if (service === 'webdav') return handleDav(req, res, body)
-  if (service === 'nas-console' && req.url === '/api/login') {
-    const { username, password } = JSON.parse(body.toString() || '{}')
-    if (username !== 'smoke-console' || password !== 'smoke-console-pass') {
-      res.statusCode = 401
-      return res.end('{"error":"bad"}')
-    }
-    const id = `C${consoleSessions.size + 1}`
-    consoleSessions.add(id)
-    res.setHeader('set-cookie', `session=${id}; Path=/; HttpOnly`)
-    return res.end('{"ok":true}')
+  // nas-console 端点模拟 **kura-server**（不是独立 nas-console）：认映射层带过来的网关会话
+  // （authelia_session=SMOKE），不认什么账号密码 —— 终端不需要单独凭据这一点才测得出来。
+  if (service === 'nas-console' && req.url === '/api/me') {
+    res.statusCode = /authelia_session=SMOKE/.test(req.headers.cookie ?? '') ? 200 : 401
+    return res.end('{}')
   }
   res.setHeader('content-type', 'text/html; charset=utf-8')
   res.end(`<h1>fake ${service ?? 'direct'}</h1>`)
 })
 const tty = new WebSocketServer({ noServer: true })
 appServer.on('upgrade', (req, socket, head) => {
-  const cookie = /session=([^;]+)/.exec(req.headers.cookie ?? '')?.[1]
-  if (req.headers['x-nas-service'] !== 'nas-console' || !cookie || !consoleSessions.has(cookie)) {
+  const gw = /authelia_session=SMOKE/.test(req.headers.cookie ?? '')
+  if (req.headers['x-nas-service'] !== 'nas-console' || !gw) {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
     return socket.destroy()
   }

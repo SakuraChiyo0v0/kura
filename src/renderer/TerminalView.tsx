@@ -3,8 +3,8 @@ import { Plus, RotateCcw, SquareTerminal, X } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { Button, EmptyState, FluidSegmented, StatusBadge, TextField, useToast } from '@sakura-ui/react'
-import type { TerminalConfigForm, TerminalConfigView, TerminalEventView } from '../shared/ipc.js'
+import { Button, EmptyState, StatusBadge } from '@sakura-ui/react'
+import type { TerminalConfigView, TerminalEventView } from '../shared/ipc.js'
 
 const icon = { size: 16, strokeWidth: 1.7, 'aria-hidden': true } as const
 
@@ -117,92 +117,10 @@ function XtermPane({ tab, active }: { tab: Tab; active: boolean }) {
   return <div className="kura-term__pane" ref={holder} hidden={!active} data-testid="terminal-pane" data-terminal={tab.id} />
 }
 
-function ConfigForm({ config, onSaved }: { config: TerminalConfigView; onSaved: (next: TerminalConfigView) => void }) {
-  const toast = useToast()
-  const [form, setForm] = useState<TerminalConfigForm>({ method: config.method, user: config.user, password: '', token: '' })
-  const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState('')
-  const set = <K extends keyof TerminalConfigForm>(k: K, v: TerminalConfigForm[K]) => {
-    setForm((prev) => ({ ...prev, [k]: v }))
-    setResult('')
-  }
-  const kept = (has: boolean) => (has ? '留空则沿用已保存的' : undefined)
-
-  return (
-    <form
-      className="kura-form kura-term__config"
-      onSubmit={(event) => {
-        event.preventDefault()
-        setBusy(true)
-        void window
-          .kura!.terminal.test(form)
-          .then(async (message) => {
-            setResult(message)
-            onSaved(await window.kura!.terminal.saveConfig(form))
-            toast.notify({ title: '已保存', description: message, tone: 'success' })
-          })
-          .catch((caught: Error) => setResult(`失败：${caught.message}`))
-          .finally(() => setBusy(false))
-      }}
-    >
-      <fieldset className="kura-form__group">
-        <legend>终端凭据</legend>
-        <p className="kura-form__note">
-          绿联账号与网关由映射层处理，新版 kura-server 下终端不需要单独凭据 —— 下面的留空即可，会直接经网关会话连上。
-          只有 NAS 上还是独立的 nas-console 时才需要填它自己的账号（网页终端那套），或在它的 Token 页生成的 API Token。加密保存在本机。
-        </p>
-        <FluidSegmented
-          label="登录方式"
-          options={[
-            { value: 'password', label: '账号密码' },
-            { value: 'token', label: 'API Token' },
-          ]}
-          value={form.method}
-          onValueChange={(v) => set('method', v as TerminalConfigForm['method'])}
-        />
-        {form.method === 'password' ? (
-          <div className="kura-form__row">
-            <TextField label="终端账号" value={form.user} onChange={(e) => set('user', e.target.value)} autoComplete="off" />
-            <TextField
-              label="终端密码"
-              type="password"
-              value={form.password}
-              description={kept(config.hasPassword)}
-              onChange={(e) => set('password', e.target.value)}
-              autoComplete="new-password"
-            />
-          </div>
-        ) : (
-          <TextField
-            label="API Token"
-            type="password"
-            placeholder="nsc_…"
-            value={form.token}
-            description={kept(config.hasToken)}
-            onChange={(e) => set('token', e.target.value)}
-            autoComplete="off"
-          />
-        )}
-      </fieldset>
-      {result && (
-        <p className="kura-form__note" data-testid="terminal-config-result">
-          {result}
-        </p>
-      )}
-      <div className="kura-form__actions">
-        <Button type="submit" disabled={busy}>
-          {busy ? '测试中…' : '测试并保存'}
-        </Button>
-      </div>
-    </form>
-  )
-}
-
 export function TerminalView() {
   const [config, setConfig] = useState<TerminalConfigView | null>(null)
   const [tabs, setTabs] = useState<Tab[]>([])
   const [active, setActive] = useState('')
-  const [showConfig, setShowConfig] = useState(false)
   const seq = useRef(0)
 
   useEffect(() => {
@@ -252,28 +170,14 @@ export function TerminalView() {
   }
 
   if (!config) return null
-  const configured = config.method === 'token' ? config.hasToken : Boolean(config.user && config.hasPassword)
-
-  if (!configured || showConfig) {
+  // 终端凭据不再是「要不要配」的事：终端连的就是映射层/网关那一层，kura-server 下没这层凭据。
+  // 只有在服务端清单里根本没有终端服务时才给一句说明（这是部署问题，不是让用户去填凭据）。
+  if (!config.available) {
     return (
-      <div className="kura-term">
-        {!config.available && (
-          <p className="kura-banner" data-tone="warning">
-            服务端清单里还没有终端服务：NAS 上要部署 kura-server（或旧的 nas-console），并在网关登记，映射层同步到后终端才能连。
-          </p>
-        )}
-        <ConfigForm
-          config={config}
-          onSaved={(next) => {
-            setConfig(next)
-            setShowConfig(false)
-          }}
-        />
-        {configured && (
-          <Button variant="ghost" onClick={() => setShowConfig(false)}>
-            返回终端
-          </Button>
-        )}
+      <div className="kura-term" data-mode="blocked">
+        <p className="kura-banner" data-tone="warning">
+          服务端清单里还没有终端服务：NAS 上要部署 kura-server（或旧的 nas-console），并在网关登记，映射层同步到后终端才能连。
+        </p>
       </div>
     )
   }
@@ -281,7 +185,7 @@ export function TerminalView() {
   const current = tabs.find((t) => t.id === active)
 
   return (
-    <div className="kura-term">
+    <div className="kura-term" data-mode="term">
       <div className="kura-term__bar" role="tablist" aria-label="终端标签">
         {tabs.map((tab) => (
           <div key={tab.id} className="kura-term__tab" data-active={tab.id === active || undefined} data-status={tab.status}>
@@ -308,9 +212,6 @@ export function TerminalView() {
             重新连接
           </Button>
         )}
-        <Button size="sm" variant="ghost" onClick={() => setShowConfig(true)}>
-          终端设置
-        </Button>
       </div>
       {!config.available && (
         <p className="kura-banner" data-tone="warning">

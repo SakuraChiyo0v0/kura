@@ -335,7 +335,9 @@ export class TerminalService {
       token: form.token.trim() || saved.token,
     }
     if (method === 'token' && !/^nsc_/.test(next.token)) throw new Error('API Token 应以 nsc_ 开头（在 nas-console 网页的 Token 页生成）')
-    if (method === 'password' && (!next.user || !next.password)) throw new Error('请填写 nas-console 的账号和密码')
+    // 账号密码**可以都留空**：kura-server 部署下由映射层带网关会话，不需要这一层凭据（与页面文案一致）。
+    // 但不能只填一半——那是误操作，会得到一个怎么都连不上的会话。
+    if (method === 'password' && Boolean(next.user) !== Boolean(next.password)) throw new Error('账号和密码要么都填，要么都留空（留空 = 用网关会话）')
     return next
   }
 
