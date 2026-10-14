@@ -5,9 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { AuditLog } from '../src/shell/audit.js'
-import { adminPage, createAdminHandler, loginPage } from '../src/admin.js'
-import { Auth } from '../src/auth.js'
-import { hashPassword } from '../src/password.js'
+import { adminPage, createAdminHandler } from '../src/admin.js'
 import { Registry } from '../src/registry.js'
 import { createKuraServer } from '../src/server.js'
 import { TokenStore } from '../src/tokens.js'
@@ -15,7 +13,8 @@ import { WebdavFeature, webdavDefaults } from '../src/webdav.js'
 
 /**
  * S4 判据：范围、清单、Token 都能在页面上改。
- * 用真 kura-server（含 admin 路由）跑一遍登录 → 改范围 → 加服务 → 建 Token 的完整流程。
+ * 用真 kura-server（含 admin 路由）跑一遍改范围 → 加服务 → 建 Token 的完整流程。
+ * kura-server 不做认证，管理页直接打开。
  */
 
 let server: http.Server
@@ -24,25 +23,18 @@ let dir = ''
 let webdav: WebdavFeature
 let registry: Registry
 let tokens: TokenStore
-const user = 'gw'
-const password = 's3cret'
-let cookie = ''
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'kura-admin-'))
-  const auth = new Auth({ user, passwordHash: await hashPassword(password, { memory: 1024, passes: 1, parallelism: 1 }) })
   registry = new Registry(join(dir, 'services.json'), { webdav: 18005, 'nas-console': 8890 })
   registry.save([])
   webdav = new WebdavFeature({ settings: { ...webdavDefaults, port: 1 }, settingsFile: join(dir, 'webdav.json') })
   tokens = new TokenStore(join(dir, 'tokens.json'))
   const audit = new AuditLog(join(dir, 'audit.log'))
-  const admin = createAdminHandler({ auth, registry, webdav, tokens, auditTail: (n) => audit.tail(n), shellAlive: async () => true })
-  server = createKuraServer({ auth, registry, admin })
+  const admin = createAdminHandler({ registry, webdav, tokens, auditTail: (n) => audit.tail(n), shellAlive: async () => true })
+  server = createKuraServer({ registry, admin })
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
-  // 登录拿 cookie
-  const res = await fetch(`${base}/_kura/login`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ username: user, password, rd: '/_kura/' }), redirect: 'manual' })
-  cookie = res.headers.getSetCookie()[0]!.split(';')[0]!
 })
 
 afterEach(async () => {
@@ -52,28 +44,12 @@ afterEach(async () => {
 })
 
 const get = (path: string, headers: Record<string, string> = {}): Promise<{ status: number; headers: Headers; body: string }> =>
-  fetch(`${base}${path}`, { headers: { cookie, ...headers }, redirect: 'manual' }).then(async (r) => ({ status: r.status, headers: r.headers, body: await r.text() }))
+  fetch(`${base}${path}`, { headers, redirect: 'manual' }).then(async (r) => ({ status: r.status, headers: r.headers, body: await r.text() }))
 const post = (path: string, form: Record<string, string>): Promise<{ status: number; headers: Headers }> =>
-  fetch(`${base}${path}`, { method: 'POST', headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(form), redirect: 'manual' }).then((r) => ({ status: r.status, headers: r.headers }))
+  fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(form), redirect: 'manual' }).then((r) => ({ status: r.status, headers: r.headers }))
 
 describe('管理页', () => {
-  it('未登录：浏览器 302 去登录页；登录页能打开', async () => {
-    const anon = await fetch(`${base}/_kura/`, { headers: { accept: 'text/html' }, redirect: 'manual' })
-    expect(anon.status).toBe(302)
-    expect(anon.headers.get('location')).toContain('/_kura/login?rd=')
-    const page = await fetch(`${base}/_kura/login`)
-    expect(page.status).toBe(200)
-    expect(await page.text()).toContain('用 NAS 网关账号登录')
-  })
-
-  it('密码错：登录页带错误，不发 cookie', async () => {
-    const res = await fetch(`${base}/_kura/login`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ username: user, password: 'nope' }), redirect: 'manual' })
-    expect(res.status).toBe(401)
-    expect(res.headers.getSetCookie()).toEqual([])
-    expect(await res.text()).toContain('Authentication failed')
-  })
-
-  it('登录后页面渲染出范围、清单、Token、审计四块', async () => {
+  it('不需要登录：直接打开就渲染出范围、清单、Token、审计四块', async () => {
     const res = await get('/_kura/')
     expect(res.status).toBe(200)
     for (const section of ['WebDAV 暴露范围', '可见性自检', '服务清单', 'API Token', '最近审计', 'kura-server']) {
@@ -132,17 +108,10 @@ describe('管理页', () => {
     expect(tokens.list()).toHaveLength(0)
   })
 
-  it('退出登录：清 cookie 回登录页', async () => {
-    const res = await post('/_kura/logout', {})
-    expect(res.status).toBe(302)
-    expect(res.headers.get('location')).toBe('/_kura/login')
-    expect(res.headers.get('set-cookie')).toContain('Max-Age=0')
-  })
 })
 
 describe('页面模板', () => {
-  it('登录页与主页都转义用户可控的内容（防 XSS）', () => {
-    expect(loginPage('/_kura/', '<script>')).toContain('&lt;script&gt;')
+  it('主页转义用户可控的内容（防 XSS）', () => {
     const html = adminPage({
       webdav: { limits: () => ({ include: ['/volume1'], exclude: [], readOnly: false }), status: () => ({ running: true, error: '', uptimeMs: 1000, restarts: 0, upstreamError: '' }) } as unknown as WebdavFeature,
       registry: { list: () => [{ name: '<img src=x onerror=alert(1)>', backend: 'http://x', rewriteRedirect: false }], error: () => '' } as unknown as Registry,

@@ -1,23 +1,29 @@
 import http from 'node:http'
 import https from 'node:https'
 import type net from 'node:net'
-import { Auth, sessionCookie, sessionToken } from './auth.js'
 import type { Registry } from './registry.js'
 
 /**
- * kura-server 的 HTTP 入口：认证 + 反代 + 服务清单（设计文档 §二–§五）。
+ * kura-server 的 HTTP 入口：反代 + 服务清单 + 管理页（设计文档 §二–§五）。
+ *
+ * **kura-server 自己不做认证**：它要么只从绿联中继进来（中继已经认证过绿联账号），
+ * 要么在局域网里直连（此时不加第二层认证，由更外层的手段保护 —— 见 AGENTS.md）。
+ * 客户端因此只在设置里保留绿联那一组凭据，网关只填端口。
  *
  * 分流规则照搬现网 nginx（server/nginx/conf.d/default.conf）：
  * 1. `X-Nas-Service` 头优先；
- * 2. 没有头时看路径第一段，**只认清单里的名字**（白名单。现网踩过：写成通配后 /api/firstfactor
- *    被当成服务名 "api"，门户登录整个坏掉）；
- * 3. 都不是 = 门户请求：/api/firstfactor、/api/logout、/__services、/_kura/。
+ * 2. 没有头时看路径第一段，**只认清单里的名字**（白名单。现网踩过：写成通配后路径第一段
+ *    被当成服务名，门户路径整个坏掉）；
+ * 3. 都不是 = 门户请求：/api/health、/__services、/_kura/。
  *
- * 内置服务（webdav、nas-console）的处理器由调用方注入（S2、S3），S1 只认识名字。
+ * 内置服务（webdav、nas-console）的处理器由调用方注入。
  */
 
-/** 转发给应用时要去掉的 cookie：kura 自己的会话、绿联中继的令牌 —— 应用不该看到网关凭据。 */
-const strippedCookies = [sessionCookie, 'ugreen-proxy-token']
+/** 转发给应用时要去掉的 cookie：绿联中继的令牌、旧客户端残留的网关会话 —— 应用不该看到它们。 */
+const strippedCookies = ['ugreen-proxy-token', 'authelia_session']
+
+/** 没有用户可归属时转发头里的标识（应用按 remote-user 做 ACL 时至少有个稳定的值）。 */
+export const anonymousUser = 'kura'
 
 const hopByHop = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'])
 
@@ -34,27 +40,21 @@ export function stripCookies(header: string | undefined): string {
 }
 
 export interface BuiltinHandler {
-  request(req: http.IncomingMessage, res: http.ServerResponse, user: string, path: string): void
-  upgrade?(req: http.IncomingMessage, socket: net.Socket, head: Buffer, user: string, path: string): void
+  request(req: http.IncomingMessage, res: http.ServerResponse, path: string): void
+  upgrade?(req: http.IncomingMessage, socket: net.Socket, head: Buffer, path: string): void
 }
 
-/** 管理页 `/_kura/`（含登录页）。由 main 注入，测试可以只给一个假的。 */
+/** 管理页 `/_kura/`。由 main 注入，测试可以只给一个假的。 */
 export interface AdminHandler {
-  handle(req: http.IncomingMessage, res: http.ServerResponse, user: string, path: string): Promise<void>
-  /** 登录页 HTML（未认证时浏览器被 302 到这里） */
-  loginPage(redirect: string, error?: string): string
-  /** 处理登录表单：成功返回 Set-Cookie 值，失败返回错误文案 */
-  login(source: string, body: string): Promise<{ ok: true; cookie: string } | { ok: false; error: string }>
+  handle(req: http.IncomingMessage, res: http.ServerResponse, path: string): Promise<void>
 }
 
 export interface ServerOptions {
-  auth: Auth
   registry: Registry
   builtins?: Record<string, BuiltinHandler>
   admin?: AdminHandler
-  /** 测试注入：后端请求用的 agent */
   log?: (message: string, fields?: Record<string, unknown>) => void
-  /** 信任这些来源的 X-Forwarded-For（默认不信任，用 socket 地址做防爆破的键） */
+  /** 信任 X-Forwarded-For（前面还有一层反代时才开），转发头里报真实来源 */
   trustProxy?: boolean
 }
 
@@ -87,19 +87,13 @@ async function readBody(req: http.IncomingMessage, limit = 64 * 1024): Promise<s
   return Buffer.concat(chunks).toString('utf8')
 }
 
-/** 未认证：浏览器（要 HTML）给 302 去登录页，程序给 401 —— 客户端两种都当「会话失效」处理。 */
-function unauthorized(req: http.IncomingMessage, res: http.ServerResponse): void {
-  const wantsHtml = String(req.headers.accept ?? '').includes('text/html')
-  if (wantsHtml) {
-    res.writeHead(302, { location: `/_kura/login?rd=${encodeURIComponent(req.url ?? '/')}`, 'cache-control': 'no-store' })
-    res.end()
-    return
-  }
+/** 不跟随重定向、不区分认证失败：一条提示写清「请求没到应用」。 */
+function unauthorized(_req: http.IncomingMessage, res: http.ServerResponse): void {
   send(res, 401, { status: 'KO', message: 'Unauthorized' })
 }
 
 export function createKuraServer(options: ServerOptions): http.Server {
-  const { auth, registry } = options
+  const { registry } = options
   const log = options.log ?? (() => {})
   const builtins = options.builtins ?? {}
 
@@ -127,79 +121,38 @@ export function createKuraServer(options: ServerOptions): http.Server {
 
   const handlePortal = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     const path = (req.url ?? '/').split('?')[0] ?? '/'
-    if (path === '/api/firstfactor' && req.method === 'POST') {
-      let body: unknown
-      try {
-        body = JSON.parse(await readBody(req))
-      } catch {
-        send(res, 400, { status: 'KO', message: 'Unable to parse body.' })
-        return
-      }
-      const result = await auth.login(source(req), body)
-      if (!result.ok) {
-        if (result.status === 401) log('登录失败', { 来源: source(req) })
-        send(res, result.status, { status: 'KO', message: result.message })
-        return
-      }
-      // 不设 Domain：会话不绑域名（设计文档 §十三），局域网 IP 访问也认
-      send(res, 200, { status: 'OK' }, {
-        'set-cookie': `${sessionCookie}=${result.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${result.maxAgeSeconds}`,
-      })
-      return
-    }
-    if (path === '/api/logout' && req.method === 'POST') {
-      auth.logout(sessionToken(req.headers.cookie))
-      send(res, 200, { status: 'OK' }, { 'set-cookie': `${sessionCookie}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0` })
-      return
-    }
     if (path === '/api/health') {
       send(res, 200, { status: 'OK', app: 'kura-server' })
       return
     }
 
-    // 登录页与登录表单：浏览器被 302 到这里（免认证）
-    if (options.admin && (path === '/_kura/login' || path === '/_kura/login/')) {
-      if (req.method === 'GET') {
-        const rd = new URL(req.url ?? '/', 'http://x').searchParams.get('rd') ?? '/_kura/'
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-        res.end(options.admin.loginPage(rd))
-        return
-      }
-      if (req.method === 'POST') {
-        const result = await options.admin.login(source(req), await readBody(req))
-        if (!result.ok) {
-          res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-          res.end(options.admin.loginPage('/_kura/', result.error))
-          return
-        }
-        res.writeHead(302, { location: '/_kura/', 'set-cookie': result.cookie, 'cache-control': 'no-store' })
-        res.end()
-        return
-      }
+    // 旧客户端（v0.3 及以前）会先登录再访问。这一层已经删了，但直接 404 会让客户端
+    // 报「未知错误」；回一个明确的「不需要登录」由客户端识别成「无需凭据，继续」。
+    if (path === '/api/firstfactor' && req.method === 'POST') {
+      send(res, 200, { status: 'OK', message: 'kura-server 不做认证，直接访问即可' })
+      return
+    }
+    if (path === '/api/logout' && req.method === 'POST') {
+      send(res, 200, { status: 'OK' })
+      return
     }
 
-    // 以下都要登录
-    const user = auth.check(sessionToken(req.headers.cookie))
-    if (!user) {
-      unauthorized(req, res)
-      return
-    }
-    if (options.admin && (path === '/_kura' || path.startsWith('/_kura/'))) {
-      await options.admin.handle(req, res, user, path.slice('/_kura'.length) || '/')
-      return
-    }
     if (path === '/__services' && req.method === 'GET') {
       send(res, 200, { services: await registry.entries() })
       return
     }
     if (path === '/api/user/info') {
-      send(res, 200, { status: 'OK', data: { display_name: user } })
+      send(res, 200, { status: 'OK', data: { display_name: anonymousUser } })
+      return
+    }
+    if (options.admin && (path === '/_kura' || path.startsWith('/_kura/'))) {
+      await options.admin.handle(req, res, path.slice('/_kura'.length) || '/')
       return
     }
     send(res, 404, 'Not found')
   }
 
-  const forward = (req: http.IncomingMessage, res: http.ServerResponse, target: Target, user: string): void => {
+  const forward = (req: http.IncomingMessage, res: http.ServerResponse, target: Target): void => {
     const entry = registry.find(target.name)!
     const backend = new URL(entry.backend)
     const headers: http.OutgoingHttpHeaders = {}
@@ -210,7 +163,7 @@ export function createKuraServer(options: ServerOptions): http.Server {
     const cookie = stripCookies(req.headers.cookie)
     if (cookie) headers.cookie = cookie
     // 与现网 protected-prefix.inc 一致的转发头
-    headers['remote-user'] = user
+    headers['remote-user'] = anonymousUser
     headers['x-forwarded-proto'] = 'https'
     headers['x-forwarded-host'] = String(req.headers.host ?? '')
     headers['x-forwarded-for'] = source(req)
@@ -254,16 +207,14 @@ export function createKuraServer(options: ServerOptions): http.Server {
     void (async () => {
       const target = resolve(req)
       if (!target) return handlePortal(req, res)
-      const user = auth.check(sessionToken(req.headers.cookie))
-      if (!user) return unauthorized(req, res)
       const builtin = builtins[target.name]
       if (builtin) {
         // 路径前缀模式（/webdav/foo）下 req.url 还带着前缀，内置处理器只认 WebDAV 自己的路径
         req.url = target.path
-        return builtin.request(req, res, user, target.path)
+        return builtin.request(req, res, target.path)
       }
       if (!registry.find(target.name)) return send(res, 404, `kura-server：没有「${target.name}」这个服务`)
-      forward(req, res, target, user)
+      forward(req, res, target)
     })().catch((error: Error) => {
       log('处理请求出错', { err: error.message })
       if (!res.headersSent) send(res, 500, 'kura-server：内部错误')
@@ -275,15 +226,14 @@ export function createKuraServer(options: ServerOptions): http.Server {
   server.on('upgrade', (req, socket: net.Socket, head) => {
     socket.on('error', () => {})
     const target = resolve(req)
-    const user = auth.check(sessionToken(req.headers.cookie))
-    if (!target || !user) {
+    if (!target) {
       socket.end('HTTP/1.1 401 Unauthorized\r\nconnection: close\r\n\r\n')
       return
     }
     const builtin = builtins[target.name]
     if (builtin?.upgrade) {
       req.url = target.path
-      return builtin.upgrade(req, socket, head, user, target.path)
+      return builtin.upgrade(req, socket, head, target.path)
     }
     const entry = registry.find(target.name)
     if (!entry) {
@@ -298,7 +248,7 @@ export function createKuraServer(options: ServerOptions): http.Server {
     }
     const cookie = stripCookies(req.headers.cookie)
     if (cookie) headers.cookie = cookie
-    headers['remote-user'] = user
+    headers['remote-user'] = anonymousUser
     const upstream = (backend.protocol === 'https:' ? https : http).request({
       hostname: backend.hostname,
       port: backend.port || undefined,

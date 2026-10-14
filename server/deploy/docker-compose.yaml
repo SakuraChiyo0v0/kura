@@ -1,10 +1,11 @@
 # kura-server 部署（一个镜像两个入口：serve / shell）。
 #
-# 迁移期先用 8898 与旧 sso-gateway（8897）并行，验收通过再换端口（设计文档 §十）。
-#
 #   docker network create sso-net        # 已有就跳过：其他应用容器都在这上面
-#   cp .env.example .env && 填好
+#   cp .env.example .env
 #   docker compose up -d
+#
+# kura-server 不做认证：要么只从绿联中继进来，要么局域网直连（由更外层的手段保护）。
+# .env 里不再有账号密码。
 #
 # 镜像来自 ghcr（CI 构建，见 .github/workflows/kura-server-image.yml），不再本机构建。
 # 要临时用本机构建的镜像：docker build -f server/Dockerfile -t kura-server:local . 然后改下面的 image。
@@ -20,6 +21,10 @@ services:
       # 终端：把请求转给 kura-shell 容器
       KURA_SHELL: http://kura-shell:8890
       KURA_SHELL_TOKEN_FILE: /run/kura-shell/token
+      # 查容器端口映射用（清单里的 host_port）。**必须指到下面挂进来的 docker.sock**：
+      # 不查的话，清单里 host_port 一律为 0，客户端只好拿 container_port 当本机端口——
+      # 两个服务 container_port 相同（如 account-panel 与 bili23-web 都是 8787）时就会撞车、少挂一个。
+      KURA_DOCKER_SOCKET: /var/run/docker.sock
     volumes:
       - ./state:/state
       # WebDAV 暴露宿主文件：整个宿主根挂进来（读写），rclone 在里面 serve。
@@ -32,8 +37,9 @@ services:
       # 内部令牌经这个卷传给 kura-shell；**持久**（不是每次启动换），
       # 所以 watchtower 单独重建 kura-server 时，还在跑的 kura-shell 照样认（见 main.ts readOrCreateToken）
       - shell-token:/run/kura-shell
-      # 可选：只读，只用来查端口映射（代码里只调 GET /containers/json）
-      # - /var/run/docker.sock:/var/run/docker.sock:ro
+      # 只读挂 docker.sock：只用来查端口映射（代码里白名单到 GET /containers/json 一个接口）。
+      # docker.sock 等于宿主 root，所以别人加了别的东西前先看 registry.ts 的 dockerSocketLister。
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     labels:
       - com.centurylinklabs.watchtower.enable=true
     networks:

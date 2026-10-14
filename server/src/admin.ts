@@ -1,5 +1,4 @@
 import http from 'node:http'
-import { Auth, sessionCookie, sessionToken as sessionTokenFromCookie } from './auth.js'
 import type { Registry } from './registry.js'
 import type { AuditEntry } from './shell/audit.js'
 import type { TokenStore } from './tokens.js'
@@ -11,14 +10,13 @@ import { errorMessage } from '../../src/core/errors.js'
  * 管理页 `/_kura/`（服务端渲染 + 无前端库，沿用 files-admin 那套做法）。
  *
  * 管的东西：WebDAV 暴露范围、服务清单、API Token、状态与最近审计。
- * **认证复用 kura-server 自己的会话**（Authelia 协议那套），浏览器先经过 /_kura/login 拿 cookie。
+ * **不再有登录**：kura-server 自己不做认证（见 server.ts 顶部的说明），管理页跟着一起打开。
  *
  * 为什么范围这块要在这里重做一遍「可见性自检」：客户端那页只能算**本机 WebDAV** 的范围，
  * 服务端的范围是另一份（`state/webdav.json`），得能在 NAS 上直接看。算法是同一份 `dav-scope`。
  */
 
 export interface AdminOptions {
-  auth: Auth
   registry: Registry
   webdav: WebdavFeature
   tokens: TokenStore
@@ -54,23 +52,7 @@ const page = (title: string, body: string): string => `<!doctype html>
   .flash { margin:0 0 16px; padding:10px 14px; border-radius:8px; max-width:1100px; }
 </style></head><body>${body}</body></html>`
 
-/** 登录页：拿网关账号换 kura-server 会话 cookie。 */
-export function loginPage(redirect: string, error = ''): string {
-  return page(
-    'Kura 登录',
-    `<h1>Kura 管理</h1><p class="sub">用 NAS 网关账号登录。</p>
-    ${error ? `<div class="flash err"><span class="badge err">${escapeHtml(error)}</span></div>` : ''}
-    <section style="max-width:380px">
-      <form method="post" action="/_kura/login">
-        <input type="hidden" name="rd" value="${escapeHtml(redirect)}">
-        <label>用户名</label><input name="username" autocomplete="username" autofocus>
-        <label>密码</label><input name="password" type="password" autocomplete="current-password">
-        <button type="submit">登录</button>
-      </form>
-    </section>`,
-  )
-}
-
+/** 管理页没有登录，也没有 `rd` 参数。 */
 function scopeSelfCheck(scope: DavScope, path: string): string {
   let normalized: string
   try {
@@ -133,7 +115,6 @@ export function adminPage(options: {
         ${status.upstreamError ? `<p class="note">上游：${escapeHtml(status.upstreamError)}</p>` : ''}
         <p>kura-shell：${shellBadge}</p>
         <p>清单服务数：${options.registry.list().length}</p>
-        <form method="post" action="/_kura/logout"><button class="ghost">退出登录</button></form>
       </section>
 
       <section>
@@ -199,9 +180,7 @@ function parseForm(body: string): URLSearchParams {
 }
 
 export interface AdminHandler {
-  handle(req: http.IncomingMessage, res: http.ServerResponse, user: string, path: string): Promise<void>
-  loginPage(redirect: string, error?: string): string
-  login(source: string, body: string): Promise<{ ok: true; cookie: string } | { ok: false; error: string }>
+  handle(req: http.IncomingMessage, res: http.ServerResponse, path: string): Promise<void>
 }
 
 export function createAdminHandler(options: AdminOptions): AdminHandler {
@@ -215,7 +194,7 @@ export function createAdminHandler(options: AdminOptions): AdminHandler {
     res.end(body)
   }
 
-  const handle = async (req: http.IncomingMessage, res: http.ServerResponse, user: string, path: string): Promise<void> => {
+  const handle = async (req: http.IncomingMessage, res: http.ServerResponse, path: string): Promise<void> => {
     const query = new URL(req.url ?? '/', 'http://kura-server').searchParams
     const readBodyText = (): Promise<string> =>
       new Promise((resolve, reject) => {
@@ -255,7 +234,7 @@ export function createAdminHandler(options: AdminOptions): AdminHandler {
           exclude: normalizeRules(parseLines(form.get('exclude') ?? '')),
           readOnly: form.get('readOnly') === '1',
         })
-        log('管理页改了 WebDAV 范围', { 用户: user })
+        log('管理页改了 WebDAV 范围')
         redirect(res, '/_kura/?ok=' + encodeURIComponent('范围已保存，立即生效'))
       } catch (error) {
         redirect(res, '/_kura/?err=' + encodeURIComponent(errorMessage(error)))
@@ -280,7 +259,7 @@ export function createAdminHandler(options: AdminOptions): AdminHandler {
       try {
         const next = [...options.registry.list().filter((s) => s.name !== name), { name, backend, rewriteRedirect: form.get('rewriteRedirect') === '1' }]
         options.registry.save(next)
-        log('管理页加了服务', { 用户: user, 服务: name })
+        log('管理页加了服务', { 服务: name })
         redirect(res, '/_kura/?ok=' + encodeURIComponent(`已添加 ${name}`))
       } catch (error) {
         redirect(res, '/_kura/?err=' + encodeURIComponent(errorMessage(error)))
@@ -292,7 +271,7 @@ export function createAdminHandler(options: AdminOptions): AdminHandler {
       const form = parseForm(await readBodyText())
       const name = form.get('name') ?? ''
       options.registry.save(options.registry.list().filter((s) => s.name !== name))
-      log('管理页删了服务', { 用户: user, 服务: name })
+      log('管理页删了服务', { 服务: name })
       redirect(res, '/_kura/?ok=' + encodeURIComponent(`已删除 ${name}`))
       return
     }
@@ -300,7 +279,7 @@ export function createAdminHandler(options: AdminOptions): AdminHandler {
     if (path === '/tokens/create' && req.method === 'POST') {
       const form = parseForm(await readBodyText())
       const record = options.tokens.create(form.get('label') ?? '')
-      log('管理页生成了 API Token', { 用户: user, 用途: record.label })
+      log('管理页生成了 API Token', { 用途: record.label })
       redirect(res, '/_kura/?ok=' + encodeURIComponent(`已生成：${record.token}`))
       return
     }
@@ -312,26 +291,11 @@ export function createAdminHandler(options: AdminOptions): AdminHandler {
       return
     }
 
-    if (path === '/logout' && req.method === 'POST') {
-      options.auth.logout(sessionTokenFromCookie(req.headers.cookie))
-      res.writeHead(302, { location: '/_kura/login', 'set-cookie': `${sessionCookie}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`, 'cache-control': 'no-store' })
-      res.end()
-      return
-    }
-
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
     res.end('没有这个页面')
   }
 
-  /** 管理页登录：用网关同一套账号密码（复用 Auth.login 的防爆破），拿 kura-server 会话 cookie。 */
-  const login = async (source: string, body: string): Promise<{ ok: true; cookie: string } | { ok: false; error: string }> => {
-    const form = parseForm(body)
-    const result = await options.auth.login(source, { username: form.get('username'), password: form.get('password'), keepMeLoggedIn: true })
-    if (!result.ok) return { ok: false, error: result.message }
-    return { ok: true, cookie: `${sessionCookie}=${result.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${result.maxAgeSeconds}` }
-  }
-
-  return { handle, loginPage, login }
+  return { handle }
 }
 
 export { excludeMatches }

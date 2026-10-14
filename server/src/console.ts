@@ -1,26 +1,19 @@
-import { randomBytes } from 'node:crypto'
 import http from 'node:http'
 import type net from 'node:net'
-import { Auth, sessionToken as sessionFromCookie } from './auth.js'
 import type { TokenStore } from './tokens.js'
 
 /**
  * kura-server 侧对**客户端**暴露的终端接口，名字与现网 nas-console 保持一致，客户端不用改：
- *   POST /api/login          —— 账号密码换 session cookie（`session=...`）
- *   WS   /api/tty            —— 开 PTY（cookie 或 `?token=nsc_...` 认证）
- *   GET  /api/me             —— 校验 API Token
- *   POST /api/exec           —— 用 API Token 或会话调 exec（审计在这里记）
+ *   WS   /api/tty            —— 开 PTY（可带 `?token=nsc_...`）
+ *   GET  /api/me             —— 校验 API Token；没带 token 也回 200（终端不需要凭据）
+ *   POST /api/exec           —— 用 API Token 调 exec（审计在这里记）
  *
- * kura-server 认证一次（Authelia 那套，或 nas-console 这套），然后凭**内部令牌**把请求转给
- * kura-shell。kura-shell 不认用户，只认那个令牌。
+ * **这里不再有认证**：kura-server 自己不做认证（见 server.ts 顶部）。API Token 仍然保留 ——
+ * 它不是给终端用的门禁，是给脚本 / AI 调 exec 时的**归属标签**（审计里记下是谁在跑）。
  *
- * 这里保留 `POST /api/login` 是为了兼容：客户端历史上要填一组 nas-console 账号密码。现在它和
- * 网关账号是同一个（S5 客户端会合并成一组），登录动作仍然照走 —— 服务端少改一处协议，
- * 就少一处客户端要跟着改的地方。
+ * 请求靠**内部令牌**转给 kura-shell；kura-shell 不认用户，只认那个令牌。
  */
 export interface ConsoleOptions {
-  /** 网关认证（复用同一个用户名与 argon2 哈希） */
-  auth: Auth
   /** 调用 nas-console 的 API Token（`nsc_`） */
   tokens: TokenStore
   /** kura-shell 的 base，如 http://kura-shell:8890；没配就是没有终端 */
@@ -34,61 +27,19 @@ export interface ConsoleOptions {
   execShell?: (options: { method: string; path: string; headers: Record<string, string>; body: string }) => Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>
 }
 
-/** 独立的终端会话（与网关会话分开，因为客户端按 nas-console 那套来）。 */
-export class ConsoleSessions {
-  private readonly sessions = new Map<string, { user: string; at: number }>()
-  private readonly ttlMs = 12 * 60 * 60_000
-
-  constructor(private readonly now: () => number = Date.now) {}
-
-  create(user: string): string {
-    const token = randomBytes(32).toString('base64url')
-    this.sessions.set(token, { user, at: this.now() })
-    return token
-  }
-
-  check(token: string | undefined): string | undefined {
-    if (!token) return undefined
-    const found = this.sessions.get(token)
-    if (!found) return undefined
-    if (this.now() - found.at > this.ttlMs) {
-      this.sessions.delete(token)
-      return undefined
-    }
-    return found.user
-  }
-
-  drop(token: string | undefined): void {
-    if (token) this.sessions.delete(token)
-  }
-
-  size(): number {
-    return this.sessions.size
-  }
-}
+/** 审计里没有 API Token 时的归属标签。 */
+export const anonymousConsoleUser = 'kura'
 
 export function createConsoleHandler(options: ConsoleOptions): {
   handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void>
   upgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer): void
 } {
   const log = options.log ?? (() => {})
-  const sessions = new ConsoleSessions()
 
-  const sessionCookie = (header: string | undefined): string | undefined => {
-    return /(?:^|;\s*)session=([^;]+)/.exec(header ?? '')?.[1]?.trim()
-  }
-
-  /** 谁在调：先看 nas-console 的 session cookie，再看 API Token，最后看网关会话。 */
-  const identify = (req: http.IncomingMessage, url: URL): { user: string; via: string } | undefined => {
-    const bySession = sessions.check(sessionCookie(req.headers.cookie))
-    if (bySession) return { user: bySession, via: 'session' }
+  /** 谁在调：只用来给审计打标签，不是门禁。带了有效的 API Token 就记它的用途，否则记 kura。 */
+  const identify = (req: http.IncomingMessage, url: URL): string => {
     const token = url.searchParams.get('token') ?? /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization ?? ''))?.[1]?.trim()
-    const record = options.tokens.verify(token ?? undefined)
-    if (record) return { user: record.label, via: 'token' }
-    // 网关会话：映射层会把 authelia_session 带进内部通道，客户端因此不需要单独的终端凭据
-    const gateway = options.auth.check(sessionFromCookie(req.headers.cookie))
-    if (gateway) return { user: gateway, via: 'gateway' }
-    return undefined
+    return options.tokens.verify(token ?? undefined)?.label ?? anonymousConsoleUser
   }
 
   const shellRequest = (
@@ -141,43 +92,20 @@ export function createConsoleHandler(options: ConsoleOptions): {
     const url = new URL(req.url ?? '/', 'http://kura-server')
     const path = url.pathname
 
-    if (path === '/api/login' && req.method === 'POST') {
-      let body: { username?: unknown; password?: unknown }
-      try {
-        const raw = await readBody(req)
-        body = JSON.parse(raw) as typeof body
-      } catch {
-        res.writeHead(400, { 'content-type': 'application/json' })
-        return void res.end('{"error":"bad body"}')
-      }
-      const result = await options.auth.login(req.socket.remoteAddress ?? 'unknown', body)
-      if (!result.ok) {
-        res.writeHead(result.status === 401 ? 401 : result.status, { 'content-type': 'application/json' })
-        return void res.end(JSON.stringify({ error: result.message }))
-      }
-      const token = sessions.create(String(body.username))
-      res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': `session=${token}; Path=/; HttpOnly; SameSite=Lax` })
-      return void res.end('{"ok":true}')
-    }
-
     if (path === '/api/me') {
       const who = identify(req, url)
-      res.writeHead(who ? 200 : 401, { 'content-type': 'application/json' })
-      return void res.end(JSON.stringify(who ? { user: who.user } : { error: 'unauthorized' }))
+      res.writeHead(200, { 'content-type': 'application/json' })
+      return void res.end(JSON.stringify({ user: who }))
     }
 
     if (path === '/api/exec' && req.method === 'POST') {
       const who = identify(req, url)
-      if (!who) {
-        res.writeHead(401, { 'content-type': 'application/json' })
-        return void res.end('{"error":"unauthorized"}')
-      }
       const raw = await readBody(req)
       try {
         const result = await execShell({
           method: 'POST',
           path: '/api/exec',
-          headers: { 'content-type': 'application/json', 'x-kura-token': options.internalToken, 'x-kura-user': encodeURIComponent(who.user) },
+          headers: { 'content-type': 'application/json', 'x-kura-token': options.internalToken, 'x-kura-user': encodeURIComponent(who) },
           body: raw,
         })
         res.writeHead(result.status, { 'content-type': 'application/json' })
@@ -199,12 +127,7 @@ export function createConsoleHandler(options: ConsoleOptions): {
       socket.end('HTTP/1.1 404 Not Found\r\nconnection: close\r\n\r\n')
       return
     }
-    const who = identify(req, url)
-    if (!who) {
-      socket.end('HTTP/1.1 401 Unauthorized\r\nconnection: close\r\n\r\n')
-      return
-    }
-    const upstream = shellRequest(req, { method: 'GET', path: `/api/tty?cols=${url.searchParams.get('cols') ?? ''}&rows=${url.searchParams.get('rows') ?? ''}`, user: who.user })
+    const upstream = shellRequest(req, { method: 'GET', path: `/api/tty?cols=${url.searchParams.get('cols') ?? ''}&rows=${url.searchParams.get('rows') ?? ''}`, user: identify(req, url) })
     upstream.on('upgrade', (up, upSocket, upHead) => {
       const lines = [`HTTP/1.1 ${up.statusCode} ${up.statusMessage ?? 'Switching Protocols'}`]
       for (let i = 0; i < up.rawHeaders.length; i += 2) lines.push(`${up.rawHeaders[i]}: ${up.rawHeaders[i + 1]}`)
