@@ -1,25 +1,32 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { stdin, stdout } from 'node:process'
 import { createInterface } from 'node:readline/promises'
 import type { LogFields, Logger } from '../../src/core/log.js'
 import type { BuiltinHandler } from './server.js'
 import { Auth } from './auth.js'
+import { createConsoleHandler } from './console.js'
 import { fingerprint, hashPassword, parseHash } from './password.js'
 import { Registry, dockerSocketLister } from './registry.js'
 import { createKuraServer } from './server.js'
+import { createShellServer, internalToken } from './shell/server.js'
+import { AuditLog } from './shell/audit.js'
+import { TokenStore } from './tokens.js'
 import { WebdavFeature, webdavDefaults } from './webdav.js'
 
 /**
- * kura-server 入口：
- *   kura-server serve   起服务（默认）
+ * kura-server 入口（同一个镜像两个入口，发布一次）：
+ *   kura-server serve   起服务（默认）：认证 + 反代 + 清单 + WebDAV + 终端转发
+ *   kura-server shell   起 kura-shell：特权容器里的 PTY / exec，只认内部令牌
  *   kura-server hash    交互式输入密码，打印 argon2id 哈希（填进 .env 的 KURA_PASSWORD_HASH）
  *
  * 配置全部来自环境变量（compose 的 env_file 注入）：
  *   KURA_USER            必填
  *   KURA_PASSWORD_HASH   必填（argon2id PHC；现网 Authelia 的 ADMIN_PASSWORD_HASH 可直接用）
  *   KURA_PORT            监听端口，默认 8080（compose 里映射到宿主 8897）
- *   KURA_STATE           状态目录，默认 /state（会话、services.json、审计）
+ *   KURA_STATE           状态目录，默认 /state（会话、services.json、webdav.json、tokens.json）
+ *   KURA_SHELL           可选，kura-shell 的地址，如 http://kura-shell:8890；不设就没有终端
+ *   KURA_SHELL_TOKEN_FILE 可选，内部令牌经共享卷传递；默认 /run/kura-shell/token
  *   KURA_DOCKER_SOCKET   可选，查容器端口映射用；不设或文件不存在就不查
  *   KURA_TRUST_PROXY     1 = 信任 X-Forwarded-For（前面还有一层反代时才开）
  */
@@ -78,11 +85,31 @@ async function serve(): Promise<void> {
     settingsFile: join(state, 'webdav.json'),
     log: logger,
   })
-  const builtins: Record<string, BuiltinHandler> = {
-    webdav: { request: (req, res) => webdav.handle(req, res) },
+  const auth = new Auth({ user, passwordHash, sessionFile: join(state, 'sessions.json') })
+  const tokens = new TokenStore(join(state, 'tokens.json'))
+
+  // 终端：kura-server 生成内部令牌、经共享卷给 kura-shell；对客户端暴露 nas-console 那套接口。
+  const shellAddress = process.env.KURA_SHELL?.trim() ?? ''
+  const tokenFile = process.env.KURA_SHELL_TOKEN_FILE?.trim() || '/run/kura-shell/token'
+  let consoleHandler: ReturnType<typeof createConsoleHandler> | undefined
+  if (shellAddress) {
+    const shellToken = internalToken()
+    try {
+      mkdirSync(join(tokenFile, '..'), { recursive: true })
+      writeFileSync(tokenFile, shellToken, { mode: 0o600 })
+    } catch (error) {
+      log('写内部令牌失败，终端会不可用', { 文件: tokenFile, err: (error as Error).message })
+    }
+    consoleHandler = createConsoleHandler({ auth, tokens, shell: () => shellAddress, internalToken: shellToken, log })
+  } else {
+    log('没有配 KURA_SHELL，终端不可用（这是正常的：没起 kura-shell 容器）')
   }
 
-  const auth = new Auth({ user, passwordHash, sessionFile: join(state, 'sessions.json') })
+  const builtins: Record<string, BuiltinHandler> = {
+    webdav: { request: (req, res) => webdav.handle(req, res) },
+    ...(consoleHandler ? { 'nas-console': { request: (req, res) => consoleHandler!.handle(req, res), upgrade: (req, socket, head) => consoleHandler!.upgrade(req, socket, head) } } : {}),
+  }
+
   const server = createKuraServer({ auth, registry, builtins, log, trustProxy: process.env.KURA_TRUST_PROXY === '1' })
   const port = Number(process.env.KURA_PORT ?? 8080)
   server.listen(port, () => {
@@ -104,6 +131,41 @@ async function serve(): Promise<void> {
   process.on('SIGINT', stop)
 }
 
+/**
+ * kura-shell：特权容器里的执行器。**它不认用户**，只认 kura-server 经共享卷传来的内部令牌。
+ *
+ *   KURA_SHELL_PORT       监听端口，默认 8890
+ *   KURA_SHELL_TOKEN_FILE 内部令牌文件，默认 /run/kura-shell/token
+ *   KURA_AUDIT_FILE       审计文件，默认 /audit/audit.log（容器里挂 ./state/audit）
+ *   KURA_SHELL_MAX        PTY 并发上限，默认 4
+ *   KURA_SHELL_BIN        进宿主用的 shell，默认 /bin/bash
+ */
+async function shell(): Promise<void> {
+  const tokenFile = process.env.KURA_SHELL_TOKEN_FILE?.trim() || '/run/kura-shell/token'
+  let token = ''
+  // 令牌是 kura-server 启动时才写的：起来晚了就轮询等一会儿，别急着重启容器
+  for (let i = 0; i < 60; i++) {
+    try {
+      token = readFileSync(tokenFile, 'utf8').trim()
+      if (token) break
+    } catch {
+      // 还没写
+    }
+    await new Promise((r) => setTimeout(r, 1_000))
+  }
+  if (!token) fatal(`等不到内部令牌（${tokenFile}）：先起 kura-server`)
+  const auditFile = process.env.KURA_AUDIT_FILE?.trim() || '/audit/audit.log'
+  const port = Number(process.env.KURA_SHELL_PORT ?? 8890)
+  const max = Number(process.env.KURA_SHELL_MAX ?? 4)
+  const bin = process.env.KURA_SHELL_BIN?.trim() || '/bin/bash'
+  const server = createShellServer({ token, audit: new AuditLog(auditFile), maxSessions: max, shell: bin, log })
+  // 只监听内部网络（默认绑 0.0.0.0，但容器不发布端口、只在 kura-internal 上）
+  server.listen(port, () => log('kura-shell 已启动', { 端口: port, 并发上限: max, 审计: auditFile }))
+  const stop = () => server.close(() => process.exit(0))
+  process.on('SIGTERM', stop)
+  process.on('SIGINT', stop)
+}
+
 async function hash(): Promise<void> {
   const rl = createInterface({ input: stdin, output: stdout, terminal: true })
   const password = await rl.question('密码：')
@@ -116,5 +178,6 @@ async function hash(): Promise<void> {
 
 const command = process.argv[2] ?? 'serve'
 if (command === 'serve') await serve()
+else if (command === 'shell') await shell()
 else if (command === 'hash') await hash()
-else fatal(`不认识的子命令：${command}（serve / hash）`)
+else fatal(`不认识的子命令：${command}（serve / shell / hash）`)

@@ -1,5 +1,5 @@
-# kura-server 镜像（S1：认证 + 反代 + 清单；S2：rclone；S3 起加 kura-shell 入口）
-# 构建上下文是仓库根：docker build -f server/Dockerfile -t kura-server .
+# kura-server 镜像（一个镜像两个入口：serve / shell）。构建上下文是仓库根：
+#   docker build -f server/Dockerfile -t kura-server .
 
 # ---- 取 rclone：固定版本 + SHA256 校验，校验不过直接构建失败 ----
 FROM node:24-alpine AS rclone
@@ -13,6 +13,13 @@ RUN apk add --no-cache curl unzip && \
     chmod +x /usr/local/bin/rclone && \
     /usr/local/bin/rclone version
 
+# ---- 编译 node-pty：原生模块，只在 kura-shell 容器里用，打包进镜像 ----
+# 不在容器里现场编译（UGOS 内核 / glibc 不可控），构建阶段编译好、连 node_modules 一起 copy。
+FROM node:24-alpine AS pty
+RUN apk add --no-cache python3 make g++
+WORKDIR /pty
+RUN npm init -y >/dev/null && npm i --build-from-source node-pty@1.1.0
+
 FROM node:24-alpine AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
@@ -21,14 +28,15 @@ COPY . .
 RUN node server/build.mjs
 
 FROM node:24-alpine
-# rclone 要用 `-L` 跟随符号链接，得有个 shell 环境；curl 留给 kura-shell 的入口脚本用
-RUN apk add --no-cache ca-certificates tzdata
+# rclone 要用 `-L` 跟随符号链接；kura-shell 要 nsenter / bash 进宿主
+RUN apk add --no-cache ca-certificates tzdata bash util-linux
 COPY --from=rclone /usr/local/bin/rclone /usr/local/bin/rclone
+COPY --from=pty /pty/node_modules /app/node_modules
 WORKDIR /app
 COPY --from=build /src/dist/server/ ./
 ENV KURA_STATE=/state KURA_PORT=8080 NODE_ENV=production
-EXPOSE 8080
-# 健康检查只打免认证的 /api/health
-HEALTHCHECK --interval=30s --timeout=5s CMD wget -qO- http://127.0.0.1:8080/api/health >/dev/null || exit 1
+EXPOSE 8080 8890
+# 健康检查打免认证的 /api/health（serve 与 shell 都有；shell 用环境变量换端口）
+HEALTHCHECK --interval=30s --timeout=5s CMD sh -c 'wget -qO- "http://127.0.0.1:${KURA_PORT:-${KURA_SHELL_PORT:-8080}}/api/health" >/dev/null || exit 1'
 ENTRYPOINT ["node", "main.mjs"]
 CMD ["serve"]

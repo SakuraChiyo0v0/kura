@@ -1,4 +1,4 @@
-# kura-server（S1 认证 + 反代 + 清单，S2 WebDAV 挂宿主根；S3 起加 kura-shell 容器）。
+# kura-server 部署（一个镜像两个入口：serve / shell）。
 #
 # 迁移期先用 8898 与旧 sso-gateway（8897）并行，验收通过再换端口（设计文档 §十）。
 #
@@ -14,6 +14,10 @@ services:
     ports:
       - "8898:8080"
     env_file: .env
+    environment:
+      # 终端：把请求转给 kura-shell 容器
+      KURA_SHELL: http://kura-shell:8890
+      KURA_SHELL_TOKEN_FILE: /run/kura-shell/token
     volumes:
       - ./state:/state
       # WebDAV 暴露宿主文件：整个宿主根挂进来（读写），rclone 在里面 serve。
@@ -23,11 +27,37 @@ services:
       - { type: tmpfs, target: /host/proc }
       - { type: tmpfs, target: /host/sys }
       - { type: tmpfs, target: /host/dev }
+      # 内部令牌经这个卷传给 kura-shell（每次启动换一个）
+      - shell-token:/run/kura-shell
       # 可选：只读，只用来查端口映射（代码里只调 GET /containers/json）
       # - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - sso-net
+      - kura-internal
+
+  # 特权容器：只跑终端 / exec，不发布端口，只在 kura-internal 上，只认内部令牌。
+  kura-shell:
+    image: kura-server:local
+    container_name: kura-shell
+    command: ["shell"]
+    restart: unless-stopped
+    privileged: true
+    pid: host
+    environment:
+      KURA_SHELL_PORT: "8890"
+      KURA_SHELL_TOKEN_FILE: /run/kura-shell/token
+      KURA_AUDIT_FILE: /audit/audit.log
+    volumes:
+      - shell-token:/run/kura-shell:ro
+      - ./state/audit:/audit
+    networks:
+      - kura-internal
 
 networks:
   sso-net:
     external: true
+  kura-internal:
+    internal: true
+
+volumes:
+  shell-token:
