@@ -11,3 +11,6 @@ release/
 # kura-server 部署目录里的运行时状态
 server/deploy/state/
 server/deploy/.env
+
+# 编辑器 / 本地开发用的目录（不是项目产物）
+.claude/

@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net'
 import type { Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WebSocketServer } from 'ws'
+import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ConsoleSession, ConsoleTerminal, type TerminalEvent } from '../../src/core/console.js'
 import { Auth } from '../src/auth.js'
@@ -63,14 +63,22 @@ let shell: FakeShell
 let front: http.Server
 let url = ''
 let tokens: TokenStore
+let auth: Auth
 let dir = ''
 const user = 'gw'
 const password = 's3cret'
 
+/** 造一个真的网关会话 cookie（等价于客户端登录后拿到的那个）。 */
+async function gatewayCookie(): Promise<string> {
+  const result = await auth.login('127.0.0.1', { username: user, password })
+  if (!result.ok) throw new Error('测试登录失败')
+  return `authelia_session=${result.token}`
+}
+
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'kura-console-'))
   shell = await new FakeShell().start()
-  const auth = new Auth({ user, passwordHash: await hashPassword(password, { memory: 1024, passes: 1, parallelism: 1 }) })
+  auth = new Auth({ user, passwordHash: await hashPassword(password, { memory: 1024, passes: 1, parallelism: 1 }) })
   tokens = new TokenStore(join(dir, 'tokens.json'))
   const handler = createConsoleHandler({ auth, tokens, shell: () => shell.url, internalToken: INTERNAL })
   front = http.createServer((req, res) => void handler.handle(req, res))
@@ -128,11 +136,32 @@ describe('kura-server ⇄ kura-shell 的终端桥', () => {
     t.term.close()
   })
 
-  it('没凭据：拒绝，不进 kura-shell', async () => {
+  it('没凭据直接连（kura-server 下映射层带网关会话）——这里没带会话，所以被拒', async () => {
     const t = open({})
     await t.term.open()
     await t.until(() => t.term.isClosed)
     expect(shell.seenTokens).toEqual([])
+  })
+
+  it('带网关会话（映射层注入的 authelia_session）就能连，不需要单独的终端凭据', async () => {
+    const cookie = await gatewayCookie()
+    const ws = new WebSocket(`ws://127.0.0.1:${new URL(url).port}/api/tty`, { headers: { cookie } })
+    const opened = await new Promise<boolean>((resolve) => {
+      ws.on('open', () => resolve(true))
+      ws.on('unexpected-response', () => resolve(false))
+      ws.on('error', () => resolve(false))
+    })
+    expect(opened).toBe(true)
+    expect(shell.seenTokens).toEqual([INTERNAL])
+    ws.close()
+  })
+
+  it('/api/me 认网关会话（客户端据此判断「无需单独凭据」）', async () => {
+    const cookie = await gatewayCookie()
+    const me = await fetch(`${url}/api/me`, { headers: { cookie } })
+    expect(me.status).toBe(200)
+    expect(await me.json()).toMatchObject({ user })
+    expect((await fetch(`${url}/api/me`)).status).toBe(401)
   })
 
   it('exec：带 API Token 走通，转发到 kura-shell 并把结果回给调用方', async () => {

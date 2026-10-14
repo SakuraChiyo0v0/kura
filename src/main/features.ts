@@ -373,6 +373,11 @@ export class TerminalService {
     this.terminals.get(id)?.write(data)
   }
 
+  resize(id: string, cols: number, rows: number): void {
+    if (!Number.isFinite(cols) || !Number.isFinite(rows)) return
+    this.terminals.get(id)?.resize(cols, rows)
+  }
+
   close(id: string): void {
     this.terminals.get(id)?.close()
     this.terminals.delete(id)

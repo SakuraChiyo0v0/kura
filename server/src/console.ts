@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import http from 'node:http'
 import type net from 'node:net'
-import { Auth } from './auth.js'
+import { Auth, sessionToken as sessionFromCookie } from './auth.js'
 import type { TokenStore } from './tokens.js'
 
 /**
@@ -85,7 +85,8 @@ export function createConsoleHandler(options: ConsoleOptions): {
     const token = url.searchParams.get('token') ?? /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization ?? ''))?.[1]?.trim()
     const record = options.tokens.verify(token ?? undefined)
     if (record) return { user: record.label, via: 'token' }
-    const gateway = options.auth.check(String(req.headers.cookie ?? ''))
+    // 网关会话：映射层会把 authelia_session 带进内部通道，客户端因此不需要单独的终端凭据
+    const gateway = options.auth.check(sessionFromCookie(req.headers.cookie))
     if (gateway) return { user: gateway, via: 'gateway' }
     return undefined
   }

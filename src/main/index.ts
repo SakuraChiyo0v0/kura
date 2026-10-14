@@ -316,6 +316,7 @@ function registerKuraIpc(): void {
   // ---- 终端 ----
   router.handle(ch.terminalOpen, () => terminals.open())
   router.handle(ch.terminalWrite, (_event, id: string, data: string) => terminals.write(String(id), String(data)))
+  router.handle(ch.terminalResize, (_event, id: string, cols: number, rows: number) => terminals.resize(String(id), Number(cols), Number(rows)))
   router.handle(ch.terminalClose, (_event, id: string) => terminals.close(String(id)))
   router.handle(ch.terminalGetConfig, () => terminals.config())
   router.handle(ch.terminalSaveConfig, (_event, form: TerminalConfigForm) => terminals.saveConfig(form))

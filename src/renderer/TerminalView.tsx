@@ -63,7 +63,7 @@ function XtermPane({ tab, active }: { tab: Tab; active: boolean }) {
     t.open(holder.current!)
     term.current = t
     fit.current = f
-    // 键盘输入 → 主进程 → nas-console
+    // 键盘输入 → 主进程 → 映射层 → NAS
     const input = t.onData((data) => void window.kura?.terminal.write(tab.id, data))
     sinks.set(tab.id, (data) => t.write(data))
     // 冒烟读的是缓冲区内容，不是画出来的 DOM：窗口被遮挡时渲染帧会被节流，DOM 不一定及时更新
@@ -76,14 +76,20 @@ function XtermPane({ tab, active }: { tab: Tab; active: boolean }) {
     for (const chunk of pending.get(tab.id) ?? []) t.write(chunk)
     pending.delete(tab.id)
 
-    const resize = new ResizeObserver(() => {
+    // 尺寸变化要告诉服务端（kura-shell 是真 PTY，resize 生效；现网 nas-console 会把它当输入）
+    const push = () => {
       try {
         f.fit()
       } catch {
         // 隐藏的标签尺寸为 0，fit 会抛，忽略
+        return
       }
-    })
+      if (t.cols > 0 && t.rows > 0) void window.kura?.terminal.resize(tab.id, t.cols, t.rows)
+    }
+    const resize = new ResizeObserver(push)
     resize.observe(holder.current!)
+    // 首次 fit 后报一次尺寸：ResizeObserver 只在下一次变化时触发，不给服务端正确初值会导致换行错位
+    requestAnimationFrame(push)
     // 亮暗切换：<html data-sk-theme> 变化时重设配色
     const themeWatch = new MutationObserver(() => (t.options.theme = terminalTheme()))
     themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-sk-theme'] })
@@ -140,9 +146,10 @@ function ConfigForm({ config, onSaved }: { config: TerminalConfigView; onSaved: 
       }}
     >
       <fieldset className="kura-form__group">
-        <legend>nas-console 登录</legend>
+        <legend>终端凭据</legend>
         <p className="kura-form__note">
-          绿联账号与网关由映射层处理；这里是 nas-console 自己的账号（网页终端那套），或在它的 Token 页生成的 API Token。加密保存在本机。
+          绿联账号与网关由映射层处理，新版 kura-server 下终端不需要单独凭据 —— 下面的留空即可，会直接经网关会话连上。
+          只有 NAS 上还是独立的 nas-console 时才需要填它自己的账号（网页终端那套），或在它的 Token 页生成的 API Token。加密保存在本机。
         </p>
         <FluidSegmented
           label="登录方式"
@@ -155,9 +162,9 @@ function ConfigForm({ config, onSaved }: { config: TerminalConfigView; onSaved: 
         />
         {form.method === 'password' ? (
           <div className="kura-form__row">
-            <TextField label="nas-console 账号" value={form.user} onChange={(e) => set('user', e.target.value)} autoComplete="off" />
+            <TextField label="终端账号" value={form.user} onChange={(e) => set('user', e.target.value)} autoComplete="off" />
             <TextField
-              label="nas-console 密码"
+              label="终端密码"
               type="password"
               value={form.password}
               description={kept(config.hasPassword)}
@@ -252,7 +259,7 @@ export function TerminalView() {
       <div className="kura-term">
         {!config.available && (
           <p className="kura-banner" data-tone="warning">
-            服务端清单里还没有 nas-console 服务：先在 NAS 上部署 nas-console 并登记到网关，映射层同步到后终端才能连。
+            服务端清单里还没有终端服务：NAS 上要部署 kura-server（或旧的 nas-console），并在网关登记，映射层同步到后终端才能连。
           </p>
         )}
         <ConfigForm
@@ -302,12 +309,12 @@ export function TerminalView() {
           </Button>
         )}
         <Button size="sm" variant="ghost" onClick={() => setShowConfig(true)}>
-          登录设置
+          终端设置
         </Button>
       </div>
       {!config.available && (
         <p className="kura-banner" data-tone="warning">
-          服务端清单里没有 nas-console 服务，暂时连不上。
+          服务端清单里没有终端服务，暂时连不上。
         </p>
       )}
       {tabs.length === 0 ? (
@@ -315,7 +322,7 @@ export function TerminalView() {
           <EmptyState
             icon={<SquareTerminal size={22} aria-hidden />}
             title="没有打开的终端"
-            description="经映射层连接 NAS 上的 nas-console，拿到的是宿主 root shell，操作请谨慎。"
+            description="经映射层连接 NAS 上的终端服务，拿到的是宿主 root shell，操作请谨慎。"
             action={
               <Button onClick={() => void openTab()} disabled={!config.available}>
                 打开终端

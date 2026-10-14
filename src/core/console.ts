@@ -4,22 +4,24 @@ import { request as defaultRequest, type HttpRequester } from './http.js'
 import { silentLogger, type Logger } from './log.js'
 
 /**
- * NAS 终端：接 nas-console（`POST /api/login` 拿 session cookie，`WS /api/tty` 开 PTY）。
+ * NAS 终端：接 nas-console 那套接口（`POST /api/login` 拿 session cookie，`WS /api/tty` 开 PTY）。
  *
  * 一切都走映射层的本机地址（Mirror.internalEndpoint('nas-console')），本模块不认识绿联：
- * 绿联会话、网关、Authelia 都在映射层里处理了；nas-console 自己的账号是**第二层**，在这里登录。
+ * 绿联会话、网关、新版 kura-server 都在映射层里处理了。**kura-server 部署下这一层凭据也可以留空**：
+ * 网关会带登录时拿到的会话，`/api/tty` 认它；只有现网的独立 nas-console 才需要它自己的第二层凭据。
  *
- * nas-console 的协议（读的是它的源码 server/src/server.ts、web/src/views/TerminalView.tsx）：
+ * 协议（沿用 nas-console 的 server/src/server.ts）：
  * - 下行：PTY 输出按文本帧发（stdout 与 stderr 混在一起）；
  * - 上行：键盘输入原样当文本帧发；窗口尺寸发 `{"type":"resize","cols":..,"rows":..}`；
- * - 认证：cookie `session=...` 或 `?token=nsc_...`；失败在握手阶段回 401，并发上限 429。
+ * - 认证：cookie `session=...`、`?token=nsc_...`，或（kura-server）映射层带来的网关会话；
+ *   失败在握手阶段回 401，并发上限 429。
  *
- * **已知限制（服务端的，不是这里的）**：nas-console 用 `script` 包一层 PTY，并没有实现 resize ——
- * resize 那条 JSON 会被当成普通输入写进 shell。所以这里**不发 resize**（发了会在终端里打出一串 JSON）。
- * 等服务端支持了再打开 `sendResize`。
+ * resize 现在真的会发：现网 nas-console 用 `script` 包一层 PTY、resize 会被当成输入（已读源码确认），
+ * 所以早先关着；kura-server 的 kura-shell 用 node-pty，支持真 resize。现网那台会把 JSON 打进终端，
+ * 属于已知的可接受退化（不再区分两种后端，服务端统一到 kura-server 后就没有这个问题）。
  */
 export interface ConsoleCredentials {
-  /** 二选一：账号密码（网页终端那套），或 API Token（nsc_ 开头） */
+  /** 二选一：账号密码（独立 nas-console 那套），或 API Token（nsc_ 开头）。kura-server 下可以都不填 */
   user?: string
   password?: string
   token?: string
@@ -47,7 +49,9 @@ export class ConsoleSession {
     const creds = this.credentials()
     const ws = base.replace(/^http/, 'ws') + '/api/tty'
     if (creds.token) return { url: `${ws}?token=${encodeURIComponent(creds.token)}`, headers: {} }
-    if (!creds.user || !creds.password) throw new ConsoleAuthError('还没有填写 nas-console 的账号密码（设置 → 终端）')
+    // 没填凭据也照连：kura-server 部署下映射层会带上网关会话，终端不需要第二层凭据。
+    // 现网独立 nas-console 会在握手阶段回 401，那时界面再提示去设置。
+    if (!creds.user || !creds.password) return { url: ws, headers: {} }
     if (!this.cookie) this.cookie = await this.login(base, creds.user, creds.password)
     return { url: ws, headers: { cookie: this.cookie } }
   }
@@ -79,6 +83,12 @@ export class ConsoleSession {
       const res = await this.request({ url: `${base}/api/me`, headers: { authorization: `Bearer ${creds.token}` }, timeoutMs: 20_000 })
       if (res.status !== 200) throw new ConsoleAuthError(`API Token 无效：HTTP ${res.status}`)
       return 'API Token 有效'
+    }
+    // 没填凭据：kura-server 认映射层带来的网关会话，能拿到 /api/me 就说明终端可用
+    if (!creds.user || !creds.password) {
+      const res = await this.request({ url: `${base}/api/me`, timeoutMs: 20_000 })
+      if (res.status === 200) return '经网关会话可用，无需单独凭据'
+      throw new ConsoleAuthError('终端不可用：这个 NAS 上还是独立的 nas-console，需要在设置里填它的账号密码')
     }
     this.invalidate()
     await this.handshake()
@@ -154,8 +164,11 @@ export class ConsoleTerminal {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(data)
   }
 
-  /** nas-console 目前不处理 resize（见文件头），保留接口，服务端支持后在这里发。 */
-  resize(_cols: number, _rows: number): void {}
+  /** 改窗口尺寸。kura-shell（node-pty）支持真 resize；现网 nas-console 会把这条当输入打进终端。 */
+  resize(cols: number, rows: number): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return
+    this.ws.send(JSON.stringify({ type: 'resize', cols: Math.max(1, Math.round(cols)), rows: Math.max(1, Math.round(rows)) }))
+  }
 
   close(): void {
     this.closed = true

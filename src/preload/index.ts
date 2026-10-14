@@ -84,6 +84,7 @@ const kura: KuraBridge = {
   terminal: {
     open: () => invoke(ch.terminalOpen),
     write: (id, data) => invoke(ch.terminalWrite, id, data),
+    resize: (id, cols, rows) => invoke(ch.terminalResize, id, cols, rows),
     close: (id) => invoke(ch.terminalClose, id),
     onEvent: (listener) => {
       const handler = (_event: unknown, payload: TerminalEventView) => listener(payload)

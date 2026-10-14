@@ -28,7 +28,7 @@ const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 20
 const rsaToken = Buffer.from(publicKey.export({ type: 'spki', format: 'pem' }).toString().replace(/PUBLIC KEY/g, 'RSA PUBLIC KEY')).toString('base64')
 let token = 0
 // 冒烟里要断言「某个接口被打了几次」（例如保存时有没有重复查 ID）
-const counters = { lookups: 0 }
+const counters = { lookups: 0, terminalResize: 0, terminalResizeCols: 0 }
 let slowServicesMs = 0
 // 假 NAS 上的应用：像真网关那样按 X-Nas-Service 分流到不同的「容器」
 //   webdav      → 内存里的 WebDAV（形态照 rclone serve webdav：href 绝对路径、Destination 带 host 要匹配）
@@ -129,7 +129,19 @@ appServer.on('upgrade', (req, socket, head) => {
   }
   tty.handleUpgrade(req, socket, head, (ws) => {
     ws.send('smoke-nas:~# ')
-    ws.on('message', (data) => ws.send(data.toString() === '\r' ? '\r\nsmoke-nas:~# ' : data.toString()))
+    ws.on('message', (data) => {
+      const text = data.toString()
+      // resize 是控制帧，不按输入回显（真终端也不回显）
+      if (/^\s*\{\s*"type"\s*:\s*"resize"/.test(text)) {
+        const m = /"cols"\s*:\s*(\d+)\s*,\s*"rows"\s*:\s*(\d+)/.exec(text)
+        if (m) {
+          counters.terminalResize += 1
+          counters.terminalResizeCols = Number(m[1])
+        }
+        return
+      }
+      ws.send(text === '\r' ? '\r\nsmoke-nas:~# ' : text)
+    })
   })
 })
 await new Promise((resolve) => appServer.listen(0, '127.0.0.1', resolve))

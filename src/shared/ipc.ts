@@ -40,6 +40,7 @@ export const kuraChannels = {
   // ---- v0.2 终端 ----
   terminalOpen: 'kura:terminal:open',
   terminalWrite: 'kura:terminal:write',
+  terminalResize: 'kura:terminal:resize',
   terminalClose: 'kura:terminal:close',
   /** 主进程推送：终端输出与状态 */
   terminalEvent: 'kura:terminal:event',
@@ -278,6 +279,7 @@ export interface KuraBridge {
   terminal: {
     open(): Promise<string>
     write(id: string, data: string): Promise<void>
+    resize(id: string, cols: number, rows: number): Promise<void>
     close(id: string): Promise<void>
     onEvent(listener: (event: TerminalEventView) => void): () => void
     getConfig(): Promise<TerminalConfigView>

@@ -293,14 +293,14 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     check('可见性自检', await waitFor(`document.querySelector('[data-testid="dav-probe"]')?.dataset.visibility === 'hidden'`))
     await shot('v0.2-本机WebDAV.png')
 
-    // ⑦d v0.2 终端：填 nas-console 账号 → 测试并保存 → 开标签 → 键入回显
+    // ⑦d v0.2 终端：填终端账号（独立 nas-console 那套）→ 测试并保存 → 开标签 → 键入回显
     await nav('终端')
     await waitFor(`document.querySelector('.kura-term') !== null`)
-    await fill('nas-console 账号', 'smoke-console')
-    await fill('nas-console 密码', 'smoke-console-pass')
+    await fill('终端账号', 'smoke-console')
+    await fill('终端密码', 'smoke-console-pass')
     await clickButton('测试并保存')
     const termReady = await waitFor(`[...document.querySelectorAll('button')].some(b => b.textContent.trim() === '打开终端' && !b.disabled)`, 10_000)
-    check('终端登录配置', termReady, await js<string>(`document.querySelector('.kura-term')?.innerText.slice(0, 200) ?? ''`))
+    check('终端凭据配置', termReady, await js<string>(`document.querySelector('.kura-term')?.innerText.slice(0, 200) ?? ''`))
     await clickButton('打开终端')
     // 读 xterm 缓冲区（不是渲染出的 DOM：窗口不在前台时渲染帧被节流，DOM 会落后 —— 早先这条因此时好时坏）
     const termText = `document.querySelector('[data-testid="terminal-pane"]')?.kuraText?.() ?? ''`
@@ -311,6 +311,9 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     window.webContents.sendInputEvent({ type: 'char', keyCode: 's' })
     const echoed = await waitFor(`(${termText}).includes('smoke-nas:~# ls')`)
     check('终端连接并回显输入', prompt && echoed, `prompt=${prompt} 缓冲区=${JSON.stringify(await js<string>(termText))}`)
+    // resize 真的发出去了（服务端是真 PTY，尺寸不对会错位）；开标签后 xterm 首次 fit 就会发
+    const resizeCount = await smokeNasCounter('terminalResize')
+    check('终端发送窗口尺寸', resizeCount > 0, `resize 帧数=${resizeCount}`)
     const consoleDisk = (() => {
       try {
         return readFileSync(join(ctx.userData, 'console.json'), 'utf8')
