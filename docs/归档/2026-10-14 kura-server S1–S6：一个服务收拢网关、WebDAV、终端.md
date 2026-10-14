@@ -110,12 +110,62 @@ invalid argument "v1.75.2" for "--version" flag: strconv.ParseBool: parsing "v1.
 
 这条只有真构建才会撞到，纯读代码看不出来。也是"交给 CI 真跑一次"的价值。
 
-## 没验证过的
+## 真机部署（2026-10-14 当天做完）
 
-- **镜像从没在本机构建过**（本机 Docker 没起）。Dockerfile 是照着设计文档写的，node-pty 那段
-  （Alpine 里 `python3 make g++` 编译）尤其没跑过 —— 现在交给 CI 真跑一次，成败以 CI 为准。
-- **node-pty 二进制建于 Alpine(musl)，要在 UGOS 宿主机内核上跑**：这是最可能出问题的一处，
-  真机部署时终端能不能开、能不能 resize，看它。
-- **绿联中继是否支持 WebSocket** 仍未实测 —— 决定外网下终端能不能用。部署后第一件事测它。
-- **`pid: host` + `nsenter` 在 node:24-alpine 上**：nas-console 在别的基础镜像上实测可行，换镜像要重测。
+在真 NAS（UGREEN DXP4800GT，Docker 29.6.2 / Compose v5.1.3）上并行起了 **8898**，旧的
+sso-gateway（8897）、nas-console（8890）**一个都没停**。部署在 `/volume1/docker/kura-server/`
+（700 root:root，`.env` 600），两个容器 `kura-server` / `kura-shell` 均 healthy。
+
+**怎么做的**：本机不在 NAS 局域网、SSH 也不通（公网只开 443/80）。走 NAS 上现成的
+**nas-console `POST /api/exec`**（宿主 root shell，经绿联中继可达）执行所有命令 —— 不用 SSH 也能部署。
+文件用 `base64 -d` 写入 + `sha256sum` 对账（沿用 NAS-PROJECTS 的既定做法）。
+
+`.env` 的账号密码直接取客户端已有的**网关凭据**（从 Kura 的 DPAPI 保险箱解出来在内存里算 argon2id
+哈希，只打印指纹 `d41afd40`、明文不落任何地方）。这样**客户端把网关端口从 8897 改成 8898 就能用，
+不用改账号密码**。
+
+### 8. 坑：`.env` 里的 argon2id 哈希被 Compose 插值吃掉了
+
+`main.ts` 注释写「compose 的 env_file 原样读取，$ 不用转义」—— **是错的**。实测：Compose 对
+`.env` 做插值（`env_file` 指示的那个文件也一样），`$argon2id$v=19$m=65536…` 里的 `$argon2id`、
+`$v`、`$m`、盐全被当变量展开成空串，kura-server 报「密码哈希格式不对」起不来
+（日志里还带一串 `The "v" variable is not set. Defaulting to a blank string.`）。
+
+三种写法的实测结果（busybox 打印 `env | grep`）：
+
+| `.env` 里写法 | 容器拿到的值 |
+|-|-|
+| `A=$argon2id$v=19` | `=19`（被吃） |
+| `B=$$argon2id$$v=19` | `$argon2id$v=19`（对） |
+| `C='$argon2id$v=19'` | `$argon2id$v=19`（对，且**无警告**） |
+
+选了**单引号**（比逐处 `$$` 干净）。`main.ts` 里那条注释待改（本次没动代码，记录在此）。
+
+### 9. 坑：kura-server 的 docker.sock 挂载与 UGOS
+
+compose 里那行 `/var/run/docker.sock` 是**注释着的**（可选）。没挂也行：`/__services` 里
+所有服务的 `host_port` 都算 0、`published=false`，客户端照常能用，只是全走网关。真机验证时
+确认了这一点 —— 清单 12 个服务都返回了。
+
+## 没验证过的（更新）
+
+- ~~镜像没在 CI 真构建过~~ → **已在 CI 真构建成功**并推 ghcr。第一次就抓到了第 7 条那个 rclone ARG 坑。
+- ~~node-pty / musl 二进制能否在 UGOS 内核跑~~ → **通过**。`docker exec kura-shell node -e 'require("node-pty")'` OK；
+  终端真开起来了（见下）。
+- ~~绿联中继是否支持 WebSocket~~ → **支持，实测通过**。这是本项目悬了几轮的未知项，现在有结论：
+  - **对照**（nas-console 8890 经中继，`wss://app-8890-….ugdocker.link/api/tty?token=nsc_…`）：
+    291ms 升级成功，PTY 回显正常。
+  - **kura-server**（8898 经中继，先 `/api/firstfactor` 换会话，再带 `x-nas-service: nas-console`
+    升 `/api/tty`）：745ms 升级成功，收到 PTY 回显 `KURA_WS_OK_42`（真宿主 shell，resize 也发了）。
+  - **结论：外网下终端可用**，不降级。
+- **`pid: host` + `nsenter` 在 node:24-alpine 上** → **通过**。宿主 `DXP4800GT-114A`、root、内核 6.18.15，
+  看得到 447 个宿主进程。
+- **还没做的**：客户端切到 8898 的**逐项验收**（映射、文件、本机 WebDAV、终端 UI 全流程）。
+  上面都是服务端直连验证，UI 层还没走过。
 - 客户端 v0.2–v0.3 归档里那条「清单里四个服务偶尔不出现」的偶发问题，与本次无关，仍未定位。
+
+### 一个探路细节：JS 侧开 WS 要手动带 `x-nas-service`
+
+浏览器/`ws` 客户端直连 kura-server 的 `/api/tty` 时，kura-server 靠 **`x-nas-service: nas-console`**
+这个头才知道要转给谁（这是客户端映射层内部的分流协议）。漏了它，`resolve()` 认不出服务 → 401。
+Kura 客户端自己转发时会自动带上，所以只影响手工脚本；记下来免得再撞。

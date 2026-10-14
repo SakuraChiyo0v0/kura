@@ -237,7 +237,7 @@ async function hash(): Promise<void> {
   if (!password) fatal('密码不能为空')
   const phc = await hashPassword(password)
   console.log(phc)
-  console.error(`指纹 ${fingerprint(phc)}；把上面一行填进 .env 的 KURA_PASSWORD_HASH（注意 .env 里的 $ 不用转义，compose 的 env_file 原样读取）`)
+  console.error(`指纹 ${fingerprint(phc)}；把上面一行填进 .env 的 KURA_PASSWORD_HASH。注意 compose 会对 .env 做插值，${'$'} 会被展开成空串——用单引号把整串包起来（KURA_PASSWORD_HASH='...'），单引号的值 compose 不插值。`)
 }
 
 const command = process.argv[2] ?? 'serve'
