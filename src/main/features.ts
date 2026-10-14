@@ -1,6 +1,6 @@
 import { createReadStream, createWriteStream, mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { ConsoleSession, ConsoleTerminal, type ConsoleCredentials } from '../core/console.js'
+import { ConsoleSession, ConsoleTerminal } from '../core/console.js'
 import { DavClient, type DavEntry } from '../core/dav-client.js'
 import { normalizeDavPath, normalizeRules, visibilityOf, writeDenial } from '../core/dav-scope.js'
 import { DavServer, davServerDefaults, type DavServerSettings } from '../core/dav-server.js'
@@ -14,12 +14,9 @@ import type {
   DavSettingsView,
   DavStatusView,
   FileListing,
-  TerminalConfigForm,
-  TerminalConfigView,
   TerminalEventView,
   Transfer,
 } from '../shared/ipc.js'
-import type { CredentialVault } from './vault.js'
 
 /** 服务端清单里的服务名（nas-mirror 网关 map 里的键，见 server/nginx/conf.d/default.conf）。 */
 export const webdavService = 'webdav'
@@ -272,91 +269,21 @@ export class LocalDavService {
 
 // ---------------------------------------------------------------- 终端
 
-interface ConsoleSecrets {
-  method: 'password' | 'token'
-  user: string
-  password: string
-  token: string
-}
-
 export class TerminalService {
   private readonly session: ConsoleSession
   private readonly terminals = new Map<string, ConsoleTerminal>()
-  /** undefined = 还没读过（惰性读，理由见 secretsOf） */
-  private secrets: ConsoleSecrets | undefined
   private seq = 0
 
   constructor(
     private readonly deps: FeatureDeps,
-    private readonly vault: CredentialVault<ConsoleSecrets>,
     private readonly emit: (event: TerminalEventView) => void,
   ) {
-    this.session = new ConsoleSession(
-      () => requireMirror(deps).internalEndpoint(consoleService),
-      () => this.credentials(this.secretsOf()),
-      deps.request,
-    )
+    // 终端没有凭据：kura-server 不做认证，映射层带上绿联令牌即可。
+    this.session = new ConsoleSession(() => requireMirror(deps).internalEndpoint(consoleService), () => ({}))
   }
 
-  /**
-   * 惰性读终端凭据，别在构造函数里读。
-   *
-   * 同一个坑（连接核心那边也有）：服务是在模块顶层 new 的，那时 `app.whenReady()` 还没发生，
-   * `safeStorage` 在 ready 之前不可用，构造函数里读盘必然失败 —— 表现是
-   * 「nas-console 的账号密码每次重启都要重填」。
-   */
-  private secretsOf(): ConsoleSecrets {
-    this.secrets ??= this.vault.load() ?? { method: 'password', user: '', password: '', token: '' }
-    return this.secrets
-  }
-
-  private credentials(s: ConsoleSecrets): ConsoleCredentials {
-    return s.method === 'token' ? { token: s.token } : { user: s.user, password: s.password }
-  }
-
-  config(): TerminalConfigView {
-    const secrets = this.secretsOf()
-    return {
-      method: secrets.method,
-      user: secrets.user,
-      hasPassword: Boolean(secrets.password),
-      hasToken: Boolean(secrets.token),
-      available: this.deps.mirror()?.hasService(consoleService) ?? false,
-    }
-  }
-
-  private merge(form: TerminalConfigForm): ConsoleSecrets {
-    const saved = this.secretsOf()
-    const method = form.method === 'token' ? 'token' : 'password'
-    const next: ConsoleSecrets = {
-      method,
-      user: form.user.trim(),
-      password: form.password || saved.password,
-      token: form.token.trim() || saved.token,
-    }
-    if (method === 'token' && !/^nsc_/.test(next.token)) throw new Error('API Token 应以 nsc_ 开头（在 nas-console 网页的 Token 页生成）')
-    // 账号密码**可以都留空**：kura-server 部署下由映射层带网关会话，不需要这一层凭据（与页面文案一致）。
-    // 但不能只填一半——那是误操作，会得到一个怎么都连不上的会话。
-    if (method === 'password' && Boolean(next.user) !== Boolean(next.password)) throw new Error('账号和密码要么都填，要么都留空（留空 = 用网关会话）')
-    return next
-  }
-
-  async test(form: TerminalConfigForm): Promise<string> {
-    const candidate = this.merge(form)
-    const probe = new ConsoleSession(
-      () => requireMirror(this.deps).internalEndpoint(consoleService),
-      () => this.credentials(candidate),
-      this.deps.request,
-    )
-    return probe.check()
-  }
-
-  saveConfig(form: TerminalConfigForm): TerminalConfigView {
-    const next = this.merge(form)
-    this.vault.save(next)
-    this.secrets = next
-    this.session.invalidate()
-    return this.config()
+  available(): boolean {
+    return this.deps.mirror()?.hasService(consoleService) ?? false
   }
 
   async open(): Promise<string> {

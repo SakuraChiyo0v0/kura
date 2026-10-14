@@ -4,7 +4,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { Button, EmptyState, StatusBadge } from '@sakura-ui/react'
-import type { TerminalConfigView, TerminalEventView } from '../shared/ipc.js'
+import type { TerminalEventView } from '../shared/ipc.js'
 
 const icon = { size: 16, strokeWidth: 1.7, 'aria-hidden': true } as const
 
@@ -118,14 +118,14 @@ function XtermPane({ tab, active }: { tab: Tab; active: boolean }) {
 }
 
 export function TerminalView() {
-  const [config, setConfig] = useState<TerminalConfigView | null>(null)
+  const [available, setAvailable] = useState<boolean | null>(null)
   const [tabs, setTabs] = useState<Tab[]>([])
   const [active, setActive] = useState('')
   const seq = useRef(0)
 
   useEffect(() => {
-    void window.kura?.terminal.getConfig().then(setConfig)
-    const timer = setInterval(() => void window.kura?.terminal.getConfig().then(setConfig), 5_000)
+    void window.kura?.terminal.available().then(setAvailable)
+    const timer = setInterval(() => void window.kura?.terminal.available().then(setAvailable), 5_000)
     return () => clearInterval(timer)
   }, [])
 
@@ -169,10 +169,10 @@ export function TerminalView() {
     setActive(id)
   }
 
-  if (!config) return null
-  // 终端凭据不再是「要不要配」的事：终端连的就是映射层/网关那一层，kura-server 下没这层凭据。
-  // 只有在服务端清单里根本没有终端服务时才给一句说明（这是部署问题，不是让用户去填凭据）。
-  if (!config.available) {
+  if (available === null) return null
+  // 终端不需要凭据（kura-server 不做认证）。只有在服务端清单里根本没有终端服务时
+  // 才给一句说明 —— 这是部署问题，不是让用户去填什么。
+  if (!available) {
     return (
       <div className="kura-term" data-mode="blocked">
         <p className="kura-banner" data-tone="warning">
@@ -198,7 +198,7 @@ export function TerminalView() {
             </button>
           </div>
         ))}
-        <Button size="sm" variant="ghost" icon={<Plus {...icon} />} onClick={() => void openTab()} disabled={!config.available}>
+        <Button size="sm" variant="ghost" icon={<Plus {...icon} />} onClick={() => void openTab()}>
           新标签
         </Button>
         <span className="kura-term__spacer" />
@@ -213,11 +213,6 @@ export function TerminalView() {
           </Button>
         )}
       </div>
-      {!config.available && (
-        <p className="kura-banner" data-tone="warning">
-          服务端清单里没有终端服务，暂时连不上。
-        </p>
-      )}
       {tabs.length === 0 ? (
         <div className="kura-placeholder">
           <EmptyState
@@ -225,7 +220,7 @@ export function TerminalView() {
             title="没有打开的终端"
             description="经映射层连接 NAS 上的终端服务，拿到的是宿主 root shell，操作请谨慎。"
             action={
-              <Button onClick={() => void openTab()} disabled={!config.available}>
+              <Button onClick={() => void openTab()}>
                 打开终端
               </Button>
             }

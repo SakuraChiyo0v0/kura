@@ -91,9 +91,7 @@ const kura: KuraBridge = {
       ipcRenderer.on(ch.terminalEvent, handler)
       return () => ipcRenderer.off(ch.terminalEvent, handler)
     },
-    getConfig: () => invoke(ch.terminalGetConfig),
-    saveConfig: (form) => invoke(ch.terminalSaveConfig, form),
-    test: (form) => invoke(ch.terminalTest, form),
+    available: () => invoke(ch.terminalAvailable),
   },
   modules: {
     status: () => invoke(ch.modulesStatus),

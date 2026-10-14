@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { FakeUgreen } from './testing/fake-ugreen.js'
 import { captureLogger } from './log.js'
-import { SessionManager, credentialCooldownMs, noGateway, type GatewayAuth } from './session.js'
+import { SessionManager, noGateway, type GatewayAuth } from './session.js'
 import { UgreenClient } from './ugreen.js'
 
 let fake: FakeUgreen
@@ -126,23 +126,15 @@ describe('SessionManager：绿联链路', () => {
   })
 })
 
-describe('SessionManager：统一网关（Authelia）', () => {
-  it('网关端口的会话同时带绿联与 Authelia 两层 cookie', async () => {
-    const { mgr } = manager(60_000, { port: 8899, base: fake.url, user: 'gw', password: 'pw' })
-    const cookie = await mgr.cookie(8899)
-    expect(cookie).toContain('ugreen-proxy-token=COOKIE-8899')
-    expect(cookie).toContain('authelia_session=SSO-SESSION')
-  })
-
-  it('非网关端口不登 Authelia', async () => {
-    const { mgr } = manager(60_000, { port: 8899, base: fake.url, user: 'gw', password: 'pw' })
-    expect(await mgr.cookie(5244)).not.toContain('authelia')
-    expect(fake.autheliaLogins).toBe(0)
-  })
-
-  it('没有第二层凭据时照常工作（只带绿联 cookie）', async () => {
+describe('SessionManager：统一网关（无第二层认证）', () => {
+  it('网关端口的会话只有绿联一层 cookie（kura-server 不认证）', async () => {
     const { mgr } = manager(60_000, { port: 8899, base: fake.url })
     expect(await mgr.cookie(8899)).toBe('ugreen-proxy-token=COOKIE-8899')
+  })
+
+  it('非网关端口只建自己的会话', async () => {
+    const { mgr } = manager(60_000, { port: 8899, base: fake.url })
+    expect(await mgr.cookie(5244)).toBe('ugreen-proxy-token=COOKIE-5244')
   })
 })
 
@@ -152,8 +144,6 @@ describe('SessionManager：局域网模式', () => {
     base: 'https://app-8897-dev.cn30.ugdocker.link',
     lanBase: url,
     lanHostHeader: 'app-8897-dev.cn30.ugdocker.link',
-    user: 'gw',
-    password: 'pw',
   })
 
   it('直连端口什么都不用带，也不碰绿联', async () => {
@@ -163,12 +153,10 @@ describe('SessionManager：局域网模式', () => {
     expect(fake.loginCount).toBe(0)
   })
 
-  it('网关端口只登 Authelia，且 Host 发公网域名而不是局域网地址', async () => {
-    fake.autheliaRequiredHost = 'app-8897-dev.cn30.ugdocker.link'
+  it('网关端口在局域网下同样什么都不用带', async () => {
     const { mgr } = manager(60_000, lanGateway(fake.url))
     mgr.setLan(true)
-    expect(await mgr.cookie(8897)).toBe('authelia_session=SSO-SESSION')
-    expect(fake.autheliaHosts).toEqual(['app-8897-dev.cn30.ugdocker.link'])
+    expect(await mgr.cookie(8897)).toBe('')
     expect(fake.loginCount).toBe(0)
   })
 
@@ -181,44 +169,37 @@ describe('SessionManager：局域网模式', () => {
   })
 })
 
-describe('SessionManager：认证退避', () => {
-  const gw = (): Partial<GatewayAuth> => ({ port: 8899, base: fake.url, user: 'gw', password: 'pw' })
+describe('SessionManager：链路退避', () => {
+  /** 让绿联登录一直失败（链路类），这样每个端口都进退避。 */
+  const broken = () => {
+    fake.loginMode = 'error'
+  }
 
-  it('凭据被拒：冷却 10 分钟，窗口内一个请求都不发，并打 ERROR', async () => {
-    fake.autheliaMode = 'reject'
-    const { mgr, log } = manager(60_000, gw())
-    await expect(mgr.cookie(8899)).rejects.toThrow(/凭据被上游拒绝/)
-    const logins = fake.autheliaLogins
-    await expect(mgr.cookie(8899)).rejects.toThrow(/认证退避中/)
-    expect(fake.autheliaLogins).toBe(logins)
-    expect(mgr.authStatus()).toMatchObject({ blocked: true, credential: true, fails: 1 })
-    expect(log.entries.some((e) => e.level === 'error' && e.message.includes('停止自动重试'))).toBe(true)
-
-    clock += credentialCooldownMs - 1
-    await expect(mgr.cookie(8899)).rejects.toThrow(/认证退避中/)
-    clock += 2
-    fake.autheliaMode = 'ok'
-    await expect(mgr.cookie(8899)).resolves.toContain('authelia_session')
-    expect(mgr.authStatus().blocked).toBe(false)
-  })
-
-  it('链路类失败按台阶退避：5s、10s、20s…，封顶 2 分钟', async () => {
-    fake.autheliaMode = 'error'
-    const { mgr } = manager(60_000, gw())
+  it('链路失败按台阶退避：5s、10s、20s…，封顶 2 分钟', async () => {
+    broken()
+    const { mgr } = manager(60_000, { port: 8899, base: fake.url })
     const windows: number[] = []
     for (let i = 0; i < 7; i += 1) {
       await expect(mgr.cookie(8899)).rejects.toThrow()
       const status = mgr.authStatus()
-      expect(status.credential).toBe(false)
       windows.push(status.retryAt - clock)
       clock = status.retryAt
     }
     expect(windows).toEqual([5_000, 10_000, 20_000, 40_000, 80_000, 120_000, 120_000])
   })
 
+  it('退避窗口内一个请求都不发', async () => {
+    broken()
+    const { mgr } = manager(60_000, { port: 8899, base: fake.url })
+    await expect(mgr.cookie(8899)).rejects.toThrow()
+    const attempts = fake.dockerAttempts
+    await expect(mgr.cookie(8899)).rejects.toThrow(/退避中/)
+    expect(fake.dockerAttempts).toBe(attempts)
+  })
+
   it('续期轮次跳过退避中的端口', async () => {
-    fake.autheliaMode = 'reject'
-    const { mgr } = manager(60_000, gw())
+    broken()
+    const { mgr } = manager(60_000, { port: 8899, base: fake.url })
     mgr.addRefreshPort(8899)
     await mgr.refreshOnce()
     const attempts = fake.dockerAttempts
@@ -227,26 +208,26 @@ describe('SessionManager：认证退避', () => {
   })
 
   it('clearAllAuthFailures 后允许立刻重试', async () => {
-    fake.autheliaMode = 'reject'
-    const { mgr } = manager(60_000, gw())
+    broken()
+    const { mgr } = manager(60_000, { port: 8899, base: fake.url })
     await expect(mgr.cookie(8899)).rejects.toThrow()
-    fake.autheliaMode = 'ok'
+    fake.loginMode = 'ok'
     mgr.clearAllAuthFailures()
-    await expect(mgr.cookie(8899)).resolves.toContain('authelia_session')
+    await expect(mgr.cookie(8899)).resolves.toContain('ugreen-proxy-token')
   })
 })
 
 describe('SessionManager：gatewayGet', () => {
   it('带会话取网关接口', async () => {
     fake.servicesBody = '{"services":[{"name":"openlist"}]}'
-    const { mgr } = manager(60_000, { port: 8899, base: fake.url, user: 'gw', password: 'pw' })
+    const { mgr } = manager(60_000, { port: 8899, base: fake.url })
     const body = await mgr.gatewayGet('/__services')
     expect(JSON.parse(body.toString())).toEqual({ services: [{ name: 'openlist' }] })
   })
 
   it('没启用网关时直接报错，不发请求', async () => {
     const { mgr } = manager()
-    await expect(mgr.gatewayGet('/__services')).rejects.toThrow(/未启用统一网关/)
+    await expect(mgr.gatewayGet('/__services')).rejects.toThrow(/未配置统一网关/)
     expect(fake.servicesRequests).toBe(0)
   })
 })

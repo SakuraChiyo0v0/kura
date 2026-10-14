@@ -6,7 +6,8 @@ import https from 'node:https'
  *
  * 为什么不用 fetch：
  * 1. fetch 不允许自定义 Host 头，而局域网模式恰恰要「拨局域网 IP、发公网域名的 Host」
- *    —— Authelia 按 Host 校验会话域，用 IP 当 Host 会 401（Go 版实测踩过）。
+ *    —— 旧网关上按 Host 校验会话域，用 IP 当 Host 会 401（Go 版实测踩过）。
+ *    kura-server 已经不校验域了，这条仍然保留：让容器应用在两种链路下看到的 Host 一致。
  * 2. node:http 天生不跟随重定向。这是安全红线：中继用 302 → 登录页伪装「未认证」，
  *    跟随了就会拿到一个 200 的登录页，永远发现不了失败。
  */

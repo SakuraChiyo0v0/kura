@@ -17,9 +17,7 @@ function initialForm(summary: ConnectionSummary | undefined): Form {
     ugreenPassword: '',
     lanHost: summary?.lanHost ?? '',
     mode: summary?.mode ?? 'auto',
-    gatewayPort: summary?.gatewayPort ?? 8897,
-    gatewayUser: summary?.gatewayUser ?? '',
-    gatewayPassword: '',
+    gatewayPort: summary?.gatewayPort ?? 8898,
   }
 }
 
@@ -173,30 +171,17 @@ export function ConnectionForm({
       </fieldset>
 
       <fieldset className="kura-form__group">
-        <legend>统一网关（Authelia）</legend>
-        <p className="kura-form__note">服务端清单与走网关的服务都需要它；端口写 0 表示不用网关。</p>
+        <legend>统一网关</legend>
+        <p className="kura-form__note">
+          服务端清单与走网关的服务都走这个端口；端口写 0 表示不用网关。网关不做第二层认证，不用填账号密码。
+        </p>
         <div className="kura-form__row">
           <TextField
             label="网关端口"
             inputMode="numeric"
             value={String(form.gatewayPort)}
             onChange={(e) => set('gatewayPort', Number(e.target.value.replace(/\D/g, '')) || 0)}
-          />
-          <TextField
-            label="网关账号"
-            value={form.gatewayUser}
-            onChange={(e) => set('gatewayUser', e.target.value)}
-            disabled={!form.gatewayPort}
-            autoComplete="off"
-          />
-          <TextField
-            label="网关密码"
-            type="password"
-            value={form.gatewayPassword}
-            onChange={(e) => set('gatewayPassword', e.target.value)}
-            disabled={!form.gatewayPort}
-            description={summary?.hasGatewayPassword ? keepHint : undefined}
-            autoComplete="off"
+            description="kura-server 的宿主端口，默认 8898"
           />
         </div>
       </fieldset>

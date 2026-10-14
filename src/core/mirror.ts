@@ -24,8 +24,6 @@ export interface ConnectionConfig {
   mode: LinkModeSetting
   /** 统一网关宿主端口；0 = 不用网关 */
   gatewayPort: number
-  gatewayUser: string
-  gatewayPassword: string
 }
 
 /** 一个要映射到本机的服务。 */
@@ -208,17 +206,10 @@ export class Mirror {
       sessions: this.sessions,
       log: this.log,
     })
-    if (this.config.gatewayPort && this.config.gatewayUser && this.config.gatewayPassword) {
-      this.sessions.gateway = {
-        port: this.config.gatewayPort,
-        ...this.router.gatewayAddresses(),
-        user: this.config.gatewayUser,
-        password: this.config.gatewayPassword,
-      }
-    } else {
-      this.sessions.gateway = noGateway
-      if (this.config.gatewayPort) this.log.warn('已启用统一网关但没有网关凭据：走网关的服务会登录失败')
-    }
+    // 网关只要地址，不要凭据：kura-server 不做认证，客户端带上绿联的 ugreen-proxy-token 即可。
+    this.sessions.gateway = this.config.gatewayPort
+      ? { port: this.config.gatewayPort, ...this.router.gatewayAddresses() }
+      : noGateway
     this.watchdog = new Watchdog({ log: this.log })
     this.overrides = new ServiceOverrideStore(join(options.dataDir, 'services.json'))
     this.cacheFile = join(options.dataDir, 'discovered.json')

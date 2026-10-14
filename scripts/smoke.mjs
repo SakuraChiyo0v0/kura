@@ -2,7 +2,7 @@
  * 真实 Electron 冒烟：KURA_SMOKE=1 启动 Kura，主进程自动走一遍检查，输出一行 SMOKE ... 后退出。
  * 用临时 userData，不碰日常数据。
  *
- * 先起一个本地「假 NAS」（绿联登录链 + Authelia + /__services + 一个应用），
+ * 先起一个本地「假 NAS」（绿联登录链 + /__services + 一个应用），
  * 主进程通过 KURA_SMOKE_NAS 把发往 *.ug.link / *.ugdocker.link 的请求改拨到它 ——
  * 这样引导、加密保存、映射、服务卡片走的都是真实代码路径。
  *
@@ -32,7 +32,7 @@ const counters = { lookups: 0, terminalResize: 0, terminalResizeCols: 0 }
 let slowServicesMs = 0
 // 假 NAS 上的应用：像真网关那样按 X-Nas-Service 分流到不同的「容器」
 //   webdav      → 内存里的 WebDAV（形态照 rclone serve webdav：href 绝对路径、Destination 带 host 要匹配）
-//   nas-console → 模拟 kura-server：认网关会话（authelia_session），WS /api/tty 回显输入
+//   nas-console → 模拟 kura-server：不认证，WS /api/tty 回显输入
 //   其它        → 一段 HTML
 const davFiles = new Map([
   ['/', null],
@@ -105,10 +105,10 @@ const appServer = http.createServer(async (req, res) => {
   const body = Buffer.concat(chunks)
   const service = req.headers['x-nas-service']
   if (service === 'webdav') return handleDav(req, res, body)
-  // nas-console 端点模拟 **kura-server**（不是独立 nas-console）：认映射层带过来的网关会话
-  // （authelia_session=SMOKE），不认什么账号密码 —— 终端不需要单独凭据这一点才测得出来。
+  // nas-console 端点模拟 **kura-server**（不是独立 nas-console）：不做认证，认不认 cookie 都回 200 ——
+  // 终端不需要凭据这一点才测得出来。
   if (service === 'nas-console' && req.url === '/api/me') {
-    res.statusCode = /authelia_session=SMOKE/.test(req.headers.cookie ?? '') ? 200 : 401
+    res.statusCode = 200
     return res.end('{}')
   }
   res.setHeader('content-type', 'text/html; charset=utf-8')
@@ -116,8 +116,7 @@ const appServer = http.createServer(async (req, res) => {
 })
 const tty = new WebSocketServer({ noServer: true })
 appServer.on('upgrade', (req, socket, head) => {
-  const gw = /authelia_session=SMOKE/.test(req.headers.cookie ?? '')
-  if (req.headers['x-nas-service'] !== 'nas-console' || !gw) {
+  if (req.headers['x-nas-service'] !== 'nas-console') {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
     return socket.destroy()
   }
@@ -178,7 +177,7 @@ const nas = http.createServer(async (req, res) => {
     case '/redirect':
       return res.end(`<script>document.cookie='ugreen-proxy-token=SMOKE-${url.searchParams.get('port')}-0000'</script>`)
     case '/api/firstfactor':
-      res.setHeader('set-cookie', 'authelia_session=SMOKE; Path=/')
+      // 旧客户端会先登录；kura-server 不做认证，照 Authelia 的形状回 200
       return json({ status: 'OK' })
     case '/__services':
       // 第二轮（重启）故意拖慢清单：证明界面第一帧的卡片来自缓存，而不是等到了网络

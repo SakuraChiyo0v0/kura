@@ -36,10 +36,10 @@ export function OverviewView({ snapshot, onOpenMirror }: { snapshot: MirrorSnaps
   return (
     <div className="kura-overview">
       {snapshot.auth.blocked && (
-        <div className="kura-banner" data-tone={snapshot.auth.credential ? 'danger' : 'warning'} role="alert">
+        <div className="kura-banner" data-tone="warning" role="alert">
           <ShieldAlert {...icon} />
           <div>
-            <strong>{snapshot.auth.credential ? '凭据被 NAS 拒绝，已停止自动重试' : '连接 NAS 失败，正在退避重试'}</strong>
+            <strong>连接 NAS 失败，正在退避重试</strong>
             <p>
               {snapshot.auth.reason}
               {snapshot.auth.retryAt ? ` · 下次重试 ${new Date(snapshot.auth.retryAt).toLocaleTimeString('zh-CN', { hour12: false })}` : ''}

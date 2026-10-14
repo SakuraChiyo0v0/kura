@@ -84,7 +84,7 @@ export function buildUpstreamHeaders(
     if (value === undefined || hopByHop.has(name) || name === 'host' || name === 'cookie') continue
     out[name] = value
   }
-  // Host 显式指定：局域网模式拨号地址是局域网 IP，但 Host 必须是公网域名（Authelia 按它校验会话域）
+  // Host 显式指定：局域网模式拨号地址是局域网 IP，但 Host 必须是公网域名（旧网关按它校验会话域；kura-server 不校验，保留是为了应用看到的 Host 一致）
   out.host = route.host || upstreamHost
   const cookie = mergeCookie(inbound.cookie ?? '', managedCookie)
   if (cookie) out.cookie = cookie

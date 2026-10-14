@@ -19,11 +19,13 @@ function sharedKeys() {
 }
 
 /**
- * 模拟绿联中继三个接口 + 网关上的 Authelia 登录，按真实行为实现（对应 Go 版 fakeUGreen）：
+ * 模拟绿联中继三个接口 + 网关的 /__services，按真实行为实现（对应 Go 版 fakeUGreen）：
  * - RSA 加密的密码必须能被私钥解开，否则登录失败
  * - 公钥 PEM 标签写 "RSA PUBLIC KEY"，内容却是 SubjectPublicKeyInfo（真实服务端就这样）
  * - 一次性授权页用 JS 写 cookie，没有 Set-Cookie 头
  * - api_token 对不上就返回 1024
+ *
+ * kura-server 不做认证，所以这里**没有** Authelia 登录那一段了。
  */
 export class FakeUgreen {
   readonly server: http.Server
@@ -36,16 +38,12 @@ export class FakeUgreen {
   receivedKeepalive = false
   tokenSeq = 0
   loginCount = 0
+  /** 绿联登录返回什么：ok / error（500，链路故障） */
+  loginMode: 'ok' | 'error' = 'ok'
   dockerAttempts = 0
   /** 下一次 dockerToken 返回这个错误码（0 表示正常） */
   failNextDocker = 0
   redirectHits = new Map<string, number>()
-  autheliaLogins = 0
-  autheliaHosts: string[] = []
-  /** Authelia 返回什么：ok / reject（401 KO）/ error（500） */
-  autheliaMode: 'ok' | 'reject' | 'error' = 'ok'
-  /** 设了的话，Authelia 只认这个 Host（模拟 session cookie 域校验） */
-  autheliaRequiredHost = ''
   servicesBody = '{"services":[]}'
   servicesRequests = 0
   /** UGREENlink ID 查询：认识的 ID（空串 = 一律回「ID 不存在」7022） */
@@ -111,6 +109,12 @@ export class FakeUgreen {
         return
       case '/ugreen/v1/verify/login': {
         const body = JSON.parse(await this.readBody(req)) as { username: string; password: string; keepalive: boolean }
+        if (this.loginMode === 'error') {
+          // 链路故障的真实样子：nginx 的 5xx 页面
+          res.statusCode = 502
+          res.end('<html><body>502 Bad Gateway</body></html>')
+          return
+        }
         let plain: string
         try {
           plain = privateDecrypt(
@@ -151,40 +155,15 @@ export class FakeUgreen {
         res.end(`<script>document.cookie='ugreen-proxy-token=COOKIE-${port}; path=/'</script>`)
         return
       }
-      case '/api/firstfactor': {
+      case '/api/firstfactor':
+        // 旧客户端会先登录一次。kura-server 不做认证，照 Authelia 的形状回 200 即可。
         await this.readBody(req)
-        this.autheliaLogins += 1
-        this.autheliaHosts.push(req.headers.host ?? '')
-        if (this.autheliaRequiredHost && req.headers.host !== this.autheliaRequiredHost) {
-          // Authelia 原话：no configured session cookie domain matches the url
-          res.statusCode = 401
-          res.end('{"status":"KO","message":"no configured session cookie domain matches the url"}')
-          return
-        }
-        if (this.autheliaMode === 'reject') {
-          res.statusCode = 401
-          res.end('{"status":"KO","message":"Authentication failed. Check your credentials."}')
-          return
-        }
-        if (this.autheliaMode === 'error') {
-          // 链路故障的真实样子：nginx 的 5xx 页面，不是 Authelia 的 JSON。
-          // （带 status=KO 的响应按 Go 版口径一律算凭据类，见 authelia.ts）
-          res.statusCode = 502
-          res.end('<html><body>502 Bad Gateway</body></html>')
-          return
-        }
-        res.setHeader('set-cookie', ['authelia_session=SSO-SESSION; Path=/; Secure; HttpOnly'])
-        res.end('{"status":"OK"}')
+        res.end('{"status":"OK","message":"kura-server 不做认证，直接访问即可"}')
         return
-      }
+
       case '/__services':
+        // kura-server 不认证：不带任何 cookie 也要能拿到清单
         this.servicesRequests += 1
-        if (!String(req.headers.cookie ?? '').includes('authelia_session=')) {
-          res.statusCode = 302
-          res.setHeader('location', '/login')
-          res.end()
-          return
-        }
         res.setHeader('content-type', 'application/json')
         res.end(this.servicesBody)
         return

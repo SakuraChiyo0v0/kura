@@ -137,9 +137,10 @@ export class LinkRouter {
   /**
    * 按当前模式算出某个服务的转发目标。
    *
-   * 局域网模式的关键细节：**拨号地址是局域网 IP，Host 头仍是公网域名**。Authelia 校验请求域必须匹配
+   * 局域网模式的关键细节：**拨号地址是局域网 IP，Host 头仍是公网域名**。旧网关会校验请求域必须匹配
    * 它配置的 session cookie 域（只登记了公网域名），用 IP 当 Host 会 401（日志原话：
-   * no configured session cookie domain matches the url）。顺带也让容器应用看到的 Host 两种模式一致。
+   * no configured session cookie domain matches the url）。kura-server 不校验域了，这条保留是为了
+   * 让容器应用在两种链路下看到的 Host 一致。
    */
   route(svc: RoutableService): Route {
     const viaGateway = Boolean(svc.service) && this.gatewayPort !== 0

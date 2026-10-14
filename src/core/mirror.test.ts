@@ -57,8 +57,6 @@ function config(overrides: Partial<ConnectionConfig> = {}): ConnectionConfig {
     lanHost: '',
     mode: 'wan',
     gatewayPort: 8897,
-    gatewayUser: 'gw',
-    gatewayPassword: 'pw',
     ...overrides,
   }
 }
@@ -146,14 +144,14 @@ describe('Mirror：服务端清单', () => {
     expect(m.snapshot().services).toHaveLength(1)
     await m.stop()
 
-    const fresh = newMirror({ gatewayPassword: '' }) // 连网关都登不上
+    const fresh = newMirror() // 网关不要凭据，照样重启
     await fresh.start()
     expect(fresh.snapshot().services.map((s) => s.key)).toEqual(['navidrome'])
   })
 })
 
 describe('Mirror：端到端', () => {
-  it('本机端口 → 反代 → 网关，带上两层 cookie 与分流头', async () => {
+  it('本机端口 → 反代 → 网关，带上绿联 cookie 与分流头', async () => {
     let seen: { service?: string; cookie?: string; host?: string } = {}
     const upstreamFake = http.createServer((req, res) => {
       seen = { service: req.headers['x-nas-service'] as string, cookie: req.headers.cookie, host: req.headers.host }
@@ -188,7 +186,7 @@ describe('Mirror：端到端', () => {
     expect(body).toBe('hello from nas')
     expect(seen.service).toBe('nas-console')
     expect(seen.cookie).toContain('ugreen-proxy-token=COOKIE-8897')
-    expect(seen.cookie).toContain('authelia_session=SSO-SESSION')
+    expect(seen.cookie).not.toContain('authelia_session')
     expect(mirror.snapshot().services[0]!.stats.requests).toBe(1)
     await new Promise<void>((resolve) => upstreamFake.close(() => resolve()))
   })
@@ -240,7 +238,7 @@ describe('Mirror：端到端', () => {
     })
     expect(body).toBe('dav')
     expect(seen.service).toBe('webdav')
-    expect(seen.cookie).toContain('authelia_session=')
+    expect(seen.cookie).toContain('ugreen-proxy-token=')
     expect(mirror.snapshot().services[0]!.stats.requests).toBe(1)
     await expect(mirror.internalEndpoint('nas-console')).rejects.toThrow(/没有「nas-console」/)
 

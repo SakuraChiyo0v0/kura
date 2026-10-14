@@ -1,18 +1,18 @@
-import { autheliaLogin } from './authelia.js'
-import { errorMessage, isAuthRejected } from './errors.js'
+import { errorMessage } from './errors.js'
 import { request as defaultRequest, type HttpRequester } from './http.js'
 import { silentLogger, type Logger } from './log.js'
 import type { UgreenClient } from './ugreen.js'
 
-/** 「凭据被上游拒绝」后的冷却：重试不可能成功，继续敲门只会触发 regulation 封禁。 */
-export const credentialCooldownMs = 10 * 60_000
 /** 链路类失败（超时、5xx、绿联会话过期）按台阶退避：5s → 10s → … → 2min。 */
 export const transientBackoffBaseMs = 5_000
 export const transientBackoffMaxMs = 2 * 60_000
 
 /**
- * 统一网关上的第二层认证（Authelia）。
- * port 为 0 表示未启用网关；user 为空表示不代持第二层凭据（走网关的服务会用不了）。
+ * 统一网关。
+ *
+ * **kura-server 不做第二层认证**（Authelia 那套已经删了，见 AGENTS.md），所以这里只需要
+ * 「地址在哪儿」——客户端把绿联的 ugreen-proxy-token 带上就够，不必再登录一次。
+ * port 为 0 表示没有网关，走网关的服务也用不了（只直连 app-<端口> 域名）。
  */
 export interface GatewayAuth {
   port: number
@@ -20,13 +20,11 @@ export interface GatewayAuth {
   base: string
   /** 局域网链路上的网关地址 http://<NAS IP>:<网关端口>，可能为空 */
   lanBase: string
-  /** 局域网链路上要发的 Host 头（公网网关域名）；Authelia 按它校验会话域 */
+  /** 局域网链路上要发的 Host 头（公网网关域名），让容器应用看到的 Host 两种模式一致 */
   lanHostHeader: string
-  user: string
-  password: string
 }
 
-export const noGateway: GatewayAuth = { port: 0, base: '', lanBase: '', lanHostHeader: '', user: '', password: '' }
+export const noGateway: GatewayAuth = { port: 0, base: '', lanBase: '', lanHostHeader: '' }
 
 interface SessionEntry {
   cookie: string
@@ -36,14 +34,11 @@ interface SessionEntry {
 interface AuthState {
   fails: number
   until: number
-  /** true：这一轮是「凭据被上游拒绝」，不是链路抖动 */
-  credential: boolean
   reason: string
 }
 
 export interface AuthStatus {
   blocked: boolean
-  credential: boolean
   reason: string
   retryAt: number
   fails: number
@@ -115,13 +110,12 @@ export class SessionManager {
   }
 
   private usesGateway(port: number): boolean {
-    return this.gateway.port !== 0 && port === this.gateway.port && this.gateway.user !== ''
+    return this.gateway.port !== 0 && port === this.gateway.port
   }
 
-  /** 局域网模式下，直连端口什么都不用带；只有走网关（且能登网关）的端口还需要 Authelia 会话。 */
-  private lanNeedsNoSession(port: number): boolean {
-    if (!this.lan) return false
-    return !this.usesGateway(port) || this.gateway.lanBase === ''
+  /** 局域网模式下直连 NAS，什么都不用带（kura-server 不认证）；也没有会话可续期。 */
+  private lanNeedsNoSession(_port: number): boolean {
+    return this.lan
   }
 
   /** 返回某个端口的可用会话 cookie；缓存过期或 force 时重建。 */
@@ -182,19 +176,8 @@ export class SessionManager {
   }
 
   private async establishOnce(port: number): Promise<string> {
-    // 局域网直连：跳过整条绿联链路，只有走网关时才需要一次 Authelia 登录
-    if (this.lan) {
-      if (!this.usesGateway(port)) return ''
-      return autheliaLogin(
-        {
-          gatewayBase: this.gateway.lanBase,
-          hostHeader: this.gateway.lanHostHeader,
-          user: this.gateway.user,
-          password: this.gateway.password,
-        },
-        this.request,
-      )
-    }
+    // 局域网直连：不经过绿联，也就没有 ugreen-proxy-token —— kura-server 不做认证，空 cookie 就够。
+    if (this.lan) return ''
 
     let lastError: unknown
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -212,17 +195,7 @@ export class SessionManager {
         }
         throw error
       }
-      const ugreenCookie = `ugreen-proxy-token=${await this.ugreen.fetchSsoCookie(redirectUrl)}`
-
-      // 走网关的端口把 Authelia 会话一并准备好：两层 cookie 一起注入，本机应用不需要知道任何认证细节
-      if (this.usesGateway(port)) {
-        const sso = await autheliaLogin(
-          { gatewayBase: this.gateway.base, ugreenCookie, user: this.gateway.user, password: this.gateway.password },
-          this.request,
-        )
-        return `${ugreenCookie}; ${sso}`
-      }
-      return ugreenCookie
+      return `ugreen-proxy-token=${await this.ugreen.fetchSsoCookie(redirectUrl)}`
     }
     throw new Error(`建立端口 ${port} 的会话失败：${errorMessage(lastError)}`)
   }
@@ -252,8 +225,8 @@ export class SessionManager {
    * 收到 302/401 视为会话失效：作废缓存再试一次；仍不行就把状态码报出去（不跟随重定向）。
    */
   async gatewayGet(path: string): Promise<Buffer> {
-    if (this.gateway.port === 0 || this.gateway.user === '') {
-      throw new Error('未启用统一网关或没有 SSO 凭据，取不到服务端清单')
+    if (this.gateway.port === 0) {
+      throw new Error('未配置统一网关，取不到服务端清单')
     }
     let lastError: unknown
     for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -292,29 +265,15 @@ export class SessionManager {
     return { reason: state.reason, leftMs: state.until - this.now() }
   }
 
-  /** 按错误类型决定停多久：凭据错停很久并告警，链路错按台阶退避。 */
+  /** 按台阶退避：链路类失败（超时、5xx、绿联会话过期）重试有意义，停一会儿再来。 */
   private recordAuthFailure(port: number, error: unknown): void {
-    const credential = isAuthRejected(error)
-    const state = this.authStates.get(port) ?? { fails: 0, until: 0, credential: false, reason: '' }
+    const state = this.authStates.get(port) ?? { fails: 0, until: 0, reason: '' }
     state.fails += 1
-    state.credential = credential
     state.reason = errorMessage(error)
-    if (credential) {
-      state.until = this.now() + credentialCooldownMs
-    } else {
-      const backoff = Math.min(transientBackoffBaseMs * 2 ** (state.fails - 1), transientBackoffMaxMs)
-      state.until = this.now() + backoff
-    }
+    const backoff = Math.min(transientBackoffBaseMs * 2 ** (state.fails - 1), transientBackoffMaxMs)
+    state.until = this.now() + backoff
     this.authStates.set(port, state)
 
-    if (credential) {
-      this.log.error('凭据被上游拒绝：已停止自动重试（修好凭据后重新登录即可恢复）', {
-        port,
-        错误: state.reason,
-        冷却秒: credentialCooldownMs / 1000,
-      })
-      return
-    }
     this.log.warn('建立会话失败，进入退避', {
       port,
       错误: state.reason,
@@ -339,10 +298,10 @@ export class SessionManager {
   authStatus(): AuthStatus {
     for (const state of this.authStates.values()) {
       if (this.now() < state.until) {
-        return { blocked: true, credential: state.credential, reason: state.reason, retryAt: state.until, fails: state.fails }
+        return { blocked: true, reason: state.reason, retryAt: state.until, fails: state.fails }
       }
     }
-    return { blocked: false, credential: false, reason: '', retryAt: 0, fails: 0 }
+    return { blocked: false, reason: '', retryAt: 0, fails: 0 }
   }
 
   // ---- 后台续期 ----

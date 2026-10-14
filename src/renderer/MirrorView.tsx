@@ -266,7 +266,7 @@ export function MirrorView({ snapshot, refresh }: { snapshot: MirrorSnapshot; re
             description={
               snapshot.discovery.lastSync
                 ? '服务端清单里没有可映射的服务'
-                : '正在从服务端拉取服务清单；如果一直没有，检查网关账号是否正确'
+                : '正在从服务端拉取服务清单；如果一直没有，检查网关端口是否正确、kura-server 是否在跑'
             }
             action={<Button onClick={() => void window.kura?.mirror.sync().then(refresh)}>立即同步</Button>}
           />

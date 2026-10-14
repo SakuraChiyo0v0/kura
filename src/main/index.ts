@@ -22,7 +22,6 @@ import {
   type KuraBootstrap,
   type ModulesStatusView,
   type MountSettingsView,
-  type TerminalConfigForm,
 } from '../shared/ipc.js'
 import { kuraSettingsDefaults, type KuraSettings } from '../shared/settings.js'
 import { ConnectionService } from './connection.js'
@@ -69,7 +68,6 @@ const files = new FileService(featureDeps)
 const localDav = new LocalDavService(featureDeps)
 const terminals = new TerminalService(
   featureDeps,
-  new CredentialVault(join(userData, 'console.json'), safeStorage),
   (event) => windows.broadcast(ch.terminalEvent, event),
 )
 const modules = new ModuleManager({
@@ -142,7 +140,7 @@ function trayTooltip(): string {
   const snap = connection.current()?.snapshot()
   if (!snap) return connection.summary().configured ? 'Kura · 正在启动' : 'Kura · 尚未连接 NAS'
   const running = snap.services.filter((s) => s.listener.running).length
-  const auth = snap.auth.blocked ? (snap.auth.credential ? ' · 凭据被拒' : ' · 认证退避中') : ''
+  const auth = snap.auth.blocked ? ' · 连接退避中' : ''
   return `Kura · ${linkModeLabel[snap.mode]} · ${running}/${snap.services.length} 个服务${auth}`
 }
 
@@ -318,9 +316,7 @@ function registerKuraIpc(): void {
   router.handle(ch.terminalWrite, (_event, id: string, data: string) => terminals.write(String(id), String(data)))
   router.handle(ch.terminalResize, (_event, id: string, cols: number, rows: number) => terminals.resize(String(id), Number(cols), Number(rows)))
   router.handle(ch.terminalClose, (_event, id: string) => terminals.close(String(id)))
-  router.handle(ch.terminalGetConfig, () => terminals.config())
-  router.handle(ch.terminalSaveConfig, (_event, form: TerminalConfigForm) => terminals.saveConfig(form))
-  router.handle(ch.terminalTest, (_event, form: TerminalConfigForm) => terminals.test(form))
+  router.handle(ch.terminalAvailable, () => terminals.available())
 
   // ---- 模块 ----
   router.handle(ch.modulesStatus, (): ModulesStatusView => ({

@@ -12,9 +12,7 @@ const form: ConnectionForm = {
   ugreenPassword: 'pw',
   lanHost: '',
   mode: 'wan',
-  gatewayPort: 8897,
-  gatewayUser: 'gw',
-  gatewayPassword: 'gwpw',
+  gatewayPort: 8898,
 }
 
 const info: UglinkInfo = { id: 'dev-1', base: 'https://dev-1.cn30.ug.link', lanHost: '192.0.2.10' }
@@ -35,9 +33,7 @@ describe('mergeForm', () => {
 
   it('密码留空沿用已保存的值', () => {
     const saved = mergeForm(form, undefined, info)
-    const merged = mergeForm({ ...form, ugreenPassword: '', gatewayPassword: '' }, saved, info)
-    expect(merged.ugreenPassword).toBe('pw')
-    expect(merged.gatewayPassword).toBe('gwpw')
+    expect(mergeForm({ ...form, ugreenPassword: '' }, saved, info).ugreenPassword).toBe('pw')
   })
 
   it('缺账号密码、解析结果不是绿联域都拒绝', () => {
@@ -55,8 +51,8 @@ describe('mergeForm', () => {
     expect(() => mergeForm({ ...form, mode: 'lan' }, undefined, noLan)).toThrow(/局域网地址/)
   })
 
-  it('不用网关时清掉网关凭据', () => {
-    expect(mergeForm({ ...form, gatewayPort: 0 }, undefined, info)).toMatchObject({ gatewayUser: '', gatewayPassword: '' })
+  it('不用网关时端口归零（没有凭据要清理）', () => {
+    expect(mergeForm({ ...form, gatewayPort: 0 }, undefined, info).gatewayPort).toBe(0)
   })
 })
 
@@ -68,9 +64,9 @@ describe('summarize', () => {
       uglinkId: 'dev-1',
       base: 'https://dev-1.cn30.ug.link',
       hasUgreenPassword: true,
-      hasGatewayPassword: true,
+      gatewayPort: 8898,
     })
-    expect(JSON.stringify(summary)).not.toContain('gwpw')
+    expect(JSON.stringify(summary)).not.toContain('pw')
     expect(summarize(undefined).configured).toBe(false)
   })
 })
@@ -97,26 +93,19 @@ describe('testConnection', () => {
     const result = await testConnection(config(), viaFake(), info)
     expect(result.ok).toBe(true)
     // 局域网地址由查询结果补齐，所以最后还会多一步「局域网可达」（连不上也不算失败）
-    expect(result.steps.map((s) => s.name)).toEqual([
-      'UGREENlink ID',
-      '绿联账号登录',
-      '网关端口 8897 会话',
-      '网关（Authelia）登录',
-      '局域网可达',
-    ])
+    expect(result.steps.map((s) => s.name)).toEqual(['UGREENlink ID', '绿联账号登录', '网关端口 8898 会话', '局域网可达'])
     expect(result.steps[0]!.detail).toContain('https://dev-1.cn30.ug.link')
   })
 
-  it('网关密码错：在 Authelia 那一步停下并说明原因', async () => {
-    fake.autheliaMode = 'reject'
+  it('绿联登录失败：在第一步停下并说明原因', async () => {
+    fake.loginMode = 'error'
     const result = await testConnection(config(), viaFake(), info)
     expect(result.ok).toBe(false)
-    expect(result.steps.at(-1)).toMatchObject({ name: '网关（Authelia）登录', ok: false })
-    expect(result.steps.at(-1)!.detail).toMatch(/凭据被上游拒绝/)
+    expect(result.steps.at(-1)).toMatchObject({ name: '绿联账号登录', ok: false })
   })
 
   it('局域网连不上不算整体失败', async () => {
-    const result = await testConnection(config({ lanHost: '127.0.0.1', gatewayPort: 1 }), viaFake(), info)
+    const result = await testConnection(config({ lanHost: '127.0.0.1' }), viaFake(), info)
     expect(result.steps.at(-1)).toMatchObject({ name: '局域网可达', ok: false })
     expect(result.ok).toBe(true)
   })

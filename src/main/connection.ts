@@ -1,4 +1,3 @@
-import { autheliaLogin } from '../core/authelia.js'
 import { errorMessage } from '../core/errors.js'
 import { request as defaultRequest, type HttpRequester } from '../core/http.js'
 import { tcpReachable } from '../core/link.js'
@@ -37,8 +36,6 @@ export function mergeForm(form: ConnectionForm, saved: ConnectionConfig | undefi
     lanHost,
     mode: form.mode,
     gatewayPort,
-    gatewayUser: gatewayPort ? form.gatewayUser.trim() : '',
-    gatewayPassword: gatewayPort ? form.gatewayPassword || saved?.gatewayPassword || '' : '',
   }
 }
 
@@ -51,9 +48,7 @@ export function summarize(config: ConnectionConfig | undefined): ConnectionSumma
     hasUgreenPassword: Boolean(config?.ugreenPassword),
     lanHost: config?.lanHost ?? '',
     mode: config?.mode ?? 'auto',
-    gatewayPort: config?.gatewayPort ?? 8897,
-    gatewayUser: config?.gatewayUser ?? '',
-    hasGatewayPassword: Boolean(config?.gatewayPassword),
+    gatewayPort: config?.gatewayPort ?? 8898,
   }
 }
 
@@ -66,7 +61,7 @@ export type TestProgress =
 export type TestProgressSink = (progress: TestProgress) => void
 
 /**
- * 按配置实际走一遍：查 UGREENlink ID → 绿联登录 → 网关端口会话 → Authelia 登录 → 局域网可达。
+ * 按配置实际走一遍：查 UGREENlink ID → 绿联登录 → 网关端口会话 → 局域网可达。
  * 每一步只报「通过 / 失败 + 原因」，不回传任何令牌。后面的步骤依赖前面的，失败就停。
  *
  * `onProgress` 每完成一步回调一次（界面靠它逐条点亮；不传就只拿最终结果）。
@@ -94,7 +89,7 @@ export async function testConnection(
 
   // 先把后面的步骤名一次性报给界面，让它们一开始就以「转圈」出现，而不是一条条蹦出来
   const plan = ['绿联账号登录']
-  if (config.gatewayPort) plan.push(`网关端口 ${config.gatewayPort} 会话`, '网关（Authelia）登录')
+  if (config.gatewayPort) plan.push(`网关端口 ${config.gatewayPort} 会话`)
   if (config.lanHost) plan.push('局域网可达')
   onProgress?.({ phase: 'plan', names: plan })
 
@@ -110,28 +105,13 @@ export async function testConnection(
   }
 
   if (config.gatewayPort) {
-    let ugreenCookie = ''
     try {
       const redirect = await ugreen.dockerToken(config.gatewayPort, apiToken)
-      ugreenCookie = `ugreen-proxy-token=${await ugreen.fetchSsoCookie(redirect)}`
+      await ugreen.fetchSsoCookie(redirect)
       push({ name: `网关端口 ${config.gatewayPort} 会话`, ok: true, detail: '已建立' })
     } catch (error) {
       push({ name: `网关端口 ${config.gatewayPort} 会话`, ok: false, detail: errorMessage(error) })
       return { ok: false, steps }
-    }
-    if (config.gatewayUser && config.gatewayPassword) {
-      try {
-        await autheliaLogin(
-          { gatewayBase: appBase(config.base, config.gatewayPort), ugreenCookie, user: config.gatewayUser, password: config.gatewayPassword },
-          request,
-        )
-        push({ name: '网关（Authelia）登录', ok: true, detail: '登录成功' })
-      } catch (error) {
-        push({ name: '网关（Authelia）登录', ok: false, detail: errorMessage(error) })
-        return { ok: false, steps }
-      }
-    } else {
-      push({ name: '网关（Authelia）登录', ok: false, detail: '没有填写网关账号密码：走网关的服务会用不了' })
     }
   }
 

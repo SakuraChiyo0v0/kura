@@ -170,8 +170,6 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
       fill('账号', 'smoke-user'),
       fill('密码', 'smoke-pass'),
       fill('NAS 局域网地址', '127.0.0.1'),
-      fill('网关账号', 'smoke-gw'),
-      fill('网关密码', 'smoke-gw-pass'),
     ])
     check('表单填写', filled.every(Boolean), JSON.stringify(filled))
     const lookupsBefore = await smokeNasCounter('lookups')
@@ -210,7 +208,7 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
         return ''
       }
     })()
-    check('凭据已加密落盘', disk.length > 0 && !/smoke-pass|smoke-gw-pass|smoke-user|smoke-nas-id/.test(disk))
+    check('凭据已加密落盘', disk.length > 0 && !/smoke-pass|smoke-user|smoke-nas-id/.test(disk))
 
     // ⑤ 服务卡片出现，本机端口真能访问到 NAS 上的应用
     const cards = await waitFor(`document.querySelectorAll('[data-testid="service-card"]').length === 4`, 15_000)

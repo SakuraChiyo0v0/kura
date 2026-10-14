@@ -18,9 +18,7 @@ const sample: ConnectionConfig = {
   ugreenPassword: 'Very-Secret-123',
   lanHost: '10.0.0.5',
   mode: 'auto',
-  gatewayPort: 8897,
-  gatewayUser: 'gw-user',
-  gatewayPassword: 'Gateway-Secret-456',
+  gatewayPort: 8898,
 }
 
 let dir: string

@@ -44,9 +44,7 @@ export const kuraChannels = {
   terminalClose: 'kura:terminal:close',
   /** 主进程推送：终端输出与状态 */
   terminalEvent: 'kura:terminal:event',
-  terminalGetConfig: 'kura:terminal:get-config',
-  terminalSaveConfig: 'kura:terminal:save-config',
-  terminalTest: 'kura:terminal:test',
+  terminalAvailable: 'kura:terminal:available',
   // ---- v0.3 模块 ----
   modulesStatus: 'kura:modules:status',
   modulesInstallRclone: 'kura:modules:install-rclone',
@@ -121,24 +119,6 @@ export interface DavCheckResult {
 
 // ---- v0.2 终端 ----
 
-export interface TerminalConfigView {
-  /** 'password'：nas-console 账号密码；'token'：API Token */
-  method: 'password' | 'token'
-  user: string
-  hasPassword: boolean
-  hasToken: boolean
-  /** 服务端清单里有没有 nas-console 服务 */
-  available: boolean
-}
-
-export interface TerminalConfigForm {
-  method: 'password' | 'token'
-  user: string
-  /** 留空 = 沿用已保存的 */
-  password: string
-  token: string
-}
-
 export type TerminalEventView =
   | { id: string; type: 'data'; data: string }
   | { id: string; type: 'status'; status: 'connecting' | 'open' | 'closed'; message?: string }
@@ -183,8 +163,6 @@ export interface ConnectionForm {
   lanHost: string
   mode: LinkModeSetting
   gatewayPort: number
-  gatewayUser: string
-  gatewayPassword: string
 }
 
 /** 给渲染层看的连接配置：密码只告诉「有没有」，不回传明文。 */
@@ -198,8 +176,6 @@ export interface ConnectionSummary {
   lanHost: string
   mode: LinkModeSetting
   gatewayPort: number
-  gatewayUser: string
-  hasGatewayPassword: boolean
 }
 
 export interface ConnectionTestStep {
@@ -282,9 +258,7 @@ export interface KuraBridge {
     resize(id: string, cols: number, rows: number): Promise<void>
     close(id: string): Promise<void>
     onEvent(listener: (event: TerminalEventView) => void): () => void
-    getConfig(): Promise<TerminalConfigView>
-    saveConfig(form: TerminalConfigForm): Promise<TerminalConfigView>
-    test(form: TerminalConfigForm): Promise<string>
+    available(): Promise<boolean>
   }
   modules: {
     status(): Promise<ModulesStatusView>
