@@ -867,18 +867,31 @@ body {
 }
 
 /* 终端页：整页不许滚动，把高度一路传到 xterm，让 fit() 拿到确定尺寸。
-   其他页面照旧由 .kura-main 滚动。 */
-.kura-main:has(.kura-term[data-mode='term']) {
+   其他页面照旧由 .kura-main 滚动。
+   选择器用 data-terminal-active 而不是 :has(.kura-term)：终端面板现在常驻在页面之外
+   （见 App.tsx 的 .kura-term-host），旧选择器会让每个页面都命中。 */
+.kura-main[data-terminal-active] {
   overflow: hidden;
   display: flex;
   flex-direction: column;
 }
-.kura-main:has(.kura-term[data-mode='term']) .sk-page-transition,
-.kura-main:has(.kura-term[data-mode='term']) .sk-page-panel {
-  flex: 1;
+/* 终端在页外的 host 里，所以终端页的 PageTransition 只剩页头：让它按内容高（flex:0 0 auto），
+   否则它和 .kura-term-host 都是 flex:1，两个各占一半，终端被压到一半高。 */
+.kura-main[data-terminal-active] .sk-page-transition,
+.kura-main[data-terminal-active] .sk-page-panel {
+  flex: 0 0 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+.kura-main[data-terminal-active] .kura-term-host {
+  flex: 1 1 0%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.kura-term-host[hidden] {
+  display: none;
 }
 
 .kura-term__pane[hidden] {

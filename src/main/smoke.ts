@@ -313,6 +313,25 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     check('终端页没有凭据表单', await js<boolean>(`document.querySelectorAll('.kura-term input').length === 0`))
     await shot('v0.2-终端.png')
 
+    // ⑦d2 切页不能把终端弄丢。Sakura 的 PageTransition 按 routeKey 记住子树，切页是**卸载重建** ——
+    // 终端页原先放在它里面，于是切走再回来，标签列表和 xterm 回滚缓冲一起没掉，而主进程的 PTY 还活着
+    // （界面显示「没有打开的终端」，其实会话还在）。现在终端常驻在页面之外、只 hidden。
+    // 这条只有真实 UI 能验：单测里没有页面切换与 React 卸载。
+    await nav('设置')
+    await delay(200)
+    await nav('终端')
+    const keepPanes = await js<number>(`document.querySelectorAll('.xterm').length`)
+    const keepBuffer = await js<string>(`document.querySelector('[data-testid="terminal-pane"]')?.kuraText?.() ?? ''`)
+    check('切页后终端还在（标签与回滚缓冲都没丢）', keepPanes === 1 && keepBuffer.includes('smoke-nas:~# ls'), `面板数=${keepPanes} 缓冲区=${JSON.stringify(keepBuffer.slice(-80))}`)
+
+    // 终端要填满页面：host 是 PageTransition 的兄弟节点，两边都 flex:1 的话各占一半、终端只有一半高
+    const termLayout = await js<{ host: number; panes: number; main: number }>(
+      `({ host: Math.round(document.querySelector('.kura-term-host').getBoundingClientRect().height),
+          panes: Math.round(document.querySelector('.kura-term__panes').getBoundingClientRect().height),
+          main: Math.round(document.querySelector('main').getBoundingClientRect().height) })`,
+    )
+    check('终端占满页面高度', termLayout.host >= termLayout.main - 160 && termLayout.panes > 0, JSON.stringify(termLayout))
+
     // ⑦e v0.3 模块页：能显示依赖检测结果（不在冒烟里真去下载 rclone）
     await nav('模块')
     check('模块页', await waitFor(`document.querySelector('[data-testid="module-rclone"] .kura-req') !== null`))

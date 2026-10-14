@@ -198,7 +198,8 @@ function Shell() {
       case 'files':
         return <FilesView />
       case 'terminal':
-        return <TerminalView />
+        // 终端页的正文常驻在下面的 .kura-term-host 里，这里只留页头（见那里的注释）
+        return null
       case 'modules':
         return <ModulesView />
       default:
@@ -216,7 +217,7 @@ function Shell() {
         onCollapsedChange={(value) => set('sidebarCollapsed', value)}
         header={<span className="kura-brand">Kura 蔵</span>}
       />
-      <main className="kura-main">
+      <main className="kura-main" data-terminal-active={page.id === 'terminal' || undefined}>
         <PageTransition routeKey={page.id}>
           <header className="kura-page-header">
             <h1 className="kura-page-title" data-testid="page-title">
@@ -226,6 +227,15 @@ function Shell() {
           </header>
           {content}
         </PageTransition>
+        {/*
+          终端页常驻在这里，**不能**放进上面那个 PageTransition：它按 routeKey 记住子树，
+          切页时是卸载重建 —— 标签列表与 xterm 回滚缓冲会一起没掉，而主进程的 PTY 还活着，
+          于是切回来看到「没有打开的终端」，其实会话还在。用 hidden 藏起来就都保住了。
+          放在 main 末尾是为了让 DOM 与视觉顺序一致（主区在前、终端在后，终端被隐藏时不影响布局）。
+        */}
+        <div className="kura-term-host" hidden={page.id !== 'terminal'}>
+          <TerminalView />
+        </div>
       </main>
     </div>
   )
