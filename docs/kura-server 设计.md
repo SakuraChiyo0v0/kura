@@ -11,11 +11,11 @@
 ## 一、结构
 
 ```
-绿联中继 / 局域网 ──► 宿主 :8897
+绿联中继 / 局域网 ──► 宿主 :8898
                         │
               ┌─────────▼──────────────────────────────┐
               │ kura-server（普通容器）                 │
-              │  认证（单用户，argon2id）               │
+              │  不做认证（靠外层：中继 / 局域网防护）  │
               │  反代：X-Nas-Service / 路径前缀 → 应用  │
               │  /__services 清单                       │
               │  WebDAV 范围层 ─► rclone 子进程(回环)   │──► 宿主 /（只读或读写挂载）
@@ -34,30 +34,38 @@
 终端要宿主 root。放一起 = 认证或反代任何一个漏洞都直接变成宿主 root。拆开后，特权容器只做一件事、
 只听内部网络、只认一个随机令牌，攻击面小到可以逐行审。
 
-## 二、和客户端的契约：保持不变
+## 二、和客户端的接口
 
-客户端的映射核心（`src/core/session.ts`、`authelia.ts`、`proxy.ts`）**一行不改**也能连新服务。
-新服务按现在网关的外部行为实现：
+> 这一节原本写的是「照抄 Authelia 的外部行为，客户端一行不改」。**已于 2026-10-14 变更**：
+> 认证那一层整层去掉了（见 §三），下面只留还成立的部分。
 
-| 现在（nginx + Authelia） | kura-server |
-|-|-|
-| `POST /api/firstfactor` `{username,password,keepMeLoggedIn}` → `200 {"status":"OK"}` + `Set-Cookie: authelia_session=…` | 同。cookie 名保留 `authelia_session`（客户端按 `authelia` 前缀收集） |
-| 凭据错 → `401 {"status":"KO","message":…}` | 同。客户端据此停止重试、冷却 10 分钟 |
-| 未认证访问受保护路径 → `302` 到门户 | 同（无 Accept: text/html 时回 `401`，客户端两种都认） |
-| `X-Nas-Service: <名>` 请求头分流；没有头时按 `/<名>/` 路径前缀 | 同。头优先，路径前缀用**白名单**（只认清单里的名字，Authelia 自己的路径不会被当成服务名 —— 现网踩过） |
-| `GET /__services` → `{"services":[{name,container_port,host_port,published}]}`（需认证） | 同。数据来源改为配置文件 + docker 端口查询，见 §五 |
-| 会话 Host 校验（cookie 域只认公网域名，局域网 Host 发 IP 会 401） | **不再需要**：kura-server 的会话不绑域名。客户端照发公网域名 Host 也没关系 |
+- `POST /api/firstfactor`、`POST /api/logout`：留成兼容壳，一律回 `200 {"status":"OK"}`，不种 cookie。
+  旧客户端启动时会先登一次，不回 200 它会直接报错。
+- `X-Nas-Service: <名>` 请求头分流；没有头时按 `/<名>/` 路径前缀。
+  头优先，路径前缀用**白名单**（只认清单里的名字，网关自己的 `/api/…`、`/static/…` 不会被当成服务名 —— 现网踩过）。
+- `GET /__services` → `{"services":[{name,container_port,host_port,published}]}`，不再需要认证。
+  数据来源是配置文件 + docker 端口查询，见 §五。
+- **不再有会话 cookie**，也不校验 Host 域。客户端仍然照发公网域名 Host —— 旧链路留下的做法，
+  顺带让容器应用在两种链路下看到的 Host 一致。
 
-好处：**新旧两套能并行、随时切回**。迁移时客户端只改「网关端口」一个数字。
+好处：新旧两套仍能并行、随时切回。迁移时客户端只改「网关端口」一个数字。
 
 ## 三、认证
 
-- 单用户。`.env`：`KURA_USER`、`KURA_PASSWORD_HASH`（argon2id；提供 `kura-server hash` 子命令生成）。
-  启动时打印凭据**指纹**（sha256 前 8 位），沿用 Authelia entrypoint 的做法——两端对不上一眼看出。
-- 会话：服务端内存 + 落盘（`/state/sessions.json`，重启不掉线），默认 30 天滑动过期（对应现在的 keepMeLoggedIn）。
-  cookie：`HttpOnly`、`SameSite=Lax`、不设 Domain。
-- 防爆破：同一来源 5 分钟内失败 5 次封 10 分钟，失败文案带封禁到期时间（客户端已能解析 `banned until …`）。
-- 不做：多用户、二次验证、OIDC。现在 Authelia 实际只用了 one_factor 单用户。
+**kura-server 不做认证**（2026-10-14 改）。
+
+原来的设计是在 kura-server 里复刻一套 Authelia 协议（单用户、argon2id、会话 cookie、防爆破），
+好处是客户端一行不改就能连。但客户端设置里那组「网关账号密码」跟绿联账号密码是重复的 ——
+能到达 kura-server 的请求早已过了绿联中继的认证。
+
+现在：客户端只保留绿联账号密码，网关那一层只剩「端口」。kura-server 把
+`/api/firstfactor`、`/api/logout` 留成「回 200 OK」的兼容壳（旧客户端会先登录），
+真正的认证代码（`server/src/auth.ts`、`password.ts`）已删。
+
+**代价（已知并接受）**：8898 发布在 `0.0.0.0`，局域网里任何设备都能直连它，读写整个 NAS 文件、
+拿到 root 终端。当前靠绿联中继挡公网侧；局域网侧待引入外层手段（见 AGENTS.md）。
+
+kura-shell 的**内部令牌**仍然保留 —— 那不是这一层认证，是 kura-server 与特权容器之间的边界。
 
 ## 四、反代
 
@@ -109,8 +117,8 @@ services:
   下行文本帧 = 输出。`POST /exec {cmd,cwd?,timeout?}` → `{exitCode,stdout,stderr,durationMs}`。
 - 认证：kura-shell **不认用户**，只认 kura-server 启动时生成、经共享卷传过去的随机令牌（每次启动换一个）。
   kura-shell 不发布端口、只挂 `kura-internal` 网络。
-- 对外：kura-server 把 `nas-console` 这个名字的请求（`WS /api/tty`、`POST /api/exec`）认证后转给 kura-shell；
-  外部 API Token（`nsc_…`）由 kura-server 管理，供脚本 / AI 调 exec。
+- 对外：kura-server 把 `nas-console` 这个名字的请求（`WS /api/tty`、`POST /api/exec`）转给 kura-shell；
+  外部 API Token（`nsc_…`）由 kura-server 管理，供脚本 / AI 调 exec（界面开终端不需要它）。
 - 审计：每次会话开关、每条 exec 记 `/state/audit.log`（谁、何时、命令、退出码、耗时）。
 - 并发上限默认 4 个 PTY。
 
@@ -119,7 +127,7 @@ services:
 
 ## 八、管理页
 
-`/_kura/`（需认证）：
+`/_kura/`：
 - 状态：rclone 是否在跑、kura-shell 是否连通、会话数、最近审计
 - 暴露范围：放行 / 排除 / 只读 + 可见性自检（与客户端本机 WebDAV 页同一套 UI 逻辑）
 - 服务清单：增删改 services.yaml
@@ -127,13 +135,15 @@ services:
 
 ## 九、部署
 
+> 实际部署文件在 `server/deploy/`，下面这份是设计期的草稿形状，**端口以 8898 为准**（8897 留给旧网关）。
+
 ```yaml
-# server/deploy/docker-compose.yaml（草稿）
+# server/deploy/docker-compose.yaml（形状）
 services:
   kura-server:
-    image: ghcr.io/sakurachiyo0v0/kura-server:<版本>
+    image: ghcr.io/sakurachiyo0v0/kura-server:latest
     restart: unless-stopped
-    ports: ["8897:8080"]
+    ports: ["8898:8080"]
     env_file: .env
     volumes:
       - ./state:/state
@@ -164,7 +174,7 @@ volumes:
   shell-token:
 ```
 
-复刻步骤：`docker network create sso-net`（已有就跳过）→ 写 `.env`（`kura-server hash` 生成哈希）→
+复刻步骤：`docker network create sso-net`（已有就跳过）→ `cp .env.example .env` →
 `docker compose up -d`。**不再需要 Postgres、不再需要宿主 systemd 单元、不再需要跑生成脚本。**
 
 同一个镜像两个入口（`serve` / `shell`），发布一次。
@@ -183,24 +193,25 @@ volumes:
 ```
 server/
   src/
-    auth.ts        登录、会话、防爆破、argon2
     proxy.ts       反代（头、WebSocket、路径前缀、跳转改写）
     registry.ts    services.yaml + docker 端口查询 → /__services
     webdav.ts      rclone 子进程管理 + 复用 src/core/dav-*
     shell/         kura-shell：node-pty、exec、内部令牌、审计
     admin/         管理页
-    main.ts        入口：serve / shell / hash
+    main.ts        入口：serve / shell
   test/            用假应用、假 rclone 的集成测试；kura-shell 用本机 bash/powershell 测
   Dockerfile
   deploy/docker-compose.yaml、.env.example
 src/core/dav-scope.ts、dav-server.ts  ← 客户端与服务端共用（纯 Node，本来就不依赖 Electron）
 ```
 
+（`auth.ts`、`password.ts` 已随认证层删除；`hash.ts` 留着 —— 它做的是 rclone 文件校验，与认证无关。）
+
 ## 十二、分步与验收
 
 | 步 | 内容 | 判据 |
 |-|-|-|
-| S1 | 认证 + 反代 + 清单 | 现有客户端**不改代码**连上（假应用 + 冒烟），302/401/KO 行为与现网一致 |
+| S1 | ~~认证~~ + 反代 + 清单 | 现有客户端**不改代码**连上（假应用 + 冒烟）；认证层后来整层删掉（§三） |
 | S2 | WebDAV（rclone 子进程 + 范围层） | 范围语义与现网 files-admin 一致；客户端文件页、本机 WebDAV、rclone 挂载全通 |
 | S3 | kura-shell + 终端转发 + exec + Token | 终端可用且 **resize 生效**；特权容器只认内部令牌（测试里拿错令牌必须 401） |
 | S4 | 管理页 | 范围、清单、Token 都能在页面上改 |
@@ -214,5 +225,5 @@ S1–S5 都在本机做、不碰 NAS。
 - **绿联中继是否支持 WebSocket**：仍未实测，决定外网终端能不能用。S6 第一件事测它。
 - **node-pty 在容器里的原生编译**：要在 Alpine/Debian 镜像里编译，镜像构建阶段处理；UGOS 内核上没跑过。
 - **`pid: host` + `nsenter` 在新镜像里**：nas-console 实测可行，换基础镜像后需重测。
-- **会话 cookie 去掉域绑定**：比 Authelia 宽松（现在任何 Host 都认）。因为入口只有绿联中继与局域网，风险可接受，写在这里供你判断。
-- 自己写认证意味着安全由我们负责：argon2id、恒定时间比较、防爆破、会话随机 256 位，S1 写测试逐条覆盖。
+- **局域网侧没有认证**：8898 发布在 `0.0.0.0`，同网段设备可直连。这是主动取舍（去掉重复凭据），
+  待引入外层防护机制。
