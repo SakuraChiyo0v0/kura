@@ -1,0 +1,25 @@
+# kura-server（S1 草稿：认证 + 反代 + 清单）。S2 加 WebDAV 挂载，S3 加 kura-shell 容器。
+#
+# 迁移期先用 8898 与旧 sso-gateway（8897）并行，验收通过再换端口（设计文档 §十）。
+#
+#   docker network create sso-net        # 已有就跳过：其他应用容器都在这上面
+#   cp .env.example .env && 填好
+#   docker compose up -d
+services:
+  kura-server:
+    image: kura-server:local
+    container_name: kura-server
+    restart: unless-stopped
+    ports:
+      - "8898:8080"
+    env_file: .env
+    volumes:
+      - ./state:/state
+      # 可选：只读，只用来查端口映射（代码里只调 GET /containers/json）
+      # - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - sso-net
+
+networks:
+  sso-net:
+    external: true

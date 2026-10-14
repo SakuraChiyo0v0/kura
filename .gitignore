@@ -8,3 +8,6 @@ release/
 *.log
 .env
 .env.local
+# kura-server 部署目录里的运行时状态
+server/deploy/state/
+server/deploy/.env

@@ -12,7 +12,9 @@
     "smoke": "node build.mjs && node scripts/smoke.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test && npm run smoke"
+    "check": "npm run typecheck && npm test && npm run smoke",
+    "server:build": "node server/build.mjs",
+    "server:start": "node server/build.mjs && node dist/server/main.mjs"
   },
   "dependencies": {
     "@sakura-ui/electron": "file:./vendor/sakura-ui/sakura-ui-electron-0.1.0.tgz",
