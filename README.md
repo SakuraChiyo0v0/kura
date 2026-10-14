@@ -9,15 +9,16 @@
 
 ## 状态
 
-v0.1 的四步都已完成，可以替代 Go 版 nas-mirror 客户端：
+| 版本 | 内容 |
+|-|-|
+| v0.1 | 应用外壳、连接核心（nas-mirror 的 TS 移植）、引导 + DPAPI 凭据、服务映射页与概览 |
+| v0.2 | 文件管理器（经映射层的 WebDAV）、**本机 WebDAV**（放行 / 排除 / 只读的暴露范围）、终端（xterm.js 多标签，接 nas-console） |
+| v0.3 | 模块页：rclone 挂载为本机磁盘（固定版本下载 + SHA256 校验；WinFsp 需自行安装） |
 
-1. 应用外壳：托盘常驻、标题栏、侧栏导航、设置
-2. 连接核心：nas-mirror 映射能力的 TS 移植（`src/core/`），Go 版测试逐条翻译
-3. 首次启动引导 + 凭据加密保存（Windows DPAPI）
-4. 服务映射页与概览页
-
-**尚未在真实 NAS 上验收**（冒烟用的是本地假 NAS）。下一步：真机验收，然后 v0.2（文件管理器、终端）。
+**尚未在真实 NAS 上验收**（单测与冒烟用的是本地假 NAS；rclone + WinFsp 挂载在本机真跑过）。
 使用前先停掉 Go 版 nas-mirror：两者会抢同样的本机端口。
+
+NAS 侧依赖：服务端清单里要有 `webdav`（文件、本机 WebDAV、挂载）与 `nas-console`（终端）两个服务。
 
 ## 开发
 
@@ -27,6 +28,9 @@ v0.1 的四步都已完成，可以替代 Go 版 nas-mirror 客户端：
 npm install
 npm start          # 构建并启动
 npm run check      # 类型检查 + 单测 + 真实 Electron 冒烟
+
+# 真下载 rclone 并用 WinFsp 挂一个临时盘符（联网，默认跳过）
+$env:KURA_REAL_RCLONE=1; npx vitest run src/main/modules.real.test.ts
 ```
 
 | 目录 | 内容 |
@@ -48,4 +52,7 @@ npm run check      # 类型检查 + 单测 + 真实 Electron 冒烟
 | `settings.json` | 界面设置 |
 | `mirror/services.json` | 各服务的开关、本机端口改动 |
 | `mirror/discovered.json` | 上次拉到的服务端清单（拉不到时兜底） |
+| `webdav.json` | 本机 WebDAV 的端口、只读、放行 / 排除目录 |
+| `console.json` | nas-console 登录凭据（safeStorage / DPAPI 加密） |
+| `modules/` | rclone（Kura 下载的副本）、挂载设置 `mount.json`、VFS 缓存 |
 | `logs/kura.log` | 日志，10 MiB 轮转；`KURA_VERBOSE=1` 打开 debug |
