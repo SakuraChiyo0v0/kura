@@ -29,13 +29,20 @@ export function useMirrorSnapshot(enabled: boolean, intervalMs = 3_000) {
   const [snapshot, setSnapshot] = useState<MirrorSnapshot | null>(() => window.kura?.bootstrap?.snapshot ?? null)
   const [error, setError] = useState('')
   const timer = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
+  // 每次快照请求领一个自增号；只有仍是「最新那次」的响应才写进 state。
+  // 轮询的旧请求可能晚于推送（或更新的一次轮询）返回，不挡的话会用过期数据把新状态覆盖回去，界面看起来在倒退。
+  const seq = useRef(0)
 
   const refresh = useCallback(async () => {
     if (!window.kura) return
+    const mine = ++seq.current
     try {
-      setSnapshot(await window.kura.mirror.snapshot())
+      const next = await window.kura.mirror.snapshot()
+      if (seq.current !== mine) return
+      setSnapshot(next)
       setError('')
     } catch (caught) {
+      if (seq.current !== mine) return
       setError((caught as Error).message)
     }
   }, [])
@@ -46,7 +53,11 @@ export function useMirrorSnapshot(enabled: boolean, intervalMs = 3_000) {
       return
     }
     void refresh()
-    const off = window.kura?.mirror.onChange((next) => setSnapshot(next))
+    // 推送优先级最高：收到就作废所有在途轮询（自增号让它们回来后自己丢弃）
+    const off = window.kura?.mirror.onChange((next) => {
+      seq.current += 1
+      setSnapshot(next)
+    })
     const start = () => {
       clearInterval(timer.current)
       timer.current = setInterval(() => void refresh(), intervalMs)

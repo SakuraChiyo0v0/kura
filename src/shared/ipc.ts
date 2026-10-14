@@ -92,13 +92,13 @@ export interface Transfer {
 
 // ---- v0.2 本机 WebDAV ----
 
-/** 本机 WebDAV 的设置。范围（include/exclude/readOnly）由 NAS 那份统一管，见 NasScopeView。 */
+/**
+ * 本机 WebDAV 的设置：只有传输层这两项。范围（include/exclude/readOnly）由 NAS 那份统一管，
+ * 见 NasScopeView —— 这里**不列**那几个字段，否则调用方以为能设、传进来却被 `davSave` 静默丢掉。
+ */
 export interface DavSettingsView {
   enabled: boolean
   port: number
-  readOnly: boolean
-  include: string[]
-  exclude: string[]
 }
 
 export interface DavStatusView {

@@ -2,7 +2,7 @@ import { createReadStream, createWriteStream, mkdirSync, renameSync, rmSync, sta
 import { basename, join } from 'node:path'
 import { ConsoleSession, ConsoleTerminal } from '../core/console.js'
 import { DavClient, type DavEntry } from '../core/dav-client.js'
-import { normalizeDavPath, normalizeRules, visibilityOf, writeDenial } from '../core/dav-scope.js'
+import { normalizeDavPath } from '../core/dav-scope.js'
 import { DavServer, davServerDefaults, type DavServerSettings } from '../core/dav-server.js'
 import { errorMessage } from '../core/errors.js'
 import type { HttpRequester } from '../core/http.js'
@@ -234,7 +234,7 @@ export class LocalDavService {
     const status = this.server.status()
     const settings = this.server.current()
     return {
-      settings: { ...settings, include: [...settings.include], exclude: [...settings.exclude] },
+      settings: { enabled: settings.enabled, port: settings.port },
       url: status.url,
       running: status.listener.running,
       lastError: status.listener.lastError,

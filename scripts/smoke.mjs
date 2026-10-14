@@ -205,7 +205,8 @@ const nas = http.createServer(async (req, res) => {
         return json({ error: '至少要放行一个目录' })
       }
       scope = { include: patch.include, exclude: patch.exclude, readOnly: patch.readOnly === true }
-      return json({ limits: scope })
+      // 与真服务端一致：POST 也回 {limits, defaults}（客户端的解析器两种响应同一份）
+      return json({ limits: scope, defaults: { include: ['/'], exclude: [], readOnly: false } })
     }
     case '/__services':
       // 第二轮（重启）故意拖慢清单：证明界面第一帧的卡片来自缓存，而不是等到了网络
@@ -255,6 +256,12 @@ function runKura(phase) {
         KURA_SMOKE_APP: `http://127.0.0.1:${appPort}`,
       },
       stdio: 'inherit',
+    })
+    // spawn 失败（electron 路径无效之类）只会发 'error'、不发 'exit'：不接住的话这个 Promise 永远挂着，
+    // 冒烟卡死，后面的 nas.close() / rmSync 清理也跑不到。
+    child.on('error', (error) => {
+      console.error('启动 Kura 失败：', error.message)
+      resolve(1)
     })
     child.on('exit', (code) => resolve(code ?? 1))
   })
