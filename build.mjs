@@ -42,5 +42,6 @@ copyFileSync('src/renderer/index.html', 'dist/renderer/index.html')
 // index.css 是 esbuild 从 CSS import 抽出的库样式；页面外壳单独叫 shell.css，避免同名覆盖
 copyFileSync('src/renderer/shell.css', 'dist/renderer/shell.css')
 copyFileSync('assets/tray.png', 'dist/tray.png')
+copyFileSync('assets/icon.ico', 'dist/icon.ico')
 
 console.log('构建完成：dist/main.cjs, dist/preload.cjs, dist/renderer/')

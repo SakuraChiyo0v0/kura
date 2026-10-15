@@ -13,6 +13,7 @@ import {
   trackWindowMaximizedChange,
   trackWindowState,
 } from '@sakura-ui/electron/main'
+import { httpsProxyConfigured } from '../core/http.js'
 import { linkModeLabel, type LinkModeSetting } from '../core/link.js'
 import {
   kuraChannels as ch,
@@ -29,7 +30,7 @@ import { ConnectionService } from './connection.js'
 import { FileService, LocalDavService, NasScopeService, TerminalService, safeLocalName } from './features.js'
 import { ModuleManager, rcloneRelease, winfspDownloadPage } from './modules.js'
 import { fileLogger } from './file-log.js'
-import { decideWindowClose } from './lifecycle.js'
+import { decideWindowClose, isHiddenLaunch, loginItemSettings } from './lifecycle.js'
 import { runRestartSmoke, runSmoke } from './smoke.js'
 import { applySmokeRoute, smokeRequester } from './smoke-seams.js'
 import { CredentialVault } from './vault.js'
@@ -41,6 +42,8 @@ app.setAppUserModelId('Kura')
 const distDir = __dirname
 const userData = app.getPath('userData')
 const smoke = process.env.KURA_SMOKE === '1'
+/** 开机自启拉起来的：只进托盘，窗口等用户点托盘再弹 */
+const hiddenLaunch = isHiddenLaunch(process.argv)
 const processStartedAt = Date.now()
 if (smoke) {
   // 冒烟窗口常被别的窗口挡住：Windows 上 Chromium 会把被遮挡的页面判为 hidden，
@@ -51,6 +54,11 @@ if (smoke) {
 }
 
 const log = fileLogger(join(userData, 'logs', 'kura.log'), process.env.KURA_VERBOSE === '1')
+{
+  // 只记有没有、记主机，不记整串：代理地址里可能带用户名密码
+  const proxy = httpsProxyConfigured()
+  if (proxy) log.info('外网链路走环境代理', { proxy: URL.canParse(proxy) ? new URL(proxy).host : '(无法解析)' })
+}
 const settingsStore = createSettingsStore<KuraSettings>({
   file: join(userData, 'settings.json'),
   defaults: kuraSettingsDefaults,
@@ -94,12 +102,13 @@ const windows = createWindowManager<BrowserWindow>({
       backgroundColor: '#1f2430',
       show: false,
       title: 'Kura',
+      icon: join(distDir, 'icon.ico'),
       webPreferences: { preload: join(distDir, 'preload.cjs') },
     })
 
     trackWindowState({ window, name, store: windowState })
     trackWindowMaximizedChange(window)
-    if (!smoke) window.once('ready-to-show', () => window.show())
+    if (!smoke && !hiddenLaunch) window.once('ready-to-show', () => window.show())
 
     // 托盘常驻：关窗口默认只隐藏，映射服务继续在主进程里跑
     window.on('close', (event) => {
@@ -369,6 +378,16 @@ app.whenReady().then(async () => {
     },
   })
   registerKuraIpc()
+
+  // 开机自启：以设置为准写进 HKCU\…\Run。冒烟不碰注册表。
+  if (!smoke) {
+    const applyLoginItem = (openAtLogin: boolean) =>
+      app.setLoginItemSettings(loginItemSettings({ openAtLogin, packaged: app.isPackaged, appPath: app.getAppPath() }))
+    applyLoginItem(settingsStore.get('openAtLogin'))
+    settingsStore.onChange((_settings, changed) => {
+      if (changed.openAtLogin !== undefined) applyLoginItem(changed.openAtLogin)
+    })
+  }
 
   tray.ensure()
   // 先把映射起起来再开窗口：Mirror.start() 只挂上次缓存的清单、不等网络（登录与拉清单在后台），

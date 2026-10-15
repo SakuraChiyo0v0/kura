@@ -94,6 +94,12 @@ function SettingsView({
           checked={settings.closeToTray}
           onCheckedChange={(value) => set('closeToTray', value)}
         />
+        <SwitchField
+          label="登录 Windows 时自动启动"
+          description="开机后直接在托盘里跑映射，不弹窗口"
+          checked={settings.openAtLogin}
+          onCheckedChange={(value) => set('openAtLogin', value)}
+        />
       </SettingsSection>
       <SettingsSection title="NAS 连接">
         <div className="kura-settings-connection">

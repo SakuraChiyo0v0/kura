@@ -1,0 +1,41 @@
+# Windows 安装包（NSIS）。产物在 release/，已在 .gitignore 里。
+#   npm run dist
+appId: io.github.sakurachiyo0v0.kura
+productName: Kura
+copyright: SakuraChiyo0v0
+directories:
+  output: release
+  buildResources: assets
+
+# 主进程 / preload / 渲染层都已被 esbuild 打成单文件，运行时不需要 node_modules：
+# 只带 dist/ 与 package.json（main 字段指向 dist/main.cjs）。
+files:
+  - dist/**/*
+  - '!dist/server/**'
+  - '!dist/**/*.map'
+  - package.json
+  - '!node_modules/**'
+npmRebuild: false
+# 直接用 npm 装好的那份 Electron，不再另下载解压：解压完立刻 rename 目录时，
+# 杀软正扫着刚落地的 electron.exe，会稳定地 EPERM（本机连续两次复现）。
+electronDist: node_modules/electron/dist
+asar: true
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: assets/icon.ico
+  # 没有代码签名证书：首次运行 SmartScreen 会提示「未知发布者」
+  signAndEditExecutable: true
+
+nsis:
+  oneClick: false
+  perMachine: false # 装到当前用户，不要管理员权限（开机自启写的也是 HKCU）
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Kura
+  artifactName: Kura-Setup-${version}.${ext}
+  # 卸载时**保留** %APPDATA%\Kura（凭据、设置、模块）；要清干净由用户自己删
+  deleteAppDataOnUninstall: false

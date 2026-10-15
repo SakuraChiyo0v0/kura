@@ -246,7 +246,9 @@ process.env.SMOKE_PORT_CONSOLE = String(await freePort())
 /** 起一次 Kura，跑完冒烟返回退出码。两轮共用同一份数据目录：第二轮就是「已配置过的用户再次打开」。 */
 function runKura(phase) {
   return new Promise((resolve) => {
-    const child = spawn(electron, ['.', `--user-data-dir=${userData}`], {
+    // KURA_SMOKE_EXE=release/win-unpacked/Kura.exe：对打包产物跑同一套冒烟（不带 '.'，应用在 asar 里）
+    const exe = process.env.KURA_SMOKE_EXE
+    const child = spawn(exe ?? electron, [...(exe ? [] : ['.']), `--user-data-dir=${userData}`], {
       cwd: new URL('..', import.meta.url),
       env: {
         ...process.env,

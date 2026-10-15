@@ -21,3 +21,24 @@ export function decideWindowClose(input: CloseDecisionInput): 'hide' | 'close' {
   if (input.closeToTray && input.trayAvailable) return 'hide'
   return 'close'
 }
+
+/** 开机自启时带上的参数：带它启动只进托盘，不弹主窗口。 */
+export const hiddenLaunchFlag = '--hidden'
+
+export interface LoginItemInput {
+  openAtLogin: boolean
+  /** app.isPackaged：开发态下注册表里记的是 electron.exe，得把应用目录也作为参数带上 */
+  packaged: boolean
+  appPath: string
+}
+
+/** 交给 app.setLoginItemSettings 的参数（Windows 写 HKCU\…\Run）。 */
+export function loginItemSettings(input: LoginItemInput): { openAtLogin: boolean; args: string[] } {
+  const args = input.packaged ? [hiddenLaunchFlag] : [input.appPath, hiddenLaunchFlag]
+  return { openAtLogin: input.openAtLogin, args }
+}
+
+/** 这次启动是不是开机自启拉起来的（是就不弹窗口）。 */
+export function isHiddenLaunch(argv: readonly string[]): boolean {
+  return argv.includes(hiddenLaunchFlag)
+}

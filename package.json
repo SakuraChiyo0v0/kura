@@ -4,6 +4,7 @@
   "version": "0.3.0",
   "private": true,
   "description": "Kura 蔵 —— 绿联 NAS 的 Windows 桌面客户端",
+  "author": "SakuraChiyo0v0",
   "type": "module",
   "main": "dist/main.cjs",
   "scripts": {
@@ -13,6 +14,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm test && npm run smoke",
+    "dist": "node build.mjs && electron-builder --win --x64",
+    "icon": "node scripts/make-icon.mjs",
     "server:build": "node server/build.mjs",
     "server:start": "node server/build.mjs && node dist/server/main.mjs"
   },
@@ -34,6 +37,7 @@
     "@types/react-dom": "19.3.0",
     "@types/ws": "8.18.2",
     "electron": "44.7.0",
+    "electron-builder": "26.15.3",
     "esbuild": "0.27.7",
     "typescript": "7.0.2",
     "vitest": "5.0.2"

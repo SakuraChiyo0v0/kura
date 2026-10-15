@@ -4,6 +4,7 @@ import net from 'node:net'
 import tls from 'node:tls'
 import { errorPageMarker, isAuthRedirect, mergeCookie, rewriteLocation, rewriteSetCookie } from './cookies.js'
 import { errorMessage } from './errors.js'
+import { proxiedHttpsAgent } from './http.js'
 import type { LinkRouter, RoutableService, Route } from './link.js'
 import { silentLogger, type Logger } from './log.js'
 import type { SessionManager } from './session.js'
@@ -272,7 +273,8 @@ export function createServiceProxy(svc: ProxyService, deps: ProxyDeps, stats?: S
       method: req.method,
       path: req.url,
       headers,
-      agent: false, // 升级连接会被接管，不能进连接池
+      // 升级连接会被接管，不能进连接池；https 那条仍要走环境代理
+      agent: isHttps ? upgradeHttpsAgent : false,
       ...(isHttps && route.host ? { servername: route.host.replace(/:\d+$/, '') } : {}),
     })
 
@@ -316,10 +318,13 @@ export function createServiceProxy(svc: ProxyService, deps: ProxyDeps, stats?: S
 }
 
 /**
- * 默认上游连接池。保留环境代理不在这里做：Node 的 http.Agent 不读 HTTPS_PROXY，
- * 公司网络需要代理时再接（Go 版用 ProxyFromEnvironment；已记入遗留）。
+ * 默认上游连接池。https（中继）那条读环境代理 HTTPS_PROXY / NO_PROXY，http（局域网）一律直连，
+ * 原因见 http.ts 的 proxiedHttpsAgent。
  */
 const defaultAgents = {
   http: new http.Agent({ keepAlive: true, maxSockets: 32 }),
-  https: new https.Agent({ keepAlive: true, maxSockets: 32 }),
+  https: proxiedHttpsAgent({ keepAlive: true, maxSockets: 32 }),
 }
+
+/** 升级连接用：不进连接池（连接会被接管），但仍要走代理。 */
+const upgradeHttpsAgent = proxiedHttpsAgent({ keepAlive: false })

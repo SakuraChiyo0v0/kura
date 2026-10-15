@@ -38,6 +38,25 @@ export function headerValue(headers: http.IncomingHttpHeaders, name: string): st
   return value ?? ''
 }
 
+/**
+ * 出网代理：读 HTTPS_PROXY / NO_PROXY（与 Go 版 ProxyFromEnvironment 对齐），用 Node 24 自带的 Agent 代理能力。
+ *
+ * 只给 **https** 上游用 —— 也就是绿联中继那条外网链路。lan 链路是 http 拨局域网 IP，
+ * 本来就不该走公司代理；而且 Node 的 http 代理模式要求 Host 头与目标一致，
+ * lan 模式偏偏要「拨 IP、发公网域名的 Host」，走代理会直接抛错。
+ * 不读 Windows 系统代理（IE 设置）：Go 版也不读，需要时设环境变量。
+ */
+export function proxiedHttpsAgent(options: https.AgentOptions = {}, env: NodeJS.ProcessEnv = process.env): https.Agent {
+  return new https.Agent({ ...options, proxyEnv: env })
+}
+
+/** 环境里有没有配 https 代理（日志里提一句，排查时一眼看出走没走代理）。 */
+export function httpsProxyConfigured(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return env.HTTPS_PROXY || env.https_proxy || undefined
+}
+
+const oneShotHttpsAgent = proxiedHttpsAgent()
+
 export const request: HttpRequester = (options) => {
   const url = new URL(options.url)
   const isHttps = url.protocol === 'https:'
@@ -57,6 +76,7 @@ export const request: HttpRequester = (options) => {
         path: url.pathname + url.search,
         method: options.method ?? 'GET',
         headers,
+        ...(isHttps ? { agent: oneShotHttpsAgent } : {}),
         ...(isHttps && options.host ? { servername: options.host.replace(/:\d+$/, '') } : {}),
       },
       (res) => {
