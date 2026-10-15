@@ -25,6 +25,8 @@ services:
       # 不查的话，清单里 host_port 一律为 0，客户端只好拿 container_port 当本机端口——
       # 两个服务 container_port 相同（如 account-panel 与 bili23-web 都是 8787）时就会撞车、少挂一个。
       KURA_DOCKER_SOCKET: /var/run/docker.sock
+      # 容器管理：compose 项目目录（宿主原路径）。下面 volumes 里按**原路径**再挂一次。
+      KURA_PROJECT_ROOT: /volume1/docker
     volumes:
       - ./state:/state
       # WebDAV 暴露宿主文件：整个宿主根挂进来（读写），rclone 在里面 serve。
@@ -37,9 +39,13 @@ services:
       # 内部令牌经这个卷传给 kura-shell；**持久**（不是每次启动换），
       # 所以 watchtower 单独重建 kura-server 时，还在跑的 kura-shell 照样认（见 main.ts readOrCreateToken）
       - shell-token:/run/kura-shell
-      # 只读挂 docker.sock：只用来查端口映射（代码里白名单到 GET /containers/json 一个接口）。
-      # docker.sock 等于宿主 root，所以别人加了别的东西前先看 registry.ts 的 dockerSocketLister。
+      # docker.sock：查端口映射 + 容器管理。**`:ro` 挡不住经 socket 发的 API 写请求**，它只是挂载选项；
+      # 真正的边界是代码里的白名单（server/src/docker/engine.ts，每个能调的接口一个具名方法）。
+      # docker.sock 等于宿主 root：加用途前先看那张表。
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # compose 项目目录按**宿主原路径**挂：compose 里的相对路径（./data）是按执行目录解析后交给 dockerd 的，
+      # 在 /host/volume1/... 下执行的话 dockerd 拿到宿主上不存在的路径，会挂一个空目录进去（应用看着像数据全丢）。
+      - /volume1/docker:/volume1/docker
     labels:
       - com.centurylinklabs.watchtower.enable=true
     networks:

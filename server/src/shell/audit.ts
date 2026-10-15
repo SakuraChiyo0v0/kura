@@ -14,7 +14,8 @@ export interface AuditEntry {
   id: string
   /** 登录 kura-server 的用户名 */
   user: string
-  action: 'pty-open' | 'pty-close' | 'exec'
+  /** 终端：pty-open / pty-close / exec；容器管理：docker-*（见 server/src/docker/handler.ts） */
+  action: 'pty-open' | 'pty-close' | 'exec' | `docker-${string}`
   /** exec 的命令；pty-open 是 shell 名 */
   detail: string
   exitCode?: number

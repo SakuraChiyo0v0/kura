@@ -11,6 +11,10 @@ import { AuditLog } from './shell/audit.js'
 import { TokenStore } from './tokens.js'
 import { WebdavFeature, webdavDefaults } from './webdav.js'
 import { createAdminHandler } from './admin.js'
+import { DockerEngine } from './docker/engine.js'
+import { ProjectFileStore, composeValidator } from './docker/files.js'
+import { createDockerHandler } from './docker/handler.js'
+import { DockerService, appstoreRoot } from './docker/service.js'
 
 /**
  * kura-server 入口（同一个镜像两个入口，发布一次）：
@@ -25,7 +29,8 @@ import { createAdminHandler } from './admin.js'
  *   KURA_STATE           状态目录，默认 /state（services.json、webdav.json、tokens.json）
  *   KURA_SHELL           可选，kura-shell 的地址，如 http://kura-shell:8890；不设就没有终端
  *   KURA_SHELL_TOKEN_FILE 可选，内部令牌经共享卷传递；默认 /run/kura-shell/token
- *   KURA_DOCKER_SOCKET   可选，查容器端口映射用；不设或文件不存在就不查
+ *   KURA_DOCKER_SOCKET   可选，查容器端口映射 + 容器管理（内置服务 docker）；不设或文件不存在就都没有
+ *   KURA_PROJECT_ROOT    compose 项目目录（宿主原路径，容器里按原路径挂），默认 /volume1/docker
  *   KURA_TRUST_PROXY     1 = 信任 X-Forwarded-For（前面还有一层反代时才开）
  */
 
@@ -102,10 +107,13 @@ async function serve(): Promise<void> {
   if (!existsSync(servicesFile)) writeFileSync(servicesFile, '{\n  "services": []\n}\n')
 
   const socket = process.env.KURA_DOCKER_SOCKET
+  const hasDocker = Boolean(socket && existsSync(socket))
+  // 内置服务固定出现在清单上；docker 只在挂了 sock 时出现（客户端据此决定「容器」页可不可用）。
+  // 端口号只是清单里的标签：内置服务都由 kura-server 自己处理，不会真按端口去连。
   const registry = new Registry(
     servicesFile,
-    { webdav: 18005, 'nas-console': 8890 },
-    socket && existsSync(socket) ? dockerSocketLister(socket) : undefined,
+    { webdav: 18005, 'nas-console': 8890, ...(hasDocker ? { docker: 2375 } : {}) },
+    hasDocker ? dockerSocketLister(socket!) : undefined,
   )
   if (registry.error()) fatal(`services.json 读不了：${registry.error()}`)
 
@@ -132,13 +140,38 @@ async function serve(): Promise<void> {
     log('没有配 KURA_SHELL，终端不可用（这是正常的：没起 kura-shell 容器）')
   }
 
+  const audit = new AuditLog(join(state, 'audit', 'audit.log'))
+
+  // 容器管理：同一个 docker.sock，接口由 server/src/docker/engine.ts 白名单。项目目录要按宿主原路径挂进来。
+  const dockerHandler = hasDocker
+    ? (() => {
+        const engine = new DockerEngine({ socketPath: socket! })
+        const projectRoot = process.env.KURA_PROJECT_ROOT?.trim() ?? '/volume1/docker'
+        let seq = 0
+        return createDockerHandler({
+          engine,
+          service: new DockerService({
+            engine,
+            projectRoot,
+            // 绿联商店的项目要能启停，它的目录也得按原路径挂进来；没挂就只读
+            appstoreMounted: existsSync(appstoreRoot),
+          }),
+          // 项目目录没按原路径挂进来就不给编辑：写进去的文件宿主上看不到
+          files: existsSync(projectRoot) ? new ProjectFileStore(projectRoot, composeValidator()) : undefined,
+          audit: (entry) => audit.write({ ...entry, at: new Date().toISOString(), id: `d${Date.now().toString(36)}${++seq}`, user: 'kura' }),
+          activity: (n) => audit.tail(n * 4),
+          log,
+        })
+      })()
+    : undefined
+
   const builtins: Record<string, BuiltinHandler> = {
     webdav: { request: (req, res) => webdav.handle(req, res) },
     ...(consoleHandler ? { 'nas-console': { request: (req, res) => consoleHandler!.handle(req, res), upgrade: (req, socket, head) => consoleHandler!.upgrade(req, socket, head) } } : {}),
+    ...(dockerHandler ? { docker: { request: (req, res) => void dockerHandler.handle(req, res), upgrade: (req, sock, head) => dockerHandler.upgrade(req, sock, head) } } : {}),
   }
 
   // 管理页：范围、服务清单、API Token、状态与审计。没有登录，直接打开。
-  const audit = new AuditLog(join(state, 'audit', 'audit.log'))
   const admin = createAdminHandler({
     registry,
     webdav,
