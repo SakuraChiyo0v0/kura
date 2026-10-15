@@ -32,6 +32,14 @@ NAS 侧依赖：服务端清单里要有 `webdav`（文件、本机 WebDAV、挂
 npm install
 npm start          # 构建并启动
 npm run check      # 类型检查 + 单测 + 真实 Electron 冒烟
+npm run dist       # 打 Windows 安装包 → release/Kura-Setup-<版本>.exe（未签名）
+npm run icon       # 改了图标图形后重新生成 assets/icon.ico、tray.png
+
+# 对打包产物跑同一套冒烟
+$env:KURA_SMOKE_EXE="release\win-unpacked\Kura.exe"; node scripts/smoke.mjs
+
+# 公司网络要走代理：设环境变量即可（只影响外网中继那条 https 链路，局域网直连不走代理）
+$env:HTTPS_PROXY="http://proxy.example:8080"; $env:NO_PROXY="localhost,127.0.0.1"
 
 # 真下载 rclone 并用 WinFsp 挂一个临时盘符（联网，默认跳过）
 $env:KURA_REAL_RCLONE=1; npx vitest run src/main/modules.real.test.ts
