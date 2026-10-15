@@ -30,7 +30,11 @@ export class FakeDocker {
   repoDigests = new Map<string, string[]>()
   /** 镜像标签 → 仓库里现在的 digest（没有就模拟仓库要认证） */
   remoteDigests = new Map<string, string>()
-  execs = new Map<string, { container: string; cmd: string[]; resized: string[] }>()
+  execs = new Map<string, { container: string; cmd: string[]; resized: string[]; tty: boolean; exitCode: number }>()
+  /** 非 TTY exec 启动时要吐出的分帧输出（数据库命令执行用）。键是 exec id。 */
+  execOutput = new Map<string, Buffer>()
+  /** 测试注入：非 TTY exec 起来后自己接管（用于「不结束，等超时」这类用例）。 */
+  onExecStart?: (exec: { container: string; cmd: string[]; resized: string[]; tty: boolean; exitCode: number }, socket: import('node:stream').Duplex) => void
 
   async start(): Promise<this> {
     // exec start 是协议升级（Docker 用 `Upgrade: tcp` 接管连接）：接管后回显输入，像一个 shell
@@ -46,6 +50,17 @@ export class FakeDocker {
         return
       }
       socket.write('HTTP/1.1 101 UPGRADED\r\ncontent-type: application/vnd.docker.raw-stream\r\nconnection: Upgrade\r\nupgrade: tcp\r\n\r\n')
+      // 非 TTY：吐调用方预置的分帧输出（stdout/stderr 各一帧），然后结束。
+      // 需要接输入才吐的测试（超时用例）用 onStart 钩子自己写。
+      if (!exec.tty) {
+        if (this.onExecStart) this.onExecStart(exec, socket)
+        else {
+          socket.write(this.execOutput.get(m![1]!) ?? Buffer.alloc(0))
+          socket.end()
+        }
+        socket.on('error', () => {})
+        return
+      }
       socket.write(`${exec.container}:/# `)
       socket.on('data', (d: Buffer) => {
         const text = d.toString()
@@ -196,11 +211,17 @@ export class FakeDocker {
       const c = this.find(decodeURIComponent(execCreate[1]!))
       if (!c) return send(404, { message: 'No such container' })
       void readJson(req).then((body) => {
+        const spec = body as { Cmd: string[]; Tty?: boolean }
         const id = randomBytes(32).toString('hex')
-        this.execs.set(id, { container: c.Names![0]!.slice(1), cmd: (body as { Cmd: string[] }).Cmd, resized: [] })
+        this.execs.set(id, { container: c.Names![0]!.slice(1), cmd: spec.Cmd, resized: [], tty: spec.Tty !== false, exitCode: 0 })
         send(201, { Id: id })
       })
       return
+    }
+    const execJson = /^\/exec\/([^/]+)\/json$/.exec(path)
+    if (req.method === 'GET' && execJson) {
+      const exec = this.execs.get(execJson[1]!)
+      return exec ? send(200, { Running: false, ExitCode: exec.exitCode }) : send(404, { message: 'No such exec instance' })
     }
     const execResize = /^\/exec\/([^/]+)\/resize$/.exec(path)
     if (req.method === 'POST' && execResize) {

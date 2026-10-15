@@ -1,10 +1,12 @@
 import { Readable, Writable } from 'node:stream'
+import { engineCli, engineCliCandidates, type DbEngine } from '../core/db-types.js'
+import type { DatabaseView } from '../core/db-client.js'
 import type { DockerClient, ProjectAction } from '../core/docker-client.js'
 import type { LinkModeSetting } from '../core/link.js'
 import type { Mirror } from '../core/mirror.js'
 import type { DavSettingsView, MountSettingsView, NasScopeView } from '../shared/ipc.js'
 import type { McpTool, McpAnnotations } from '../core/mcp.js'
-import type { ContainerService, FileService, LocalDavService, NasScopeService } from './features.js'
+import type { ContainerService, DatabaseService, FileService, LocalDavService, NasScopeService } from './features.js'
 import type { ModuleManager } from './modules.js'
 
 /**
@@ -26,6 +28,7 @@ export interface McpToolDeps {
   nasScope: NasScopeService
   localDav: LocalDavService
   modules: ModuleManager
+  databases: DatabaseService
   /** 当前连接（没配置 / 没起来时返回 undefined） */
   mirror: () => Mirror | undefined
 }
@@ -66,6 +69,36 @@ function optionalStr(args: Record<string, unknown>, key: string): string | undef
 
 function bool(args: Record<string, unknown>, key: string, fallback: boolean): boolean {
   return typeof args[key] === 'boolean' ? (args[key] as boolean) : fallback
+}
+
+/** 数据库命令的超时：默认 30 秒、上限 5 分钟（`SELECT pg_sleep(600)` 不能把整条请求挂住）。 */
+function clampDbTimeout(value: unknown): number {
+  const n = typeof value === 'number' && Number.isFinite(value) ? Math.round(value) : 30_000
+  return Math.max(1_000, Math.min(n, 300_000))
+}
+
+/** 结果截断：MCP 的返回值是先进模型上下文的，一个大表能直接把上下文冲爆。 */
+function truncate(text: string, limit = 100_000): string {
+  return text.length > limit ? `${text.slice(0, limit)}\n…（结果过长已截断，加 LIMIT 或 WHERE 缩小范围）` : text
+}
+
+/**
+ * 容器内的官方 CLI 怎么连自己那个实例：走容器内的 loopback / 本地 socket，不经过网络。
+ * 各引擎的参数不一样，这里是唯一一处拼连接参数的地方。
+ */
+function connectArgs(engine: DbEngine, info: Pick<DatabaseView, 'user' | 'database' | 'port'>): string[] {
+  switch (engine) {
+    case 'postgres':
+      // 容器里的 psql 默认走 unix socket（/var/run/postgresql），不用给 -h
+      return ['-U', info.user || 'postgres', ...(info.database ? ['-d', info.database] : [])]
+    case 'mysql':
+    case 'mariadb':
+      // mysql 客户端默认走 socket；给出 -u，密码靠容器内的 defaults-file / 提示
+      return ['-u', info.user || 'root', ...(info.database ? [info.database] : [])]
+    case 'redis':
+      // redis-cli 默认连 127.0.0.1:6379
+      return []
+  }
 }
 
 /**
@@ -368,6 +401,115 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
         const action = str(args, 'action')
         if (!['up', 'down', 'restart', 'pull'].includes(action)) throw new Error(`不支持的操作：${action}`)
         return collectStream(await docker().project(str(args, 'name'), action as ProjectAction))
+      },
+    },
+
+    // ---------------------------------------------------------------- 数据库
+    {
+      name: 'kura_db_list',
+      title: '数据库列表',
+      description:
+        '列出 NAS 上 Docker 里的数据库（PostgreSQL / MySQL / MariaDB / Redis），含状态、连接参数与本机隧道地址。要操作某个数据库前先调这个拿名字。Kura 自己装的能改能删；"接管的"是已有容器，只能连不能删。',
+      inputSchema: object({}),
+      annotations: ro,
+      handler: async () => {
+        const { databases: list, tunnelAvailable } = await deps.databases.list()
+        return { tunnelAvailable, databases: list }
+      },
+    },
+    {
+      name: 'kura_db_templates',
+      title: '可装的数据库模板',
+      description: '列出 Kura 能一键安装的数据库模板（引擎、镜像、默认端口）。',
+      inputSchema: object({}),
+      annotations: ro,
+      handler: async () => deps.databases.client.templates(),
+    },
+    {
+      name: 'kura_db_install',
+      title: '快捷安装一个数据库',
+      description:
+        '用官方镜像在 NAS 上装一个数据库（建 compose 项目、生成强口令、起容器、登记）。名字只用小写字母数字连字符。可能要一两分钟。装完用 kura_db_info 拿连接串。',
+      inputSchema: object(
+        { engine: { type: 'string', enum: ['postgres', 'mysql', 'mariadb', 'redis'] }, name: { type: 'string', description: '数据库名（compose 项目名），如 my-pg' } },
+        ['engine', 'name'],
+      ),
+      annotations: { readOnlyHint: false, idempotentHint: false },
+      handler: async (args) => {
+        const engine = str(args, 'engine')
+        if (!['postgres', 'mysql', 'mariadb', 'redis'].includes(engine)) throw new Error(`不认识的引擎：${engine}`)
+        const result = await deps.databases.install(engine as never, str(args, 'name'))
+        return { ok: result.ok, name: result.name, engine: result.engine, output: result.output.slice(-4000) }
+      },
+    },
+    {
+      name: 'kura_db_info',
+      title: '数据库连接信息',
+      description:
+        '拿一个数据库的连接参数与现成的连接串/命令。默认**不含密码**；确实要用连接串时把 includePassword 设为 true —— 那会把口令带进这次对话的上下文。',
+      inputSchema: object(
+        { name: { type: 'string', description: '数据库名（kura_db_list 里的 name）' }, includePassword: { type: 'boolean', description: '是否带上密码，默认 false' } },
+        ['name'],
+      ),
+      annotations: ro,
+      handler: async (args) => deps.databases.info(str(args, 'name'), bool(args, 'includePassword', false)),
+    },
+    {
+      name: 'kura_db_query',
+      title: '执行 SQL / 命令',
+      description:
+        '在一个数据库里执行命令：PostgreSQL 用 psql、MySQL/MariaDB 用 mysql、Redis 用 redis-cli。sql 是命令参数数组（如 ["-c","SELECT 1"]）；不要传可执行文件名，用 cli 指定。结果里 stdout / stderr 分开返回。执行任意 SQL，可能改动数据。',
+      inputSchema: object(
+        {
+          name: { type: 'string' },
+          sql: { type: 'array', items: { type: 'string' }, description: 'CLI 的参数数组，如 ["-c","SELECT * FROM t LIMIT 10"]' },
+          cli: { type: 'string', description: '用哪个 CLI，不填按引擎默认（psql / mysql / redis-cli）' },
+          timeoutMs: { type: 'number', description: '超时毫秒，默认 30000，最大 300000' },
+        },
+        ['name', 'sql'],
+      ),
+      annotations: { readOnlyHint: false, idempotentHint: false },
+      handler: async (args) => {
+        const name = str(args, 'name')
+        const info = await deps.databases.detail(name)
+        const engine = info.engine
+        if (!engine) throw new Error(`${name} 认不出是什么引擎，用不了命令执行`)
+        const cli = optionalStr(args, 'cli') || engineCli[engine]
+        const allowed = engineCliCandidates[engine] ?? []
+        if (!allowed.includes(cli)) throw new Error(`只能用这些命令：${allowed.join('、')}`)
+        const argv = Array.isArray(args.sql) ? args.sql.map(String) : []
+        // 补上连接参数：容器内的 CLI 要用本地 socket / 环回连自己那个实例
+        const withConn = [...connectArgs(engine, info), ...argv]
+        const result = await deps.databases.exec(name, cli, withConn, undefined, clampDbTimeout(args.timeoutMs))
+        return { exitCode: result.exitCode, stdout: truncate(result.stdout), stderr: truncate(result.stderr), ...(result.error ? { error: result.error } : {}) }
+      },
+    },
+    {
+      name: 'kura_db_action',
+      title: '启停数据库',
+      description: '启动 / 停止 / 重启一个数据库容器。',
+      inputSchema: object({ name: { type: 'string' }, action: { type: 'string', enum: ['start', 'stop', 'restart'] } }, ['name', 'action']),
+      annotations: { readOnlyHint: false, idempotentHint: true },
+      handler: async (args) => {
+        const action = str(args, 'action')
+        if (!['start', 'stop', 'restart'].includes(action)) throw new Error(`不支持的操作：${action}`)
+        await deps.databases.action(str(args, 'name'), action as 'start' | 'stop' | 'restart')
+        return { ok: true }
+      },
+    },
+    {
+      name: 'kura_db_remove',
+      title: '删除数据库',
+      description:
+        '删掉一个 **Kura 装的** 数据库（接管的已有容器删不了）。卷与文件默认都保留；要真删数据得显式勾。',
+      inputSchema: object(
+        { name: { type: 'string' }, volumes: { type: 'boolean', description: '同时删数据卷（丢数据），默认 false' }, files: { type: 'boolean', description: '同时删项目文件，默认 false' } },
+        ['name'],
+      ),
+      annotations: destructive,
+      handler: async (args) => {
+        await deps.databases.remove(str(args, 'name'), { volumes: bool(args, 'volumes', false), files: bool(args, 'files', false) })
+        return { ok: true }
       },
     },
 

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
+import type net from 'node:net'
 import { join } from 'node:path'
 import type { LogFields, Logger } from '../../src/core/log.js'
 import type { BuiltinHandler } from './server.js'
@@ -13,8 +14,11 @@ import { WebdavFeature, webdavDefaults } from './webdav.js'
 import { createAdminHandler } from './admin.js'
 import { DockerEngine } from './docker/engine.js'
 import { ProjectFileStore, composeValidator } from './docker/files.js'
-import { createDockerHandler } from './docker/handler.js'
+import { createDockerHandler, type AuditSink } from './docker/handler.js'
 import { DockerService, appstoreRoot } from './docker/service.js'
+import { createDbHandler } from './db/handler.js'
+import { DatabaseRegistry } from './db/registry.js'
+import { TunnelService } from './db/tunnel.js'
 
 /**
  * kura-server 入口（同一个镜像两个入口，发布一次）：
@@ -143,12 +147,15 @@ async function serve(): Promise<void> {
   const audit = new AuditLog(join(state, 'audit', 'audit.log'))
 
   // 容器管理：同一个 docker.sock，接口由 server/src/docker/engine.ts 白名单。项目目录要按宿主原路径挂进来。
-  const dockerHandler = hasDocker
+  const docker = hasDocker
     ? (() => {
         const engine = new DockerEngine({ socketPath: socket! })
         const projectRoot = process.env.KURA_PROJECT_ROOT?.trim() ?? '/volume1/docker'
+        // 项目目录没按原路径挂进来就不给编辑：写进去的文件宿主上看不到
+        const files = existsSync(projectRoot) ? new ProjectFileStore(projectRoot, composeValidator()) : undefined
         let seq = 0
-        return createDockerHandler({
+        const auditSink = (entry: Parameters<AuditSink>[0]) => audit.write({ ...entry, at: new Date().toISOString(), id: `d${Date.now().toString(36)}${++seq}`, user: 'kura' })
+        const handler = createDockerHandler({
           engine,
           service: new DockerService({
             engine,
@@ -156,19 +163,34 @@ async function serve(): Promise<void> {
             // 绿联商店的项目要能启停，它的目录也得按原路径挂进来；没挂就只读
             appstoreMounted: existsSync(appstoreRoot),
           }),
-          // 项目目录没按原路径挂进来就不给编辑：写进去的文件宿主上看不到
-          files: existsSync(projectRoot) ? new ProjectFileStore(projectRoot, composeValidator()) : undefined,
-          audit: (entry) => audit.write({ ...entry, at: new Date().toISOString(), id: `d${Date.now().toString(36)}${++seq}`, user: 'kura' }),
+          files,
+          audit: auditSink,
           activity: (n) => audit.tail(n * 4),
           log,
         })
+
+        // 数据库管理：挂在**同一个内置服务 docker** 下（路径 /api/db/*）。
+        // 不新增内置服务名 —— Mirror.attach() 会给每个内置服务在本机回环绑一个监听，
+        // 多一个 `db` 就是凭空多一个 127.0.0.1 端口、还可能撞端口。见 server/src/db/handler.ts 顶部。
+        const dbRegistry = new DatabaseRegistry(join(state, 'databases.json'))
+        const tunnel = new TunnelService({ registry: dbRegistry, engine, log })
+        const dbHandler = createDbHandler({ registry: dbRegistry, engine, tunnel, audit: auditSink, projectRoot, files, log })
+
+        return {
+          request: (req: http.IncomingMessage, res: http.ServerResponse, path: string) =>
+            path.startsWith('/api/db/') ? void dbHandler.handle(req, res) : void handler.handle(req, res),
+          upgrade: (req: http.IncomingMessage, sock: net.Socket, head: Buffer, path: string) =>
+            path.startsWith('/api/db/') ? dbHandler.upgrade(req, sock, head) : handler.upgrade(req, sock, head),
+          /** 退出时断掉所有隧道 */
+          close: () => tunnel.closeAll(),
+        }
       })()
     : undefined
 
   const builtins: Record<string, BuiltinHandler> = {
     webdav: { request: (req, res) => webdav.handle(req, res) },
     ...(consoleHandler ? { 'nas-console': { request: (req, res) => consoleHandler!.handle(req, res), upgrade: (req, socket, head) => consoleHandler!.upgrade(req, socket, head) } } : {}),
-    ...(dockerHandler ? { docker: { request: (req, res) => void dockerHandler.handle(req, res), upgrade: (req, sock, head) => dockerHandler.upgrade(req, sock, head) } } : {}),
+    ...(docker ? { docker: { request: (req, res, path) => docker.request(req, res, path), upgrade: (req, sock, head, path) => docker.upgrade(req, sock, head, path) } } : {}),
   }
 
   // 管理页：范围、服务清单、API Token、状态与审计。没有登录，直接打开。
@@ -195,6 +217,8 @@ async function serve(): Promise<void> {
   })
   const stop = () => {
     webdav.stop()
+    // 隧道是长连接：先断掉，否则 server.close() 会一直等它们排空
+    docker?.close()
     server.close(() => process.exit(0))
   }
   process.on('SIGTERM', stop)

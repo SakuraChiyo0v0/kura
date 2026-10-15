@@ -8,6 +8,8 @@ import {
   EmptyState,
   FluidSegmented,
   MotionTabs,
+  Banner,
+  Section,
   StatusBadge,
   SwitchField,
   TextField,
@@ -141,17 +143,22 @@ function OutputPanel({ title, streamId, onClose, follow = true }: { title: strin
   const tone: StatusTone = code === undefined ? 'accent' : code === 0 ? 'success' : 'danger'
   const label = code === undefined ? '进行中…' : code === 0 ? '完成' : code === null ? '连接断开' : `失败（退出码 ${code}）`
   return (
-    <section className="kura-section kura-docker-output" data-testid="docker-output" data-state={code === undefined ? 'running' : code === 0 ? 'ok' : 'error'}>
-      <header className="kura-section__head">
-        <h2>{title}</h2>
-        <StatusBadge tone={tone} dot size="sm">
-          {label}
-        </StatusBadge>
-        <span className="kura-term__spacer" />
-        <Button size="sm" variant="ghost" icon={<X {...icon} />} aria-label="关闭输出" onClick={onClose} />
-      </header>
+    <Section
+      className="kura-docker-output"
+      title={title}
+      data-testid="docker-output"
+      data-state={code === undefined ? 'running' : code === 0 ? 'ok' : 'error'}
+      actions={
+        <>
+          <StatusBadge tone={tone} dot size="sm">
+            {label}
+          </StatusBadge>
+          <Button size="sm" variant="ghost" icon={<X {...icon} />} aria-label="关闭输出" onClick={onClose} />
+        </>
+      }
+    >
       <pre ref={pre} className="kura-docker-output__text">{text || (code === undefined ? '等待输出…' : '（没有输出）')}</pre>
-    </section>
+    </Section>
   )
 }
 
@@ -1030,7 +1037,7 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
 
   return (
     <div className="kura-docker" data-testid="docker-page">
-      {error && <p className="kura-banner" data-tone="warning">刷新失败：{error}（显示的是上一次的状态）</p>}
+      {error && <Banner tone="warning" description={`刷新失败：${error}（显示的是上一次的状态）`} />}
       {output && <OutputPanel title={output.title} streamId={output.id} onClose={() => setOutput(null)} />}
       {editing === 'new' && (
         <NewProject

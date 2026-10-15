@@ -196,6 +196,8 @@ server/
     proxy.ts       反代（头、WebSocket、路径前缀、跳转改写）
     registry.ts    services.yaml + docker 端口查询 → /__services
     webdav.ts      rclone 子进程管理 + 复用 src/core/dav-*
+    docker/        容器管理：engine（白名单式 Docker API）、handler、compose、files
+    db/            数据库：templates（compose 模板）、registry（登记表）、tunnel（WS⇄TCP 白名单）、handler
     shell/         kura-shell：node-pty、exec、内部令牌、审计
     admin/         管理页
     main.ts        入口：serve / shell

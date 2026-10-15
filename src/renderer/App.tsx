@@ -25,6 +25,7 @@ import type { ConnectionSummary } from '../shared/ipc.js'
 import { kuraSettingsDefaults, type KuraSettings, type ThemePreference } from '../shared/settings.js'
 import { ConnectionForm } from './ConnectionForm.js'
 import { ContainersView } from './ContainersView.js'
+import { DatabasesView } from './DatabasesView.js'
 import { FilesView } from './FilesView.js'
 import { McpSection } from './McpView.js'
 import { MirrorView } from './MirrorView.js'
@@ -215,6 +216,8 @@ function Shell() {
         return null
       case 'containers':
         return <ContainersView mapped={snapshot?.services ?? []} onOpenMirror={() => setActiveId('mirror')} />
+      case 'databases':
+        return <DatabasesView />
       case 'modules':
         return <ModulesView />
       default:

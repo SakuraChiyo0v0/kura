@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import net from 'node:net'
 import { join } from 'node:path'
 import { BrowserWindow, Menu, Tray, app, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell } from 'electron'
 import {
@@ -27,10 +28,13 @@ import {
   type ModulesStatusView,
   type MountSettingsView,
   type NasScopeView,
+  type TunnelStatus,
 } from '../shared/ipc.js'
+import type { DbEngine } from '../core/db-types.js'
 import { kuraSettingsDefaults, type KuraSettings } from '../shared/settings.js'
 import { ConnectionService } from './connection.js'
-import { ContainerService, FileService, LocalDavService, NasScopeService, TerminalService, safeLocalName } from './features.js'
+import { ContainerService, DatabaseService, FileService, LocalDavService, NasScopeService, TerminalService, safeLocalName } from './features.js'
+import { DbTunnelService } from './db-tunnel.js'
 import type { ProjectAction } from '../core/docker-client.js'
 import { McpService } from './mcp.js'
 import { ModuleManager, rcloneRelease, winfspDownloadPage } from './modules.js'
@@ -87,6 +91,16 @@ const terminals = new TerminalService(
   (event) => windows.broadcast(ch.terminalEvent, event),
 )
 const containers = new ContainerService(featureDeps, (event) => windows.broadcast(ch.dockerStreamEvent, event))
+const databases = new DatabaseService(featureDeps)
+/**
+ * 数据库隧道：本机 127.0.0.1:<端口> 的裸 TCP ←→ 映射层的一条 WebSocket ←→ NAS 上的数据库。
+ * 裸 TCP 过不了 HTTP 反代，也过不了绿联中继；WebSocket 能过（容器 shell 已验通）。
+ */
+const dbTunnels = new DbTunnelService({
+  open: (name) => databases.openTunnel(name),
+  dataDir: userData,
+  log,
+})
 const modules = new ModuleManager({
   dir: join(userData, 'modules'),
   log,
@@ -110,9 +124,25 @@ const mcp = new McpService({
   nasScope,
   localDav,
   modules,
+  databases,
 })
 
 let quitting = false
+
+/** 命令执行的 id 序号（一次 exec 一个，界面据此配对输出帧）。 */
+let dbExecSeq = 0
+
+/** 挑一个空闲的本机端口（给隧道用）：绑 0 让系统分配，记下端口立刻放掉。 */
+function pickFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer()
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as net.AddressInfo
+      server.close(() => resolve(port))
+    })
+  })
+}
 
 /**
  * 自动更新：打包后走 GitHub Releases（electron-builder 打包时写进 resources/app-update.yml），
@@ -244,7 +274,9 @@ app.on('before-quit', (event) => {
   if (stopping) return
   terminals.closeAll()
   containers.closeAll()
-  stopping = Promise.allSettled([modules.unmount(), localDav.close(), mcp.close()])
+  databases.closeAll()
+  // 隧道不像映射那样常驻：Kura 退出就关掉（它是用户开的功能，不是核心）
+  stopping = Promise.allSettled([modules.unmount(), localDav.close(), mcp.close(), dbTunnels.close()])
     .then(() => connection.stop())
     .finally(() => {
       stopped = true
@@ -453,6 +485,61 @@ function registerKuraIpc(): void {
   )
   router.handle(ch.dockerStreamClose, (_event, id: string) => containers.close(String(id)))
 
+  // ---- 数据库管理 ----
+  // 隧道要跟着数据库列表走：Kura 装上/发现新的数据库就建好监听，消失的拆掉。
+  // 这些 handler 都用惰性 list：不做定时轮询（数据库不常变），界面打开时拉一次即可。
+  const syncTunnels = async (): Promise<TunnelStatus[]> => {
+    const { databases: list } = await databases.list()
+    dbTunnels.sync(list.map((d) => ({ name: d.name, engine: d.engine || '' })))
+    return dbTunnels.status()
+  }
+  router.handle(ch.dbAvailable, () => databases.available())
+  router.handle(ch.dbTemplates, () => databases.client.templates())
+  router.handle(ch.dbList, async () => {
+    const result = await databases.list()
+    return { ...result, tunnels: await syncTunnels() }
+  })
+  router.handle(ch.dbInstall, async (_event, engine: string, name: string) => {
+    const result = await databases.install(engine as DbEngine, String(name))
+    // 装完立刻把隧道建好（默认不开，但要出现在界面上）
+    await syncTunnels().catch(() => {})
+    return result
+  })
+  router.handle(ch.dbDetail, (_event, name: string) => databases.detail(String(name)))
+  router.handle(ch.dbInfo, (_event, name: string, includePassword?: boolean) => databases.info(String(name), includePassword === true))
+  router.handle(ch.dbAction, async (_event, name: string, action: string) => {
+    if (action !== 'start' && action !== 'stop' && action !== 'restart') throw new Error(`不支持的操作：${action}`)
+    return databases.action(String(name), action)
+  })
+  router.handle(ch.dbRemove, async (_event, name: string, options: { volumes?: unknown; files?: unknown }) => {
+    await databases.remove(String(name), { volumes: options?.volumes === true, files: options?.files === true })
+    await syncTunnels().catch(() => {})
+  })
+  router.handle(ch.dbExec, async (_event, name: string, cli: string, args: unknown, timeoutMs?: number) => {
+    const id = `dbexec-${++dbExecSeq}`
+    const argv = Array.isArray(args) ? args.map(String) : []
+    // 边跑边把输出帧推给界面（命令台的实时输出）；返回的汇总结果同时给调用方
+    const result = await databases.exec(
+      String(name),
+      String(cli),
+      argv,
+      (event) => windows.broadcast(ch.dbExecEvent, { id, type: 'out', stream: event.stream, text: event.text }),
+      timeoutMs,
+    )
+    windows.broadcast(ch.dbExecEvent, { id, type: 'exit', code: result.exitCode, ...(result.error ? { error: result.error } : {}) })
+    return result
+  })
+  router.handle(ch.dbTunnels, () => syncTunnels())
+  router.handle(ch.dbTunnelSetEnabled, async (_event, name: string, enabled: boolean) => {
+    await dbTunnels.setEnabled(String(name), enabled === true)
+    return dbTunnels.status()
+  })
+  router.handle(ch.dbTunnelSetPort, async (_event, name: string, port: number) => {
+    await dbTunnels.setPort(String(name), Number(port))
+    return dbTunnels.status()
+  })
+  router.handle(ch.dbTunnelPort, () => pickFreePort())
+
   router.handle(ch.modulesStatus, (): ModulesStatusView => ({
     ...modules.status(),
     pinnedVersion: rcloneRelease.version,
@@ -545,6 +632,14 @@ app.whenReady().then(async () => {
   trayTimer.unref()
 
   await localDav.start()
+
+  // 数据库隧道：上次开着的不等界面打开就恢复，否则本机程序（psql、DBeaver）重启后会连不上，
+  // 得先去「数据库」页点一下才有监听。拖不住启动 —— 失败留在状态里（与 localDav / MCP 同规矩）。
+  // 还没配好连接时这里会失败，吞掉即可（那时本来也没有隧道要恢复）。
+  void databases
+    .list()
+    .then(({ databases: list }) => dbTunnels.sync(list.map((d) => ({ name: d.name, engine: d.engine || '' }))))
+    .catch((error: Error) => log.debug('启动时对齐数据库隧道失败', { err: error.message }))
 
   // MCP：按设置起（默认关）。起不来的原因留在状态里给界面显示，不拖住启动 ——
   // 与 localDav 一样，端口被占不该让整个程序起不来。

@@ -10,6 +10,7 @@ import {
   type ConnectionSummary,
   type ConnectionTestProgress,
   type ConnectionTestResult,
+  type DbExecEventView,
   type DockerStreamEvent,
   type KuraBootstrap,
   type KuraBridge,
@@ -129,6 +130,26 @@ const kura: KuraBridge = {
       ipcRenderer.on(ch.dockerStreamEvent, handler)
       return () => ipcRenderer.off(ch.dockerStreamEvent, handler)
     },
+  },
+  databases: {
+    available: () => invoke(ch.dbAvailable),
+    templates: () => invoke(ch.dbTemplates),
+    list: () => invoke(ch.dbList),
+    install: (engine, name) => invoke(ch.dbInstall, engine, name),
+    detail: (name) => invoke(ch.dbDetail, name),
+    info: (name, includePassword) => invoke(ch.dbInfo, name, includePassword),
+    action: (name, action) => invoke(ch.dbAction, name, action),
+    remove: (name, options) => invoke(ch.dbRemove, name, options),
+    exec: (name, cli, args, timeoutMs) => invoke(ch.dbExec, name, cli, args, timeoutMs),
+    onExec: (listener) => {
+      const handler = (_event: unknown, payload: DbExecEventView) => listener(payload)
+      ipcRenderer.on(ch.dbExecEvent, handler)
+      return () => ipcRenderer.off(ch.dbExecEvent, handler)
+    },
+    tunnels: () => invoke(ch.dbTunnels),
+    tunnelSetEnabled: (name, enabled) => invoke(ch.dbTunnelSetEnabled, name, enabled),
+    tunnelSetPort: (name, port) => invoke(ch.dbTunnelSetPort, name, port),
+    tunnelPickPort: () => invoke(ch.dbTunnelPort),
   },
   modules: {
     status: () => invoke(ch.modulesStatus),

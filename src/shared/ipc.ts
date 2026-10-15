@@ -1,10 +1,32 @@
 /** Kura 自己的 IPC 通道与 preload 暴露的 window.kura 形状。 */
 import type { DockerActivity, ProjectAction, ProjectFilesView } from '../core/docker-client.js'
 import type { ContainerDetail, ContainerStats, DockerOverview, ImageView, NetworkView, UpdateCheck, VolumeView } from '../core/docker-types.js'
+import type { DatabaseView, DbExecResult, DatabaseTemplate } from '../core/db-client.js'
+import type { DbEngine } from '../core/db-types.js'
 import type { LinkModeSetting } from '../core/link.js'
 import type { MirrorSnapshot } from '../core/mirror.js'
+import type { TunnelStatus } from '../main/db-tunnel.js'
 
-export type { DockerActivity, ProjectAction, ProjectFilesView }
+export type { DockerActivity, ProjectAction, ProjectFilesView, DatabaseView, DatabaseTemplate, DbEngine, DbExecResult, TunnelStatus }
+
+/** 命令执行的输出帧：stream 1 = stdout、2 = stderr。 */
+export interface DbExecEventView {
+  id: string
+  type: 'out' | 'exit'
+  stream?: 1 | 2
+  text?: string
+  code?: number
+  error?: string
+}
+
+/** 命令执行的结果（主进程收完整理后回给界面）。 */
+export interface DbExecView {
+  exitCode: number
+  error?: string
+  stdout: string
+  stderr: string
+  durationMs: number
+}
 
 /** 容器管理的流式操作：实时日志 / 项目 compose 动作 / 删除项目 / 拉镜像 */
 export type DockerStreamKind = 'logs' | 'project' | 'remove' | 'pull'
@@ -98,6 +120,24 @@ export const kuraChannels = {
   dockerStreamClose: 'kura:docker:stream-close',
   /** 主进程推送：流式操作的输出与结束 */
   dockerStreamEvent: 'kura:docker:stream-event',
+  // ---- 数据库管理 ----
+  dbAvailable: 'kura:db:available',
+  dbTemplates: 'kura:db:templates',
+  dbList: 'kura:db:list',
+  dbInstall: 'kura:db:install',
+  dbDetail: 'kura:db:detail',
+  dbInfo: 'kura:db:info',
+  dbAction: 'kura:db:action',
+  dbRemove: 'kura:db:remove',
+  dbExec: 'kura:db:exec',
+  /** 主进程推送：命令执行的输出帧（一条命令一个 id） */
+  dbExecEvent: 'kura:db:exec-event',
+  dbExecClose: 'kura:db:exec-close',
+  /** 隧道（本机回环端口 → NAS 上的数据库） */
+  dbTunnels: 'kura:db:tunnels',
+  dbTunnelSetEnabled: 'kura:db:tunnel-set-enabled',
+  dbTunnelSetPort: 'kura:db:tunnel-set-port',
+  dbTunnelPort: 'kura:db:tunnel-port',
   // ---- MCP（给 AI 客户端连的服务器）----
   mcpStatus: 'kura:mcp:status',
   mcpSave: 'kura:mcp:save',
@@ -379,6 +419,29 @@ export interface KuraBridge {
     createProject(input: { name: string; compose: string; env?: string }): Promise<{ dir: string; configFiles: string[] }>
     closeStream(id: string): Promise<void>
     onStream(listener: (event: DockerStreamEvent) => void): () => void
+  }
+  /** 数据库管理：NAS 上 Docker 里的 PostgreSQL / MySQL / MariaDB / Redis。 */
+  databases: {
+    /** 服务端有没有数据库接口（老镜像只有容器管理，会 404） */
+    available(): Promise<boolean>
+    templates(): Promise<DatabaseTemplate[]>
+    list(): Promise<{ databases: DatabaseView[]; tunnelAvailable: boolean }>
+    /** 快捷安装：建项目、起容器、登记。可能几十秒 */
+    install(engine: DbEngine, name: string): Promise<{ ok: boolean; name: string; engine: DbEngine; output: string; connection: { container: string; port: number; database: string; user: string } }>
+    detail(name: string): Promise<DatabaseView>
+    /** 连接信息；includePassword 默认 false */
+    info(name: string, includePassword?: boolean): Promise<DatabaseView & { password?: string }>
+    action(name: string, action: 'start' | 'stop' | 'restart'): Promise<void>
+    remove(name: string, options: { volumes: boolean; files: boolean }): Promise<void>
+    /** 跑一条命令（docker exec 进官方镜像跑官方 CLI）；输出按 onExec 推，返回汇总结果 */
+    exec(name: string, cli: string, args: string[], timeoutMs?: number): Promise<DbExecView>
+    onExec(listener: (event: DbExecEventView) => void): () => void
+    /** 本机隧道的状态（哪个数据库开在哪台端口） */
+    tunnels(): Promise<TunnelStatus[]>
+    tunnelSetEnabled(name: string, enabled: boolean): Promise<TunnelStatus[]>
+    tunnelSetPort(name: string, port: number): Promise<TunnelStatus[]>
+    /** 给一个数据库挑一个空闲的本机端口（界面「自动」按钮用） */
+    tunnelPickPort(): Promise<number>
   }
   modules: {
     status(): Promise<ModulesStatusView>

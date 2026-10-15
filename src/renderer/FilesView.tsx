@@ -15,10 +15,12 @@ import {
 } from 'lucide-react'
 import {
   Button,
+  Banner,
   ConfirmDialog,
   EmptyState,
   MotionTabs,
   ProgressBar,
+  Section,
   StatusBadge,
   SwitchField,
   TextField,
@@ -103,10 +105,7 @@ function NameForm({ initial, submitLabel, onSubmit, onCancel }: { initial: strin
 function TransferList({ transfers, onCancel }: { transfers: Transfer[]; onCancel: (id: string) => void }) {
   if (transfers.length === 0) return null
   return (
-    <section className="kura-section kura-transfers" aria-label="传输">
-      <header className="kura-section__head">
-        <h2>传输</h2>
-      </header>
+    <Section className="kura-transfers" aria-label="传输" title="传输">
       <ul>
         {transfers.slice(0, 8).map((t) => {
           const tone = t.state === 'error' ? 'danger' : t.state === 'done' ? 'success' : t.state === 'cancelled' ? 'warning' : 'accent'
@@ -127,7 +126,7 @@ function TransferList({ transfers, onCancel }: { transfers: Transfer[]; onCancel
           )
         })}
       </ul>
-    </section>
+    </Section>
   )
 }
 
@@ -458,13 +457,15 @@ function LocalDavPanel() {
 
   return (
     <div className="kura-dav">
-      <section className="kura-section">
-        <header className="kura-section__head">
-          <h2>本机 WebDAV</h2>
+      <Section
+        title="本机 WebDAV"
+        actions={
           <StatusBadge tone={tone} dot size="sm">
             {label}
           </StatusBadge>
-        </header>
+        }
+        footer={<>请求 {status.requests} · 失败 {status.errors} · ↑ {humanBytes(status.bytesUp)} · ↓ {humanBytes(status.bytesDown)}</>}
+      >
         <p className="kura-form__note">
           给本机其他程序用：资源管理器「映射网络驱动器」、播放器、同步工具都填这个地址，无需账号密码，只能从本机访问。
           看到的是「暴露范围」裁剪后的 NAS 目录 —— 范围和文件页、Z: 盘共用同一份，改在下面。
@@ -477,18 +478,12 @@ function LocalDavPanel() {
             复制
           </Button>
         </div>
-        {!status.available && <p className="kura-banner" data-tone="warning">服务端清单里还没有 webdav 服务：NAS 侧的 nas-webdav 没部署、或清单还没同步到。</p>}
+        {!status.available && <Banner tone="warning" description="服务端清单里还没有 webdav 服务：NAS 侧的 nas-webdav 没部署、或清单还没同步到。" />}
         {status.lastError && <p className="kura-card__error">{status.lastError}</p>}
         {status.upstreamError && <p className="kura-card__error">{status.upstreamError}</p>}
-        <p className="kura-section__foot">
-          请求 {status.requests} · 失败 {status.errors} · ↑ {humanBytes(status.bytesUp)} · ↓ {humanBytes(status.bytesDown)}
-        </p>
-      </section>
+        </Section>
 
-      <section className="kura-section">
-        <header className="kura-section__head">
-          <h2>本机服务设置</h2>
-        </header>
+      <Section title="本机服务设置">
         <div className="kura-dav__basics">
           <SwitchField label="启用" description="关掉后本机端口释放，文件页的浏览不受影响" checked={draft.enabled} onCheckedChange={(v) => set('enabled', v)} />
           <TextField
@@ -524,7 +519,7 @@ function LocalDavPanel() {
             撤销改动
           </Button>
         </div>
-      </section>
+      </Section>
 
       <NasScopePanel />
     </div>
@@ -565,16 +560,18 @@ function NasScopePanel() {
 
   if (loadError) {
     return (
-      <section className="kura-section">
-        <header className="kura-section__head">
-          <h2>暴露范围</h2>
-        </header>
-        <p className="kura-banner" data-tone="warning">
-          读不到 NAS 上的暴露范围：{loadError}
-          <br />
-          范围存在 NAS 的 kura-server 上。确认映射已在运行，且 NAS 上的镜像够新（旧版还没有这个接口）。
-        </p>
-      </section>
+      <Section title="暴露范围">
+        <Banner
+          tone="warning"
+          description={
+            <>
+              读不到 NAS 上的暴露范围：{loadError}
+              <br />
+              范围存在 NAS 的 kura-server 上。确认映射已在运行，且 NAS 上的镜像够新（旧版还没有这个接口）。
+            </>
+          }
+        />
+      </Section>
     )
   }
   if (!scope || !draft) return null
@@ -584,11 +581,10 @@ function NasScopePanel() {
 
   return (
     <>
-      <section className="kura-section">
-        <header className="kura-section__head">
-          <h2>暴露范围</h2>
-          <span className="kura-form__note">存在 NAS 上，与 NAS 管理页共用同一份</span>
-        </header>
+      <Section
+        title="暴露范围"
+        description="存在 NAS 上，与 NAS 管理页共用同一份"
+      >
         <p className="kura-form__note">
           文件页的浏览、本机 WebDAV、Z: 盘、以及给其他程序用的 WebDAV，看到的都是这份范围裁剪后的结果。改完立即生效。
         </p>
@@ -640,12 +636,9 @@ function NasScopePanel() {
             撤销改动
           </Button>
         </div>
-      </section>
+      </Section>
 
-      <section className="kura-section">
-        <header className="kura-section__head">
-          <h2>可见性自检</h2>
-        </header>
+      <Section title="可见性自检">
         <p className="kura-form__note">输一个 NAS 路径，看它按当前已保存的规则能不能被看到、写入，以及是哪条规则决定的。</p>
         <form
           className="kura-rules__add"
@@ -671,7 +664,7 @@ function NasScopePanel() {
             <span>{probeResult.reason}</span>
           </p>
         )}
-      </section>
+      </Section>
     </>
   )
 }

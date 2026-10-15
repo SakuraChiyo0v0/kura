@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
-import { Blocks, Boxes, FolderOpen, LayoutDashboard, Network, Settings, SquareTerminal } from 'lucide-react'
+import { Blocks, Boxes, Database, FolderOpen, LayoutDashboard, Network, Settings, SquareTerminal } from 'lucide-react'
 
-export type PageId = 'overview' | 'mirror' | 'files' | 'terminal' | 'containers' | 'modules' | 'settings'
+export type PageId = 'overview' | 'mirror' | 'files' | 'terminal' | 'containers' | 'databases' | 'modules' | 'settings'
 
 export interface PageDef {
   id: PageId
@@ -50,6 +50,13 @@ export const pages: readonly PageDef[] = [
     icon: <Boxes {...iconProps} />,
     summary: 'NAS 上的 Docker：按 compose 项目启停、重建，看容器日志与镜像；每个改动都留审计',
     plannedIn: 'v0.4',
+  },
+  {
+    id: 'databases',
+    label: '数据库',
+    icon: <Database {...iconProps} />,
+    summary: 'NAS 上 Docker 里的 PostgreSQL / MySQL / MariaDB / Redis：一键安装、给本机开隧道、跑命令',
+    plannedIn: 'v0.7',
   },
   {
     id: 'modules',

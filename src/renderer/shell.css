@@ -244,45 +244,12 @@ body {
   overflow-wrap: anywhere;
 }
 
-/* ---------- 提示条 ---------- */
-
-.kura-banner {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 0 0 16px;
-  padding: 11px 14px;
-  border: 1px solid var(--sk-line);
-  border-radius: var(--sk-radius-control);
-  background: var(--sk-surface);
-  font-size: 12.5px;
-}
-
-.kura-banner > div {
-  flex: 1;
-  min-width: 0;
-}
-
-.kura-banner p {
-  margin: 2px 0 0;
-  color: var(--sk-muted);
-  overflow-wrap: anywhere;
-}
-
-.kura-banner[data-tone='danger'] {
-  border-color: var(--sk-danger);
-}
-
-.kura-banner[data-tone='danger'] > svg {
-  color: var(--sk-danger-text);
-}
-
-.kura-banner[data-tone='warning'] {
-  border-color: var(--sk-warning);
-}
-
-.kura-banner[data-tone='warning'] > svg {
-  color: var(--sk-warning-text);
+/* 提示条改用 Sakura UI 的 Banner（.sk-banner）：颜色、语气和播报语义都由组件管。
+   组件不带外边距（边距属于调用方），而 .kura-overview / .kura-mirror 这两个容器是裸 div，
+   原地那条 margin-bottom 是它们唯一的分隔手段 —— 所以在这里补回来。 */
+.kura-overview > .sk-banner,
+.kura-mirror > .sk-banner {
+  margin-bottom: 16px;
 }
 
 /* ---------- 概览 ---------- */
@@ -302,10 +269,9 @@ body {
   line-height: 1.38; /* 与数字卡的 36px × 1.15 同高，四张卡的说明行对齐 */
 }
 
-.kura-section {
-  padding: 4px 0 0;
-}
-
+/* 带标题的区块改用 Sakura UI 的 Section（.sk-section）。
+   .kura-section__head / __foot 还留着：容器详情抽屉和日志区只有标题栏、外面另有
+   aside / section，套不进恒渲染 <section> 的 Section，见 ContainersView。 */
 .kura-section__head {
   display: flex;
   align-items: center;
@@ -319,10 +285,10 @@ body {
   font-weight: 640;
 }
 
-.kura-section__foot {
-  margin: 10px 0 0;
-  color: var(--sk-muted);
-  font-size: 12px;
+/* 原来 .kura-section 自带的 padding-top 随迁移消失，给裸容器补回同一份间距。 */
+.kura-dav > .sk-section,
+.kura-overview > .sk-section {
+  padding-top: 4px;
 }
 
 .kura-service-list {
@@ -1494,4 +1460,101 @@ body {
 .kura-whats-new .kura-form__actions {
   justify-content: flex-end;
   margin-top: 14px;
+}
+
+/* ---------- 数据库 ---------- */
+
+/* 删除确认的触发器藏起来：列表里的菜单负责打开，ConfirmDialog 只是要一个 triggerLabel */
+.kura-db-confirm > .sk-control-button {
+  display: none;
+}
+
+.kura-db {
+  display: grid;
+  gap: 16px;
+}
+
+/* 连接信息 / 命令台 / 安装三块共用的一列布局 */
+.kura-db-connect {
+  display: grid;
+  gap: 14px;
+}
+
+.kura-db-field {
+  display: grid;
+  gap: 6px;
+  max-width: 420px;
+}
+
+.kura-db-field__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sk-muted);
+}
+
+.kura-db-field select {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--sk-line);
+  border-radius: var(--sk-radius-control);
+  background: var(--sk-surface);
+  color: inherit;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+/* 端口输入 + 「自动挑一个」并排 */
+.kura-db-portrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.kura-db-portrow > .sk-text-field {
+  max-width: 180px;
+}
+
+.kura-db-copies {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--sk-line);
+  border-radius: var(--sk-radius-control);
+  background: var(--sk-surface-sunken);
+}
+
+.kura-db-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.kura-db-copy > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.kura-db-copy__value {
+  font-family: var(--kura-font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.kura-db-copies__foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--sk-line);
+}
+
+/* 名称列：名字一行、引擎与用户一行 */
+.kura-db-name {
+  display: grid;
+  gap: 2px;
 }

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Copy, ExternalLink, RefreshCw, Search } from 'lucide-react'
-import { Button, EmptyState, FluidSegmented, StatusBadge, SwitchField, TextField, useToast, type StatusTone } from '@sakura-ui/react'
+import { Banner, Button, EmptyState, FluidSegmented, StatusBadge, SwitchField, TextField, useToast, type StatusTone } from '@sakura-ui/react'
 import type { LinkModeSetting } from '../shared/labels.js'
 import type { MirrorSnapshot, ServiceView } from '../core/mirror.js'
 import { humanBytes, type TrendPoint } from '../core/stats.js'
@@ -244,19 +244,17 @@ export function MirrorView({ snapshot, refresh }: { snapshot: MirrorSnapshot; re
       </div>
 
       {snapshot.fromCache && snapshot.phase === 'syncing' && (
-        <p className="kura-banner" data-tone="neutral" data-testid="syncing-banner">
-          正在同步服务端清单…（先按上次的清单运行，本机端口已经可以用）
-        </p>
+        <Banner
+          tone="neutral"
+          data-testid="syncing-banner"
+          description="正在同步服务端清单…（先按上次的清单运行，本机端口已经可以用）"
+        />
       )}
       {snapshot.discovery.lastError && (
-        <p className="kura-banner" data-tone="warning">
-          服务端清单同步失败：{snapshot.discovery.lastError}（当前按上次的清单运行）
-        </p>
+        <Banner tone="warning" description={`服务端清单同步失败：${snapshot.discovery.lastError}（当前按上次的清单运行）`} />
       )}
       {snapshot.discovery.skipped.length > 0 && (
-        <p className="kura-banner" data-tone="neutral">
-          跳过 {snapshot.discovery.skipped.length} 个服务：{snapshot.discovery.skipped.join('；')}
-        </p>
+        <Banner tone="neutral" description={`跳过 ${snapshot.discovery.skipped.length} 个服务：${snapshot.discovery.skipped.join('；')}`} />
       )}
 
       {snapshot.services.length === 0 ? (

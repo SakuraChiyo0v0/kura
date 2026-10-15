@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
+import net from 'node:net'
 import { join } from 'node:path'
 import type { BrowserWindow } from 'electron'
 import { delay } from '@sakura-ui/electron/shared'
@@ -17,6 +18,31 @@ export interface SmokeContext {
 
 function httpGet(url: string): Promise<{ status: number; body: string }> {
   return httpSend('GET', url)
+}
+
+/**
+ * 发一段字节到本机某个 TCP 端口，把收到的一样长的回包比回来。
+ * 用来验隧道：TCP → 本机监听 → WS → kura-server → 目标容器（假 NAS 里是一条 echo 服务）。
+ */
+function tcpEcho(host: string, port: number, payload: string, timeoutMs = 8_000): Promise<{ ok: boolean; detail: string }> {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host, port })
+    let received = ''
+    let done = false
+    const finish = (ok: boolean, detail: string) => {
+      if (done) return
+      done = true
+      socket.destroy()
+      resolve({ ok, detail })
+    }
+    socket.setTimeout(timeoutMs, () => finish(false, '超时没有回包'))
+    socket.on('error', (error) => finish(false, error.message))
+    socket.on('connect', () => socket.write(payload))
+    socket.on('data', (chunk) => {
+      received += chunk.toString('utf8')
+      if (received.length >= payload.length) finish(received === payload, `发出 ${JSON.stringify(payload)} 收到 ${JSON.stringify(received)}`)
+    })
+  })
 }
 
 function httpSend(method: string, url: string, headers: Record<string, string> = {}, body?: string): Promise<{ status: number; body: string }> {
@@ -69,12 +95,13 @@ export async function runRestartSmoke(ctx: { window: BrowserWindow; startedAt: n
     const openedMs = Date.now() - ctx.startedAt
 
     // 清单接口被拖慢了：这时应该显示「正在同步」而不是空白；到了之后自动刷新（推送）
-    const syncingShown = await js<boolean>(`document.querySelector('.kura-section__foot')?.textContent.includes('同步') ?? false`)
+    // 认 data-testid 而不是外层类名：那条状态行现在由 Sakura UI 的 Section 渲染，类名归组件管。
+    const syncingShown = await js<boolean>(`document.querySelector('[data-testid="sync-status"]')?.textContent.includes('同步') ?? false`)
     const synced = await waitUntil(js, `window.kura.mirror.snapshot().then(s => s?.phase === 'ready')`, 15_000)
     // 主进程同步完成后，界面在 1 秒内（远小于 3 秒轮询）就该反映出来。
     // 从「主进程说 ready」那一刻计时：主进程推送前有 150ms 合并窗口，查 snapshot 本身还要一次 IPC 往返，
     // 而 waitUntil 每 100ms 才看一次 —— 机器忙时（8 次里 1 次）卡在 1 秒边上。判据是「远小于 3 秒」，给 1.5 秒
-    const pushed = await waitUntil(js, `document.querySelector('.kura-section__foot')?.textContent.includes('秒前') ?? false`, 1_500)
+    const pushed = await waitUntil(js, `document.querySelector('[data-testid="sync-status"]')?.textContent.includes('秒前') ?? false`, 1_500)
     check('清单到达后界面立即更新（推送）', synced && pushed, `syncingShown=${syncingShown} synced=${synced} pushed=${pushed}`)
     check('启动到窗口可用的耗时', openedMs < 8_000, `${openedMs}ms`)
 
@@ -472,6 +499,63 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     check('编辑 compose：坏的被拒并说清原因、保存前能看改动、好的存上', editorOpen && rejected && diffShown && saved, `open=${editorOpen} rejected=${rejected} diff=${diffShown} saved=${saved}`)
     await shot('v0.4-编辑项目.png')
     await js(`document.querySelector('[data-testid="project-editor"] button[aria-label="关闭编辑"]')?.click()`)
+
+    // ⑦d5 v0.7 数据库：列表（含接管的已有容器）→ 开隧道 → **本机真的能连上** → 跑一条命令
+    await nav('数据库')
+    const dbListed = await waitFor(`document.querySelector('[data-testid="db-page"] tbody tr') !== null`, 10_000)
+    const dbRows = await js<number>(`document.querySelectorAll('[data-testid="db-page"] tbody tr').length`)
+    check('数据库页：列出 Kura 装的与接管的数据库', dbListed && dbRows >= 3, `rows=${dbRows} ${await js<string>(`document.querySelector('[data-testid="db-page"]')?.innerText.slice(0, 200) ?? '无'`)}`)
+    await shot('v0.7-数据库.png')
+
+    // 接管的 sakura-pg 是 5444（非标准端口）—— 这一条防「按引擎硬编码端口」
+    const adopted = await js<string>(`document.querySelector('[data-testid="db-page"]')?.innerText.includes('5444') ? 'yes' : 'no'`)
+    check('接管的已有数据库按容器实际端口显示', adopted === 'yes', `5444=${adopted}`)
+
+    // 切到连接信息 → 给 sakura-pg 开隧道 → 本机端口真的在监听
+    await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === '连接信息')?.click()`)
+    await waitFor(`document.querySelector('[data-testid="copy-连接地址"]') !== null || document.querySelector('.kura-db-connect select') !== null`, 5_000)
+    await js(`(() => {
+      const sel = document.querySelector('.kura-db-connect select')
+      if (!sel) return false
+      const opt = [...sel.options].find(o => o.value === 'sakura-pg')
+      if (!opt) return false
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(sel, 'sakura-pg')
+      sel.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    })()`)
+    await delay(300)
+    const tunnelSwitch = await waitFor(`document.querySelector('.kura-db-connect input[type="checkbox"]') !== null`, 5_000)
+    check('连接信息：能给接管的数据库开隧道', tunnelSwitch)
+    await js(`document.querySelector('.kura-db-connect input[type="checkbox"]')?.click()`)
+    // 隧道开在本机回环上：地址与端口由主进程挑，界面上显示出来
+    const tunnelReady = await waitFor(`document.querySelector('[data-testid="copy-连接地址"] code')?.textContent?.startsWith('127.0.0.1:') === true`, 10_000)
+    const tunnelAddr = await js<string>(`document.querySelector('[data-testid="copy-连接地址"] code')?.textContent ?? ''`)
+    check('隧道开在本机回环上', tunnelReady && !tunnelAddr.endsWith(':0'), tunnelAddr)
+    // 端到端：往隧道里发一段字节，假 NAS 那边是 TCP echo —— 回来的一样就说明整条链路通了
+    const tunnelPort = Number((tunnelAddr.split(':')[1] ?? '0').trim())
+    const tunnelEcho = tunnelPort ? await tcpEcho('127.0.0.1', tunnelPort, 'kura-db-tunnel-probe') : { ok: false, detail: '没有隧道端口' }
+    check('经隧道打到「数据库」（本机 TCP → WS → 服务端 → 目标）', tunnelEcho.ok, tunnelEcho.detail)
+    await shot('v0.7-数据库-连接信息.png')
+
+    // 命令台：经 docker exec 跑官方 CLI，输出与退出码都回到界面上
+    await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === '命令台')?.click()`)
+    await waitFor(`document.querySelector('.kura-db-connect form') !== null`, 5_000)
+    await clickButton('执行')
+    const cmdOut = await waitFor(`document.querySelector('[data-testid="db-output"]')?.textContent.includes('PostgreSQL 17.0') === true`, 10_000)
+    const cmdExit = await js<string>(`document.querySelector('[data-testid="db-output"]')?.textContent.includes('退出码 0') ? 'ok' : 'bad'`)
+    check('命令台：在数据库容器里跑官方 CLI，拿到输出与退出码', cmdOut && cmdExit === 'ok', await js<string>(`document.querySelector('[data-testid="db-output"]')?.textContent.slice(0, 200) ?? '没有输出'`))
+
+    // 安装：走模板装一个，列表里应该多出来
+    await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === '安装')?.click()`)
+    await waitFor(`document.querySelector('.kura-db-connect select') !== null`, 5_000)
+    await fill('名字', 'smoke-new-pg')
+    // 按 data-* 找提交按钮：标签页也叫「安装」，按文字找会点到标签上（那一步已经切过去了，等于没点）
+    await js(`[...document.querySelectorAll('.kura-db-connect button')].find(b => b.textContent.trim().startsWith('安装'))?.click()`)
+    const installed = await waitFor(`document.querySelector('[data-testid="db-install-log"]')?.textContent.includes('Started') === true`, 15_000)
+    check('快捷安装：按模板装出来并给出输出', installed, await js<string>(`document.querySelector('[data-testid="db-install-log"]')?.textContent.slice(0, 200) ?? '没有输出'`))
+    await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim().startsWith('数据库'))?.click()`)
+    check('装完的数据库出现在列表里', await waitFor(`document.querySelector('[data-testid="db-page"]')?.innerText.includes('smoke-new-pg') === true`, 8_000))
+    await shot('v0.7-数据库-安装.png')
 
     // ⑦e v0.3 模块页：能显示依赖检测结果（不在冒烟里真去下载 rclone）
     await nav('模块')

@@ -3,7 +3,7 @@ import { Plus, RotateCcw, SquareTerminal, X } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { Button, EmptyState, StatusBadge } from '@sakura-ui/react'
+import { Banner, Button, EmptyState, StatusBadge } from '@sakura-ui/react'
 import type { TerminalEventView } from '../shared/ipc.js'
 
 const icon = { size: 16, strokeWidth: 1.7, 'aria-hidden': true } as const
@@ -175,9 +175,10 @@ export function TerminalView() {
   if (!available) {
     return (
       <div className="kura-term" data-mode="blocked">
-        <p className="kura-banner" data-tone="warning">
-          服务端清单里还没有终端服务：NAS 上要部署 kura-server（或旧的 nas-console），并在网关登记，映射层同步到后终端才能连。
-        </p>
+        <Banner
+          tone="warning"
+          description="服务端清单里还没有终端服务：NAS 上要部署 kura-server（或旧的 nas-console），并在网关登记，映射层同步到后终端才能连。"
+        />
       </div>
     )
   }

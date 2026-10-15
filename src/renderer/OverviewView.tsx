@@ -1,5 +1,5 @@
 import { Activity, ArrowDownUp, Network, ShieldAlert } from 'lucide-react'
-import { Button, StatCard, StatusBadge } from '@sakura-ui/react'
+import { Banner, Button, Section, StatCard, StatusBadge } from '@sakura-ui/react'
 import { linkModeLabel } from '../shared/labels.js'
 import type { MirrorSnapshot } from '../core/mirror.js'
 import { humanBytes } from '../core/stats.js'
@@ -36,19 +36,22 @@ export function OverviewView({ snapshot, onOpenMirror }: { snapshot: MirrorSnaps
   return (
     <div className="kura-overview">
       {snapshot.auth.blocked && (
-        <div className="kura-banner" data-tone="warning" role="alert">
-          <ShieldAlert {...icon} />
-          <div>
-            <strong>连接 NAS 失败，正在退避重试</strong>
-            <p>
+        <Banner
+          tone="warning"
+          icon={<ShieldAlert {...icon} />}
+          title="连接 NAS 失败，正在退避重试"
+          description={
+            <>
               {snapshot.auth.reason}
               {snapshot.auth.retryAt ? ` · 下次重试 ${new Date(snapshot.auth.retryAt).toLocaleTimeString('zh-CN', { hour12: false })}` : ''}
-            </p>
-          </div>
-          <Button size="sm" variant="secondary" onClick={() => void window.kura?.mirror.retry()}>
-            立即重试
-          </Button>
-        </div>
+            </>
+          }
+          action={
+            <Button size="sm" variant="secondary" onClick={() => void window.kura?.mirror.retry()}>
+              立即重试
+            </Button>
+          }
+        />
       )}
 
       <div className="kura-stats">
@@ -75,13 +78,25 @@ export function OverviewView({ snapshot, onOpenMirror }: { snapshot: MirrorSnaps
         <StatCard label="流量" value={humanBytes(down)} unit="下行" description={`上行 ${humanBytes(up)}`} />
       </div>
 
-      <section className="kura-section">
-        <header className="kura-section__head">
-          <h2>服务</h2>
+      <Section
+        title="服务"
+        actions={
           <Button size="sm" variant="ghost" onClick={onOpenMirror}>
             管理映射
           </Button>
-        </header>
+        }
+        footer={
+          <span data-testid="sync-status">
+            服务端清单：
+            {snapshot.phase === 'syncing'
+              ? '正在同步…（先按上次的清单运行）'
+              : snapshot.phase === 'failed'
+                ? `同步失败，按上次的清单运行（${snapshot.discovery.lastError}）`
+                : relative(snapshot.discovery.lastSync)}{' '}
+            · 当前 {snapshot.sessions} 份会话
+          </span>
+        }
+      >
         <ul className="kura-service-list">
           {snapshot.services.map((view, i) => (
             <li key={view.key}>
@@ -94,16 +109,7 @@ export function OverviewView({ snapshot, onOpenMirror }: { snapshot: MirrorSnaps
           ))}
           {snapshot.services.length === 0 && <li className="kura-service-list__empty">还没有服务，正在等服务端清单</li>}
         </ul>
-        <p className="kura-section__foot" data-testid="sync-status">
-          服务端清单：
-          {snapshot.phase === 'syncing'
-            ? '正在同步…（先按上次的清单运行）'
-            : snapshot.phase === 'failed'
-              ? `同步失败，按上次的清单运行（${snapshot.discovery.lastError}）`
-              : relative(snapshot.discovery.lastSync)}{' '}
-          · 当前 {snapshot.sessions} 份会话
-        </p>
-      </section>
+      </Section>
     </div>
   )
 }

@@ -2,6 +2,8 @@ import { createReadStream, createWriteStream, mkdirSync, renameSync, rmSync, sta
 import { basename, join } from 'node:path'
 import { ConsoleSession, ConsoleTerminal } from '../core/console.js'
 import { DavClient, type DavEntry } from '../core/dav-client.js'
+import { DbClient, type DatabaseView } from '../core/db-client.js'
+import type { DbEngine } from '../core/db-types.js'
 import { DockerClient, type DockerStream, type ProjectAction } from '../core/docker-client.js'
 import { normalizeDavPath } from '../core/dav-scope.js'
 import { DavServer, davServerDefaults, type DavServerSettings } from '../core/dav-server.js'
@@ -15,6 +17,7 @@ import type {
   DavCheckResult,
   DavSettingsView,
   DavStatusView,
+  DbExecView,
   DockerStreamEvent,
   DockerStreamKind,
   FileListing,
@@ -441,4 +444,85 @@ export class TerminalService {
     for (const t of this.terminals.values()) t.close()
     this.terminals.clear()
   }
+}
+
+// ---------------------------------------------------------------- 数据库
+
+/**
+ * 数据库管理：连 kura-server 的 `/api/db/*`（挂在 docker 内置服务下）。
+ *
+ * 隧道用的 WS 也从这里开：`openTunnel()` 拿到一条到某个数据库的 WebSocket，
+ * 交给 `DbTunnelService` 去接本机回环的裸 TCP。应用知识（哪个库）留在这层，
+ * 隧道那边只认「本地端口 → WS」—— 传输层不认识数据库（AGENTS.md §三.3）。
+ *
+ * 命令执行（M2）走 `docker exec` 进官方镜像跑官方 CLI：客户端零驱动依赖，
+ * 版本与容器里的服务端天然对齐，且不经隧道（独立于隧道可用性）。
+ */
+export class DatabaseService {
+  readonly client: DbClient
+
+  constructor(private readonly deps: FeatureDeps) {
+    this.client = new DbClient(() => requireMirror(deps).internalEndpoint(dockerService))
+  }
+
+  /** 服务端有没有数据库接口（老镜像只有容器管理，会 404）。 */
+  async available(): Promise<boolean> {
+    if (!this.deps.mirror()?.hasService(dockerService)) return false
+    return this.client.available()
+  }
+
+  list(): Promise<{ databases: DatabaseView[]; tunnelAvailable: boolean }> {
+    return this.client.list()
+  }
+
+  install(engine: DbEngine, name: string) {
+    return this.client.install(engine, name)
+  }
+
+  detail(name: string) {
+    return this.client.detail(name)
+  }
+
+  info(name: string, includePassword = false) {
+    return this.client.info(name, includePassword)
+  }
+
+  action(name: string, action: 'start' | 'stop' | 'restart') {
+    return this.client.action(name, action)
+  }
+
+  remove(name: string, options: { volumes: boolean; files: boolean }) {
+    return this.client.remove(name, options)
+  }
+
+  /** 开一条到某个数据库的隧道用的 WS。 */
+  openTunnel(name: string) {
+    return this.client.tunnel(name)
+  }
+
+  /**
+   * 跑一条命令。每次调用开一条新连接（MCP 是请求/响应，没有会话可复用），跑完关掉。
+   *
+   * 输出同时走两条路：`onOutput` 按帧推给界面（实时看得到），返回值里带上汇总的
+   * `stdout` / `stderr`（MCP 与直接调用要整段结果 —— 它们是请求/响应，没有事件可听）。
+   */
+  async exec(name: string, cli: string, args: string[], onOutput?: (event: { stream: 1 | 2; text: string }) => void, timeoutMs?: number): Promise<DbExecView> {
+    const session = await this.client.exec(name)
+    const startedAt = Date.now()
+    let stdout = ''
+    let stderr = ''
+    try {
+      session.onOutput((event) => {
+        if (event.stream === 2) stderr += event.text
+        else stdout += event.text
+        onOutput?.(event)
+      })
+      const result = await session.run(cli, args, timeoutMs)
+      return { exitCode: result.exitCode, ...(result.error ? { error: result.error } : {}), stdout, stderr, durationMs: Date.now() - startedAt }
+    } finally {
+      session.close()
+    }
+  }
+
+  closeAll(): void {}
 }

@@ -21,6 +21,18 @@ export function checkRef(ref: string): string {
   return ref
 }
 
+/**
+ * 用户传进来的单条 CLI 参数（数据库命令用）。比 `checkRef` 宽 —— SQL 里有空格、引号、分号；
+ * 但仍是**一条独立参数**（数组元素），不会经 shell。这里只挡控制字符与超长：
+ * 换行/制表/NUL 会让参数在容器里被拆成多条命令或截断，属于「看着像参数、实际是注入」。
+ */
+export function checkUserRef(arg: string): string {
+  if (arg.length > 8192) throw new DockerError(400, '参数太长')
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u0008\u000a-\u001f\u007f]/.test(arg)) throw new DockerError(400, `参数里有控制字符：${JSON.stringify(arg.slice(0, 40))}`)
+  return arg
+}
+
 export class DockerError extends Error {
   constructor(
     readonly status: number,
@@ -166,18 +178,29 @@ export class DockerEngine {
 
   // ---- D4：进容器 shell ----
 
-  /** 建一个 exec（交互、带 TTY）；返回 exec id。cmd 只能是下面 shellCandidates 里的一个。 */
-  async createExec(ref: string, cmd: string[]): Promise<string> {
-    const body = JSON.stringify({ AttachStdin: true, AttachStdout: true, AttachStderr: true, Tty: true, Cmd: cmd })
+  /**
+   * 建一个 exec；返回 exec id。cmd 只能是调用方白名单里的。
+   *
+   * `tty` 默认 **true**（进容器 shell 用：交互、输出是原样字节）。
+   * 数据库命令执行要 **false**：要分开 stdout / stderr（SQL 错误必须在 stderr），
+   * 开了 TTY 两者会混在一起、也拿不到结构化输出。
+   */
+  async createExec(ref: string, cmd: string[], options: { tty?: boolean } = {}): Promise<string> {
+    const tty = options.tty !== false
+    const body = JSON.stringify({ AttachStdin: true, AttachStdout: true, AttachStderr: true, Tty: tty, Cmd: cmd })
     const res = await this.withTimeout(this.raw('POST', `/containers/${encodeURIComponent(checkRef(ref))}/exec`, body))
     if ((res.statusCode ?? 500) >= 300) throw await this.failure(res)
     return (JSON.parse(await this.read(res)) as { Id: string }).Id
   }
 
-  /** 启动 exec 并接管连接：返回双向的原始 socket（TTY 模式下没有多路复用帧）。 */
-  startExec(execId: string): Promise<net.Socket> {
+  /**
+   * 启动 exec 并接管连接，返回双向的原始 socket。
+   * `tty: true`（默认）时流上是原样字节；`tty: false` 时是 Docker 的多路复用帧，
+   * 调用方要用 `createStreamDemuxer()` 分流（**不要用 `createLogDemuxer`**，它把两个流合并了）。
+   */
+  startExec(execId: string, options: { tty?: boolean } = {}): Promise<net.Socket> {
     const id = checkRef(execId)
-    const body = JSON.stringify({ Detach: false, Tty: true })
+    const body = JSON.stringify({ Detach: false, Tty: options.tty !== false })
     return new Promise((resolve, reject) => {
       const req = http.request({
         socketPath: this.options.socketPath,
@@ -346,5 +369,45 @@ export function createLogDemuxer(): (chunk: Buffer) => string {
       pending = pending.subarray(8 + size)
     }
     return out
+  }
+}
+
+/** 一帧：`stream` 1 = stdout、2 = stderr（Docker 多路复用的那个字节）。 */
+export interface StreamFrame {
+  stream: 1 | 2
+  text: string
+}
+
+/**
+ * 解**非 TTY** exec 的多路复用帧，但**保留流身份**（1 = stdout、2 = stderr）。
+ *
+ * 为什么不复用 `createLogDemuxer`：那个把两个流合并成一段文本 —— 对容器日志/PTY 是对的
+ * （用户只关心"打印了什么"），对数据库命令不对：SQL 的错误信息必须能和结果分开，
+ * 否则 `exitCode != 0` 时调用方不知道哪段是错误。所以这里另写一个，**不动** `createLogDemuxer`。
+ *
+ * 跨块的半帧留到下一次；收到不是 1/2 的流字节说明这不是复用帧（容器开了 TTY），按 stdout 原样处理。
+ */
+export function createStreamDemuxer(): (chunk: Buffer) => StreamFrame[] {
+  let pending: Buffer = Buffer.alloc(0)
+  let raw: boolean | undefined
+  return (chunk) => {
+    pending = pending.length ? Buffer.concat([pending, chunk]) : chunk
+    if (raw === undefined && pending.length > 0) {
+      raw = pending[0] !== 0 && pending[0] !== 1 && pending[0] !== 2
+    }
+    if (raw) {
+      const text = pending.toString('utf8')
+      pending = Buffer.alloc(0)
+      return text ? [{ stream: 1, text }] : []
+    }
+    const frames: StreamFrame[] = []
+    while (pending.length >= 8) {
+      const stream = pending[0] === 2 ? 2 : 1
+      const size = pending.readUInt32BE(4)
+      if (pending.length < 8 + size) break
+      frames.push({ stream, text: pending.subarray(8, 8 + size).toString('utf8') })
+      pending = pending.subarray(8 + size)
+    }
+    return frames
   }
 }

@@ -1,7 +1,7 @@
 {
   "name": "kura",
   "productName": "Kura",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "description": "Kura 蔵 —— 绿联 NAS 的 Windows 桌面客户端",
   "author": "SakuraChiyo0v0",
@@ -20,10 +20,10 @@
     "server:start": "node server/build.mjs && node dist/server/main.mjs"
   },
   "dependencies": {
-    "@sakura-ui/electron": "file:./vendor/sakura-ui/sakura-ui-electron-0.1.0.tgz",
-    "@sakura-ui/electron-react": "file:./vendor/sakura-ui/sakura-ui-electron-react-0.1.0.tgz",
-    "@sakura-ui/react": "file:./vendor/sakura-ui/sakura-ui-react-0.1.0.tgz",
-    "@sakura-ui/tokens": "file:./vendor/sakura-ui/sakura-ui-tokens-0.1.0.tgz",
+    "@sakura-ui/electron": "file:./vendor/sakura-ui/sakura-ui-electron-0.2.0.tgz",
+    "@sakura-ui/electron-react": "file:./vendor/sakura-ui/sakura-ui-electron-react-0.2.0.tgz",
+    "@sakura-ui/react": "file:./vendor/sakura-ui/sakura-ui-react-0.2.0.tgz",
+    "@sakura-ui/tokens": "file:./vendor/sakura-ui/sakura-ui-tokens-0.2.0.tgz",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
     "electron-updater": "6.8.10",

@@ -1,0 +1,235 @@
+import http from 'node:http'
+import { WebSocket } from 'ws'
+import type { DbEngine } from './db-types.js'
+import type { DockerActivity } from './docker-client.js'
+
+/**
+ * 客户端这一侧的数据库管理：连 kura-server 的 `/api/db/*`（挂在**已有的 docker 内置服务**下）。
+ *
+ * 地址来自 `Mirror.internalEndpoint('docker')` —— 和容器管理同一条路：链路切换、会话续期都在映射层，
+ * 这里只认一个 http://127.0.0.1:<端口>。隧道也是从这条路上开 WebSocket（那条路已验通中继支持 WS）。
+ */
+
+const writeHeaders = { 'x-kura-docker': '1' }
+
+export class DbApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message)
+  }
+}
+
+/** 一个数据库（kura-server 的 DatabaseView 形状）。 */
+export interface DatabaseView {
+  name: string
+  engine: DbEngine | ''
+  container: string
+  state: string
+  status: string
+  health: string
+  port: number
+  user: string
+  database: string
+  /** Kura 自己装的（能改能删）；false = 接管的已有容器 */
+  managed: boolean
+  dir: string
+  tunnel?: { active: number; total: number; bytesUp: number; bytesDown: number }
+}
+
+export interface DatabaseTemplate {
+  engine: DbEngine
+  label: string
+  image: string
+  port: number
+  database: string
+  username: string
+}
+
+export interface InstallResult {
+  ok: boolean
+  name: string
+  engine: DbEngine
+  output: string
+  connection: { container: string; port: number; database: string; user: string }
+}
+
+/** 一条命令的输出帧：stream 1 = stdout、2 = stderr。 */
+export interface DbExecEvent {
+  stream: 1 | 2
+  text: string
+}
+
+export interface DbExecResult {
+  exitCode: number
+  error?: string
+}
+
+/** 一次 exec 连接：可以连续跑多条命令。 */
+export interface DbExecSession {
+  onOutput(listener: (event: DbExecEvent) => void): void
+  /** 跑一条命令，返回它的结果（一条连接上一次只跑一个）。 */
+  run(cli: string, args: string[], timeoutMs?: number): Promise<DbExecResult>
+  close(): void
+}
+
+export interface DbActivity extends DockerActivity {}
+
+export class DbClient {
+  constructor(private readonly endpoint: () => Promise<string>) {}
+
+  private async request(method: string, path: string, body?: unknown, timeoutMs = 60_000): Promise<{ status: number; body: string }> {
+    const base = new URL(await this.endpoint())
+    const payload = body === undefined ? undefined : JSON.stringify(body)
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: base.hostname,
+          port: base.port,
+          method,
+          path,
+          agent: false,
+          headers: { ...(method === 'GET' ? {} : writeHeaders), ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {}) },
+        },
+        (res) => {
+          const chunks: Buffer[] = []
+          res.on('data', (c: Buffer) => chunks.push(c))
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }))
+          res.on('error', reject)
+        },
+      )
+      req.setTimeout(timeoutMs, () => req.destroy(new Error(`请求超时（${method} ${path}）`)))
+      req.on('error', reject)
+      req.end(payload)
+    })
+  }
+
+  private async json<T>(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<T> {
+    const { status, body: text } = await this.request(method, path, body, timeoutMs)
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      throw new DbApiError(status, status === 404 ? 'NAS 上的 kura-server 还没有数据库管理（镜像太旧，等 watchtower 换新）' : `kura-server 返回的不是 JSON（HTTP ${status}）`)
+    }
+    if (status >= 400) throw new DbApiError(status, (parsed as { error?: string }).error ?? `HTTP ${status}`)
+    return parsed as T
+  }
+
+  /** 探测服务端有没有数据库接口（老镜像只有容器管理，没有 /api/db/*）。 */
+  async available(): Promise<boolean> {
+    try {
+      const list = await this.templates()
+      return list.length > 0
+    } catch (error) {
+      if (error instanceof DbApiError && error.status === 404) return false
+      throw error
+    }
+  }
+
+  templates(): Promise<DatabaseTemplate[]> {
+    return this.json<DatabaseTemplate[]>('GET', '/api/db/templates')
+  }
+
+  async list(): Promise<{ databases: DatabaseView[]; tunnelAvailable: boolean }> {
+    return this.json<{ databases: DatabaseView[]; tunnelAvailable: boolean }>('GET', '/api/db/list')
+  }
+
+  install(engine: DbEngine, name: string): Promise<InstallResult> {
+    return this.json<InstallResult>('POST', '/api/db/create', { engine, name }, 300_000)
+  }
+
+  detail(name: string): Promise<DatabaseView> {
+    return this.json<DatabaseView>('GET', `/api/db/${encodeURIComponent(name)}`)
+  }
+
+  /** 连接信息；`includePassword` 默认 false（密码进了日志/界面就得当泄漏处理）。 */
+  info(name: string, includePassword = false): Promise<DatabaseView & { password?: string }> {
+    return this.json<DatabaseView & { password?: string }>('POST', `/api/db/${encodeURIComponent(name)}/info`, { includePassword })
+  }
+
+  action(name: string, action: 'start' | 'stop' | 'restart'): Promise<{ ok: boolean }> {
+    return this.json<{ ok: boolean }>('POST', `/api/db/${encodeURIComponent(name)}/${action}`)
+  }
+
+  remove(name: string, options: { volumes: boolean; files: boolean }): Promise<{ ok: boolean }> {
+    const query = `?volumes=${options.volumes ? 1 : 0}&files=${options.files ? 1 : 0}`
+    return this.json<{ ok: boolean }>('DELETE', `/api/db/${encodeURIComponent(name)}${query}`, undefined, 120_000)
+  }
+
+  /**
+   * 开一条隧道用的 WebSocket。**二进制帧**（数据库协议里没有文本/控制的分界）；
+   * 用 `nodebuffer` 直接拿 Buffer，省一次拷贝。
+   *
+   * **要等握手完成再返回**：WS 的 `send()` 在 CONNECTING 状态是直接调用回调报错、**不发**，
+   * 而隧道的泵按 `readyState === OPEN` 过滤 —— 早返回会让先到的那几个字节静默丢掉
+   * （psql 前几条消息很短，正好落在这个窗口里）。`exec()` 本来就是这么等的。
+   */
+  async tunnel(name: string): Promise<WebSocket> {
+    const base = await this.endpoint()
+    const url = `${base.replace(/^http/, 'ws')}/api/db/${encodeURIComponent(name)}/tunnel`
+    const ws = new WebSocket(url, { headers: writeHeaders, handshakeTimeout: 30_000 })
+    ws.binaryType = 'nodebuffer'
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve())
+      ws.once('unexpected-response', (_req, res) => {
+        res.resume()
+        reject(new DbApiError(res.statusCode ?? 0, res.statusCode === 404 ? '这个数据库没在 NAS 上登记，隧道不给开' : `隧道被拒绝：HTTP ${res.statusCode}`))
+      })
+      ws.once('error', reject)
+    })
+    return ws
+  }
+
+  /** 开一条命令执行会话（一条 WS 上连续跑多条）。 */
+  async exec(name: string): Promise<DbExecSession> {
+    const base = await this.endpoint()
+    const url = `${base.replace(/^http/, 'ws')}/api/db/${encodeURIComponent(name)}/exec`
+    const ws = new WebSocket(url, undefined, { headers: writeHeaders, handshakeTimeout: 30_000 })
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve())
+      ws.once('unexpected-response', (_req, res) => {
+        res.resume()
+        reject(new DbApiError(res.statusCode ?? 0, res.statusCode === 404 ? 'NAS 上的 kura-server 镜像太旧，还没有数据库命令执行' : `连接被拒绝：HTTP ${res.statusCode}`))
+      })
+      ws.once('error', reject)
+    })
+
+    const outputListeners: Array<(event: DbExecEvent) => void> = []
+    let pending: ((result: DbExecResult) => void) | undefined
+    ws.on('message', (data: Buffer, isBinary: boolean) => {
+      if (isBinary) return
+      let message: { type?: string; stream?: number; text?: string; code?: number; error?: string }
+      try {
+        message = JSON.parse(data.toString('utf8')) as typeof message
+      } catch {
+        return
+      }
+      if (message.type === 'out' && message.text !== undefined) {
+        for (const listener of outputListeners) listener({ stream: message.stream === 2 ? 2 : 1, text: message.text })
+      }
+      if (message.type === 'exit') {
+        const result: DbExecResult = { exitCode: message.code ?? 0, ...(message.error ? { error: message.error } : {}) }
+        const resolve = pending
+        pending = undefined
+        resolve?.(result)
+      }
+    })
+    ws.on('close', () => {
+      const resolve = pending
+      pending = undefined
+      resolve?.({ exitCode: -1, error: '连接已关闭' })
+    })
+
+    return {
+      onOutput: (listener) => outputListeners.push(listener),
+      run: (cli, args, timeoutMs) =>
+        new Promise<DbExecResult>((resolve) => {
+          pending = resolve
+          ws.send(JSON.stringify({ cli, args, ...(timeoutMs ? { timeoutMs } : {}) }))
+        }),
+      close: () => ws.close(),
+    }
+  }
+}

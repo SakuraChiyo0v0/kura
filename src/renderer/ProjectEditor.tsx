@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Save, Undo2, X } from 'lucide-react'
-import { Button, StatusBadge, SwitchField, TextField, useToast } from '@sakura-ui/react'
+import { Banner, Button, Section, StatusBadge, SwitchField, TextField, useToast } from '@sakura-ui/react'
 import { lineDiff } from '../core/line-diff.js'
 import type { ProjectFilesView } from '../shared/ipc.js'
 
@@ -67,14 +67,13 @@ export function ProjectEditor({ name, onClose, onApply }: { name: string; onClos
 
   if (error && !files) {
     return (
-      <section className="kura-section kura-docker-editor">
-        <header className="kura-section__head">
-          <h2>编辑 {name}</h2>
-          <span className="kura-term__spacer" />
-          <Button size="sm" variant="ghost" icon={<X {...icon} />} aria-label="关闭编辑" onClick={onClose} />
-        </header>
-        <p className="kura-banner" data-tone="warning">{error}</p>
-      </section>
+      <Section
+        className="kura-docker-editor"
+        title={`编辑 ${name}`}
+        actions={<Button size="sm" variant="ghost" icon={<X {...icon} />} aria-label="关闭编辑" onClick={onClose} />}
+      >
+        <Banner tone="warning" description={error} />
+      </Section>
     )
   }
   if (!files) return null
@@ -105,17 +104,21 @@ export function ProjectEditor({ name, onClose, onApply }: { name: string; onClos
   const fileName = (p: string) => p.split('/').pop() ?? p
 
   return (
-    <section className="kura-section kura-docker-editor" data-testid="project-editor">
-      <header className="kura-section__head">
-        <h2>编辑 {name}</h2>
-        {dirty && (
-          <StatusBadge tone="warning" size="sm">
-            有未保存的改动
-          </StatusBadge>
-        )}
-        <span className="kura-term__spacer" />
-        <Button size="sm" variant="ghost" icon={<X {...icon} />} aria-label="关闭编辑" onClick={onClose} />
-      </header>
+    <Section
+      className="kura-docker-editor"
+      data-testid="project-editor"
+      title={`编辑 ${name}`}
+      actions={
+        <>
+          {dirty && (
+            <StatusBadge tone="warning" size="sm">
+              有未保存的改动
+            </StatusBadge>
+          )}
+          <Button size="sm" variant="ghost" icon={<X {...icon} />} aria-label="关闭编辑" onClick={onClose} />
+        </>
+      }
+    >
       <p className="kura-form__note">
         改的是 NAS 上的文件（<code>{files.compose[0]?.path.replace(/\/[^/]+$/, '')}</code>）。保存前会先用 <code>docker compose config</code> 校验，坏的存不进去。
         {files.backups.length > 0 && ` 已有 ${files.backups.length} 份旧版本备份。`}
@@ -224,7 +227,7 @@ export function ProjectEditor({ name, onClose, onApply }: { name: string; onClos
           </Button>
         </div>
       )}
-    </section>
+    </Section>
   )
 }
 
@@ -247,12 +250,12 @@ export function NewProject({ onClose, onCreated }: { onClose: () => void; onCrea
   const [error, setError] = useState('')
   const nameError = name && !/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name) ? '小写字母、数字、- 和 _，字母或数字开头' : ''
   return (
-    <section className="kura-section kura-docker-editor" data-testid="new-project">
-      <header className="kura-section__head">
-        <h2>新建项目</h2>
-        <span className="kura-term__spacer" />
-        <Button size="sm" variant="ghost" icon={<X {...icon} />} aria-label="关闭" onClick={onClose} />
-      </header>
+    <Section
+      className="kura-docker-editor"
+      data-testid="new-project"
+      title="新建项目"
+      actions={<Button size="sm" variant="ghost" icon={<X {...icon} />} aria-label="关闭" onClick={onClose} />}
+    >
       <p className="kura-form__note">在项目目录下建一个同名文件夹，写入 docker-compose.yaml。compose 里的相对路径（./data）就落在这个文件夹里。</p>
       <TextField label="项目名" value={name} onChange={(e) => setName(e.target.value.trim())} error={nameError || undefined} spellCheck={false} />
       <div className="kura-docker-editor__panes">
@@ -283,6 +286,6 @@ export function NewProject({ onClose, onCreated }: { onClose: () => void; onCrea
           {busy ? '校验并创建中…' : '创建'}
         </Button>
       </div>
-    </section>
+    </Section>
   )
 }

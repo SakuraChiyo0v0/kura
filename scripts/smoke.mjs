@@ -14,6 +14,7 @@ import { generateKeyPairSync, privateDecrypt, constants } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import { createRequire } from 'node:module'
+import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocketServer } from 'ws'
@@ -242,6 +243,125 @@ function upgradeDocker(req, socket, head) {
   })
 }
 
+// 假 NAS 上的数据库管理（kura-server 的 /api/db/*，挂在 docker 内置服务下）。
+// 形状照 server/src/db/handler.ts。隧道用一条**真的 TCP echo 服务**当「数据库」——
+// 这样冒烟能验到「本机 psql 那条路」：TCP → 本地监听 → WS → 服务端 → 真 TCP，全是真字节搬运。
+const dbState = {
+  // 一个是 Kura 装的（managed），一个是接管的已有容器（端口 5444 那种非标准端口）
+  databases: [
+    { name: 'smoke-pg', engine: 'postgres', container: 'smoke-pg', state: 'running', status: 'Up 3 minutes (healthy)', health: 'healthy', port: 5432, hostPort: 0, database: 'smoke', username: 'smoke', managed: true, networked: true, dir: '/volume1/docker/smoke-pg' },
+    { name: 'sakura-pg', engine: 'postgres', container: 'sakura-pg', state: 'running', status: 'Up 5 hours', health: '', port: 5444, hostPort: 0, database: 'postgres', username: 'postgres', managed: false, networked: true, dir: '' },
+    { name: 'smoke-redis', engine: 'redis', container: 'smoke-redis', state: 'running', status: 'Up 4 minutes', health: '', port: 6379, hostPort: 0, database: '', username: '', managed: true, networked: true, dir: '/volume1/docker/smoke-redis' },
+  ],
+  templates: [
+    { engine: 'postgres', label: 'PostgreSQL', image: 'postgres:17-alpine', port: 5432, database: 'postgres', username: 'postgres' },
+    { engine: 'mysql', label: 'MySQL', image: 'mysql:8.4', port: 3306, database: 'mysql', username: 'root' },
+    { engine: 'mariadb', label: 'MariaDB', image: 'mariadb:11.4', port: 3306, database: 'mysql', username: 'root' },
+    { engine: 'redis', label: 'Redis', image: 'redis:7-alpine', port: 6379, database: '', username: '' },
+  ],
+}
+// 「数据库」本身：一条 TCP echo。psql 的握手走不了，但隧道是纯字节搬运 —— echo 足以验通全链路
+const echoServer = net.createServer((socket) => {
+  socket.on('data', (chunk) => socket.write(chunk))
+})
+const echoPort = await new Promise((resolve, reject) => {
+  echoServer.once('error', reject)
+  echoServer.listen(0, '127.0.0.1', () => resolve(echoServer.address().port))
+})
+
+function handleDb(req, res, body) {
+  const url = new URL(req.url, 'http://x')
+  const json = (status, data) => {
+    res.statusCode = status
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify(data))
+  }
+  if (req.method !== 'GET' && req.headers['x-kura-docker'] !== '1') return json(403, { error: '写操作必须带 x-kura-docker: 1 头' })
+  const path = url.pathname
+  if (path === '/api/db/templates') return json(200, dbState.templates)
+  if (path === '/api/db/list') return json(200, { databases: dbState.databases, tunnelAvailable: dbState.databases.length > 0 })
+  if (path === '/api/db/create' && req.method === 'POST') {
+    const { engine, name } = JSON.parse(body.toString() || '{}')
+    const t = dbState.templates.find((x) => x.engine === engine)
+    if (!t) return json(400, { error: '不认识的引擎' })
+    if (dbState.databases.some((d) => d.name === name)) return json(409, { error: '这个名字已经有了' })
+    dbState.databases.push({ name, engine, container: name, state: 'running', status: 'Up 1 second (healthy)', health: 'healthy', port: t.port, hostPort: 0, database: t.database, username: t.username, managed: true, networked: true, dir: `/volume1/docker/${name}` })
+    return json(200, { ok: true, name, engine, output: `[+] Running 2/2\n ✔ Container ${name}  Started\n`, connection: { container: name, port: t.port, database: t.database, user: t.username } })
+  }
+  const m = /^\/api\/db\/([^/]+)(?:\/(\w+))?$/.exec(path)
+  if (m) {
+    const name = decodeURIComponent(m[1])
+    const db = dbState.databases.find((d) => d.name === name)
+    if (!db) return json(404, { error: '没有这个数据库' })
+    if (req.method === 'GET' && !m[2]) return json(200, db)
+    if (m[2] === 'info' && req.method === 'POST') {
+      const { includePassword } = JSON.parse(body.toString() || '{}')
+      // 口令只在显式要的时候给，且只给 Kura 装的（接管的读 .env 读不到）
+      return json(200, includePassword && db.managed ? { ...db, password: 'smoke-db-pass-1234' } : db)
+    }
+    if (req.method === 'POST' && ['start', 'stop', 'restart'].includes(m[2])) {
+      if (!db.managed) return json(403, { error: '接管的容器不归 Kura 管' })
+      db.state = m[2] === 'stop' ? 'exited' : 'running'
+      db.status = db.state === 'running' ? 'Up 1 second' : 'Exited (0) 1 second ago'
+      return json(200, { ok: true })
+    }
+    if (req.method === 'DELETE' && !m[2]) {
+      if (!db.managed) return json(403, { error: '接管的容器不归 Kura 管' })
+      dbState.databases = dbState.databases.filter((d) => d.name !== name)
+      return json(200, { ok: true })
+    }
+  }
+  json(404, { error: 'not found' })
+}
+
+// 隧道与命令执行都是 WS：隧道把每条连接转给 echo server，exec 回一段固定输出
+function upgradeDb(req, socket, head, url) {
+  const tunnel = /^\/api\/db\/([^/]+)\/tunnel$/.exec(url.pathname)
+  const exec = /^\/api\/db\/([^/]+)\/exec$/.exec(url.pathname)
+  if (tunnel) {
+    if (req.headers['x-kura-docker'] !== '1') {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+      return socket.destroy()
+    }
+    const name = decodeURIComponent(tunnel[1])
+    const db = dbState.databases.find((d) => d.name === name)
+    // 白名单：没登记的库一律 404（真服务端也是这个规矩）
+    if (!db) {
+      socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
+      return socket.destroy()
+    }
+    return tty.handleUpgrade(req, socket, head, (ws) => {
+      const up = net.connect(echoPort, '127.0.0.1', () => {
+        ws.on('message', (data, isBinary) => {
+          if (!isBinary) return ws.close(1003, '隧道只承载二进制帧')
+          up.write(data)
+        })
+        up.on('data', (chunk) => ws.send(chunk))
+        up.on('close', () => ws.close())
+        ws.on('close', () => up.destroy())
+      })
+      // echo 那边出事就让 WS 带着原因断开（客户端据此报错，不是干等）
+      up.on('error', () => ws.close(1011, '连不上目标数据库'))
+    })
+  }
+  if (exec) {
+    return tty.handleUpgrade(req, socket, head, (ws) => {
+      ws.on('message', (data) => {
+        let message
+        try {
+          message = JSON.parse(data.toString())
+        } catch {
+          return
+        }
+        const argv = Array.isArray(message?.args) ? message.args : []
+        ws.send(JSON.stringify({ type: 'out', stream: 1, text: ' version\n----------\n PostgreSQL 17.0 (smoke)\n(1 row)\n\n' }))
+        if (argv.includes('bad')) ws.send(JSON.stringify({ type: 'out', stream: 2, text: 'ERROR: 语法错误\n' }))
+        ws.send(JSON.stringify({ type: 'exit', code: argv.includes('bad') ? 1 : 0 }))
+      })
+    })
+  }
+}
+
 const appServer = http.createServer(async (req, res) => {
   const chunks = []
   for await (const c of req) chunks.push(c)
@@ -254,13 +374,18 @@ const appServer = http.createServer(async (req, res) => {
     res.statusCode = 200
     return res.end('{}')
   }
+  // 数据库接口挂在 docker 内置服务下（真服务端也是这样分流），路径以 /api/db/ 开头
+  if (service === 'docker' && req.url.startsWith('/api/db/')) return handleDb(req, res, body)
   if (service === 'docker') return handleDocker(req, res, body)
   res.setHeader('content-type', 'text/html; charset=utf-8')
   res.end(`<h1>fake ${service ?? 'direct'}</h1>`)
 })
 const tty = new WebSocketServer({ noServer: true })
 appServer.on('upgrade', (req, socket, head) => {
-  if (req.headers['x-nas-service'] === 'docker') return upgradeDocker(req, socket, head)
+  if (req.headers['x-nas-service'] === 'docker') {
+    if (req.url.startsWith('/api/db/')) return upgradeDb(req, socket, head, new URL(req.url, 'http://x'))
+    return upgradeDocker(req, socket, head)
+  }
   if (req.headers['x-nas-service'] !== 'nas-console') {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
     return socket.destroy()
