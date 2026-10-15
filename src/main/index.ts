@@ -133,6 +133,9 @@ const windows = createWindowManager<BrowserWindow>({
   create: (name) => {
     const window = new BrowserWindow({
       ...windowState.readOr(name, { width: 1080, height: 720 }),
+      // 冒烟（KURA_SMOKE_OFFSCREEN=1）：窗口放到屏幕外、不抢焦点、不进任务栏 ——
+      // 对 Windows 来说它仍是「可见」的（关窗隐藏、托盘唤回这些判据照常成立），只是人看不见、不打断正在用电脑的人
+      ...(smoke && process.env.KURA_SMOKE_OFFSCREEN === '1' ? { x: -32000, y: -32000, focusable: false, skipTaskbar: true } : {}),
       minWidth: 760,
       minHeight: 520,
       frame: false, // 标题栏由 @sakura-ui/electron-react 提供

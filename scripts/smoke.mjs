@@ -385,6 +385,8 @@ function runKura(phase) {
       env: {
         ...process.env,
         KURA_SMOKE: '1',
+        // 默认把冒烟窗口放到屏幕外，别在别人用电脑时一直弹；要看着它跑就设 KURA_SMOKE_OFFSCREEN=0
+        KURA_SMOKE_OFFSCREEN: process.env.KURA_SMOKE_OFFSCREEN ?? '1',
         KURA_SMOKE_PHASE: phase,
         KURA_SMOKE_NAS: `http://127.0.0.1:${nas.address().port}`,
         KURA_SMOKE_APP: `http://127.0.0.1:${appPort}`,

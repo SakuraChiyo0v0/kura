@@ -452,6 +452,13 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     )
     check('设置页显示版本与本版本更新内容', about, await js<string>(`document.querySelector('[data-testid="updates-section"]')?.innerText.slice(0, 200) ?? '无'`))
     check('冒烟不接更新源', (await js<number>(`document.querySelectorAll('.sk-el-update-banner').length`)) === 0)
+    // 「历次更新内容」要像个按钮（有边框或底色），不能是一行粗体字（ghost 样式在这里看着就是纯文字）
+    const historyButton = await js<{ border: string; bg: string }>(`(() => {
+      const b = [...document.querySelectorAll('[data-testid="updates-section"] button')].find((x) => x.textContent === '历次更新内容')
+      const s = b ? getComputedStyle(b) : null
+      return { border: s?.borderTopWidth ?? '', bg: s?.backgroundColor ?? '' }
+    })()`)
+    check('「历次更新内容」是按钮样式', historyButton.border !== '0px' || !/rgba\(0, 0, 0, 0\)|transparent/.test(historyButton.bg), JSON.stringify(historyButton))
     check('新用户不弹「本次更新内容」', (await js<number>(`document.querySelectorAll('.kura-whats-new').length`)) === 0)
     await shot('v0.5-关于与更新.png')
 
