@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp,
   ChevronRight,
@@ -142,19 +142,23 @@ function Browser() {
   const [query, setQuery] = useState('')
   const [transfers, setTransfers] = useState<Transfer[]>([])
 
+  // 只认最后一次 load：连点两个文件夹时，先发的那次晚回来不能把界面拉回去
+  const loadSeq = useRef(0)
   const load = useCallback(async (target: string) => {
     if (!window.kura) return
+    const seq = ++loadSeq.current
     setLoading(true)
     try {
       const listing = await window.kura.files.list(target)
+      if (seq !== loadSeq.current) return
       setPath(listing.path)
       setEntries(listing.entries)
       setError('')
       setSelected([])
     } catch (caught) {
-      setError((caught as Error).message)
+      if (seq === loadSeq.current) setError((caught as Error).message)
     } finally {
-      setLoading(false)
+      if (seq === loadSeq.current) setLoading(false)
     }
   }, [])
 
@@ -162,19 +166,24 @@ function Browser() {
     void load('/')
   }, [load])
 
+  // 上一轮看到的传输里有没有在跑的：放 ref 里比较，不在 setState 的 updater 里做副作用
+  // （updater 必须是纯函数，StrictMode 下会被调两次，副作用就跟着跑两次）
+  const wasRunning = useRef(false)
+  const transferSeq = useRef(0)
+
   // 传输进度：有在跑的就每 700ms 刷一次；全部结束后刷新当前目录（上传的文件该出现了）
   const running = transfers.some((t) => t.state === 'running')
   useEffect(() => {
     if (!window.kura) return
     let stopped = false
     const tick = async () => {
+      const seq = ++transferSeq.current
       const next = await window.kura!.files.transfers()
-      if (stopped) return
-      setTransfers((prev) => {
-        const wasRunning = prev.some((t) => t.state === 'running')
-        if (wasRunning && !next.some((t) => t.state === 'running') && next.some((t) => t.kind === 'upload')) void load(path)
-        return next
-      })
+      if (stopped || seq !== transferSeq.current) return
+      const nowRunning = next.some((t) => t.state === 'running')
+      if (wasRunning.current && !nowRunning && next.some((t) => t.kind === 'upload')) void load(path)
+      wasRunning.current = nowRunning
+      setTransfers(next)
     }
     void tick()
     const timer = setInterval(() => void tick(), running ? 700 : 3_000)
@@ -198,7 +207,15 @@ function Browser() {
     }
   }
 
-  const refreshTransfers = () => void window.kura?.files.transfers().then(setTransfers)
+  const refreshTransfers = () => {
+    const seq = ++transferSeq.current
+    void window.kura?.files.transfers().then((next) => {
+      if (seq !== transferSeq.current) return
+      // 这里拿到「在跑」也要记下，否则刚开始的上传结束时 tick 看不到「跑 → 停」，不会刷新目录
+      if (next.some((t) => t.state === 'running')) wasRunning.current = true
+      setTransfers(next)
+    })
+  }
 
   const toggle = (p: string) => setSelected((prev) => (prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]))
   const allChecked = visible.length > 0 && visible.every((e) => selected.includes(e.path))
@@ -416,9 +433,12 @@ function LocalDavPanel() {
   const [draft, setDraft] = useState<DavSettingsView | null>(null)
   const [saving, setSaving] = useState(false)
 
+  const davSeq = useRef(0)
   const refresh = useCallback(async () => {
     if (!window.kura) return
+    const seq = ++davSeq.current
     const next = await window.kura.dav.get()
+    if (seq !== davSeq.current) return
     setStatus(next)
     setDraft((prev) => prev ?? next.settings)
   }, [])
@@ -484,9 +504,12 @@ function LocalDavPanel() {
             disabled={!dirty || saving}
             onClick={() => {
               setSaving(true)
+              // 保存期间回来的轮询结果是旧状态：作废它们
+              davSeq.current++
               void window
                 .kura!.dav.save(draft)
                 .then((next) => {
+                  davSeq.current++
                   setStatus(next)
                   setDraft(next.settings)
                   toast.notify({ title: '已保存', tone: 'success' })

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { CheckCircle2, CircleAlert, Download, ExternalLink, FolderOpen, HardDrive, RefreshCw } from 'lucide-react'
 import { Button, ConfirmDialog, ProgressBar, SelectField, StatusBadge, SwitchField, TextField, useToast } from '@sakura-ui/react'
 import type { ModulesStatusView, MountSettingsView } from '../shared/ipc.js'
@@ -32,9 +32,16 @@ export function ModulesView() {
   const [settings, setSettings] = useState<MountSettingsView | null>(null)
   const [busy, setBusy] = useState('')
 
+  // 只认最后一次发出的请求：轮询与按钮触发的刷新会并发，保存也会被连点。
+  // 先发后到的旧响应要是也 set，界面就会跳回旧值（例如连点两次开关，最后停在第一次的结果）。
+  const statusSeq = useRef(0)
+  const saveSeq = useRef(0)
+
   const refresh = useCallback(async () => {
     if (!window.kura) return
-    setStatus(await window.kura.modules.status())
+    const seq = ++statusSeq.current
+    const next = await window.kura.modules.status()
+    if (seq === statusSeq.current) setStatus(next)
   }, [])
 
   useEffect(() => {
@@ -68,7 +75,17 @@ export function ModulesView() {
   const mounted = mount.state === 'mounted' || mount.state === 'starting'
   const saveSettings = (next: MountSettingsView) => {
     setSettings(next)
-    void window.kura!.modules.saveMount(next).then(setSettings).catch((caught: Error) => toast.notify({ title: '保存失败', description: caught.message, tone: 'error' }))
+    const seq = ++saveSeq.current
+    void window.kura!.modules
+      .saveMount(next)
+      .then((saved) => {
+        if (seq === saveSeq.current) setSettings(saved)
+      })
+      .catch((caught: Error) => {
+        toast.notify({ title: '保存失败', description: caught.message, tone: 'error' })
+        // 失败了界面别停在没存上的值：回读主进程那份（同样只认最新一次）
+        if (seq === saveSeq.current) void window.kura!.modules.mountSettings().then((current) => seq === saveSeq.current && setSettings(current))
+      })
   }
 
   const mountTone = mount.state === 'mounted' ? 'success' : mount.state === 'starting' ? 'accent' : mount.state === 'error' ? 'danger' : 'neutral'

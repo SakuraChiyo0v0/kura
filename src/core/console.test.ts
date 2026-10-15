@@ -119,6 +119,17 @@ describe('ConsoleTerminal', () => {
     t.term.close()
   })
 
+  it('握手完成前报的尺寸不丢：连上后补发', async () => {
+    const t = open({})
+    const opening = t.term.open()
+    // 界面开标签后下一帧就报尺寸，这时 ws 还在 CONNECTING
+    t.term.resize(100, 30)
+    await opening
+    await t.until(() => fake.received.some((m) => m.includes('resize')))
+    expect(fake.received.filter((m) => m.includes('resize')).map((m) => JSON.parse(m))).toEqual([{ type: 'resize', cols: 100, rows: 30 }])
+    t.term.close()
+  })
+
   it('check：服务在就可用（带不带 Token 都一样）', async () => {
     expect(await new ConsoleSession(async () => fake.url, () => ({} as ConsoleCredentials)).check()).toMatch(/可达/)
     expect(await new ConsoleSession(async () => fake.url, () => ({ token: 'nsc_good' })).check()).toMatch(/有效/)

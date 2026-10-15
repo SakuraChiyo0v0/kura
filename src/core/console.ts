@@ -59,6 +59,8 @@ export type TerminalEvent =
 export class ConsoleTerminal {
   private ws: WebSocket | undefined
   private closed = false
+  /** 界面最后一次报的尺寸；连接建好前报的也留着，open 时补发 */
+  private size: { cols: number; rows: number } | undefined
 
   constructor(
     readonly id: string,
@@ -81,7 +83,10 @@ export class ConsoleTerminal {
     if (this.closed) return
     const ws = new WebSocket(target.url, { headers: target.headers, handshakeTimeout: 20_000 })
     this.ws = ws
-    ws.on('open', () => this.emit({ type: 'status', status: 'open' }))
+    ws.on('open', () => {
+      this.emit({ type: 'status', status: 'open' })
+      this.sendSize()
+    })
     ws.on('message', (data, isBinary) => {
       this.emit({ type: 'data', data: isBinary ? Buffer.from(data as Buffer).toString('utf8') : data.toString() })
     })
@@ -113,10 +118,20 @@ export class ConsoleTerminal {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(data)
   }
 
-  /** 改窗口尺寸。kura-shell（node-pty）支持真 resize；现网 nas-console 会把这条当输入打进终端。 */
+  /**
+   * 改窗口尺寸。kura-shell（node-pty）支持真 resize；现网 nas-console 会把这条当输入打进终端。
+   *
+   * 连接还没建好时先记下来，open 后补发：界面开标签后下一帧就报首个尺寸，那时握手往往还没完，
+   * 以前直接丢掉，之后窗口不变就再也不会发，PTY 一直停在 80×24（冒烟里约 1/5 复现）。
+   */
   resize(cols: number, rows: number): void {
-    if (this.ws?.readyState !== WebSocket.OPEN) return
-    this.ws.send(JSON.stringify({ type: 'resize', cols: Math.max(1, Math.round(cols)), rows: Math.max(1, Math.round(rows)) }))
+    this.size = { cols: Math.max(1, Math.round(cols)), rows: Math.max(1, Math.round(rows)) }
+    this.sendSize()
+  }
+
+  private sendSize(): void {
+    if (!this.size || this.ws?.readyState !== WebSocket.OPEN) return
+    this.ws.send(JSON.stringify({ type: 'resize', ...this.size }))
   }
 
   close(): void {
