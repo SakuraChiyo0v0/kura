@@ -14,6 +14,7 @@
 | v0.1 | 应用外壳、连接核心（nas-mirror 的 TS 移植）、引导 + DPAPI 凭据、服务映射页与概览 |
 | v0.2 | 文件管理器（经映射层的 WebDAV）、**本机 WebDAV**（放行 / 排除 / 只读的暴露范围）、终端（xterm.js 多标签，接 nas-console） |
 | v0.3 | 模块页：rclone 挂载为本机磁盘（固定版本下载 + SHA256 校验；WinFsp 需自行安装） |
+| v0.4 | 容器管理（以 Arcane 为蓝本）：compose 项目启停 / 重建 / 编辑 / 新建 / 删除，容器详情与实时日志，镜像，审计。设计见 [`docs/容器管理 设计.md`](docs/容器管理%20设计.md) |
 
 NAS 侧的 **kura-server**（`server/`，一个镜像两个入口 serve / shell）已部署到真机 8898 并逐项验收：
 12 个服务、终端连真宿主 shell、两层 WebDAV、rclone 挂载、管理页，外网中继下 WebSocket 可用。
@@ -22,7 +23,8 @@ NAS 侧的 **kura-server**（`server/`，一个镜像两个入口 serve / shell�
 **当前状态看 [`docs/交接.md`](docs/交接.md)**（验过什么、什么没做、已知坑；lan 模式那条链路未验）。
 使用前先停掉 Go 版 nas-mirror：两者会抢同样的本机端口。
 
-NAS 侧依赖：服务端清单里要有 `webdav`（文件、本机 WebDAV、挂载）与 `nas-console`（终端）两个服务。
+NAS 侧依赖：服务端清单里要有 `webdav`（文件、本机 WebDAV、挂载）与 `nas-console`（终端）两个服务；
+容器页要 `docker`（kura-server 挂了 docker.sock、且项目目录按原路径挂进来）。
 
 ## 开发
 
