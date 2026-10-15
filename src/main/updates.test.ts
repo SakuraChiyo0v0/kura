@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { UpdateStatus } from '@sakura-ui/electron/shared'
-import { UpdateScheduler, checkIntervalMs, firstCheckDelayMs, friendlyBackend, friendlyUpdateError, updateSource } from './updates.js'
+import { UpdateScheduler, checkIntervalMs, firstCheckDelayMs, friendlyBackend, friendlyUpdateError, nsisBackend, updateSource } from './updates.js'
 
 /** 手动推进的定时器：只记最新排的那一个（调度器同一时刻只排一个） */
 function fakeTimers() {
@@ -170,5 +170,31 @@ describe('friendlyBackend', () => {
     expect(friendlyUpdateError(new Error('something weird'))).toBe('检查或下载更新时出错，详情见日志')
     expect(friendlyUpdateError(new Error('getaddrinfo ENOTFOUND github.com'))).toBe('连不上更新服务器，检查一下网络')
     expect(friendlyUpdateError(new Error('sha512 checksum mismatch'))).toBe('下载的安装包校验没通过，已丢弃')
+  })
+})
+
+describe('nsisBackend', () => {
+  const fakeUpdater = (result: unknown) => ({
+    checkForUpdates: async () => result,
+    downloadUpdate: async () => {},
+    quitAndInstall: () => {},
+    on: () => {},
+    removeListener: () => {},
+  })
+
+  it('没有新版本（isUpdateAvailable: false）时报「已是最新」，不能再往下走下载', async () => {
+    // electron-updater 这时也会把 updateInfo 填成当前版本号，只按 version 在不在判断就会误报「发现新版本」
+    const backend = nsisBackend(fakeUpdater({ isUpdateAvailable: false, updateInfo: { version: '0.5.1' } }))
+    await expect(backend.check()).resolves.toBeNull()
+  })
+
+  it('有新版本时照常返回版本号', async () => {
+    const backend = nsisBackend(fakeUpdater({ isUpdateAvailable: true, updateInfo: { version: '9.9.9' } }))
+    await expect(backend.check()).resolves.toEqual({ version: '9.9.9', releaseNotes: undefined })
+  })
+
+  it('上游返回 null（开发模式没接更新源）时也是没有更新', async () => {
+    const backend = nsisBackend(fakeUpdater(null))
+    await expect(backend.check()).resolves.toBeNull()
   })
 })

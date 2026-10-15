@@ -5,7 +5,6 @@ import {
   acquireSingleInstanceLock,
   createIpcRouter,
   createSettingsStore,
-  createElectronUpdaterBackend,
   createTrayManager,
   createUpdateManager,
   createWindowManager,
@@ -38,7 +37,7 @@ import { fileLogger } from './file-log.js'
 import { decideWindowClose, isHiddenLaunch, loginItemSettings } from './lifecycle.js'
 import { runRestartSmoke, runSmoke } from './smoke.js'
 import { applySmokeRoute, smokeRequester } from './smoke-seams.js'
-import { UpdateScheduler, friendlyBackend, updateSource } from './updates.js'
+import { UpdateScheduler, friendlyBackend, nsisBackend, updateSource } from './updates.js'
 import { CredentialVault } from './vault.js'
 
 // 用户数据固定在 %APPDATA%\Kura，与 Go 版 nas-mirror 的 ~/.nas-mirror 互不干扰
@@ -123,7 +122,7 @@ const updates = (() => {
     autoUpdater.setFeedURL({ provider: 'generic', url: source.url })
   }
   const manager = createUpdateManager({
-    backend: friendlyBackend(createElectronUpdaterBackend({ updater: autoUpdater }), log),
+    backend: friendlyBackend(nsisBackend(autoUpdater), log),
     broadcast: (channel, ...args) => windows.broadcast(channel, ...args),
   })
   return { manager, scheduler: new UpdateScheduler({ manager, enabled: () => settingsStore.get('autoCheckUpdates'), log }) }
