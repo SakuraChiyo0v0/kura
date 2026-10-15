@@ -30,8 +30,14 @@ jobs:
           node-version: 24
           cache: npm
 
+      # npm ci 之后 electron 的二进制不一定在（allowScripts 放行了 electron 也实测没自动下载：
+      # v0.5.0 第一次发版就挂在 electronDist 不存在）。electron-builder.yml 用的是本地 electronDist，
+      # 所以这里显式跑一次 electron 的 install.js 把 dist/ 补上
       - name: Install
-        run: npm ci
+        run: |
+          npm ci
+          node node_modules/electron/install.js
+          if (!(Test-Path node_modules/electron/dist/electron.exe)) { throw "electron 二进制没装上" }
 
       - name: Check tag & release notes
         run: node scripts/release-notes.mjs --tag "${{ github.ref_name }}"
