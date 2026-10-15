@@ -448,10 +448,18 @@ function registerKuraIpc(): void {
   router.handle(ch.modulesMount, () => modules.mount())
   router.handle(ch.modulesUnmount, () => modules.unmount())
   router.handle(ch.modulesOpenDrive, async () => {
-    const drive = modules.status().mount.drive
-    if (!drive) throw new Error('还没有挂载')
-    const error = await shell.openPath(`${drive}\\`)
+    const target = modules.status().mount.target
+    if (!target) throw new Error('还没有挂载')
+    // 盘符要补反斜杠（"N:" → "N:\"），目录挂载点直接用
+    const error = await shell.openPath(target.endsWith(':') ? `${target}\\` : target)
     if (error) throw new Error(error)
+  })
+  router.handle(ch.modulesPickFolder, async (event) => {
+    const window = ownerWindow(event)
+    // 选父目录：rclone 的挂载点目录必须不存在，由它自己建（见 MountMode 注释），所以让用户选上级文件夹，Kura 拼一个子目录
+    const options: Electron.OpenDialogOptions = { title: '选择放在哪个文件夹下', properties: ['openDirectory', 'createDirectory'] }
+    const picked = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options)
+    return picked.canceled || !picked.filePaths[0] ? '' : picked.filePaths[0]
   })
 }
 

@@ -1,11 +1,11 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { access, readdir, readFile, writeFile } from 'node:fs/promises'
 import { afterAll, describe, expect, it } from 'vitest'
 import { DavServer, davServerDefaults } from '../core/dav-server.js'
 import { FakeWebdav } from '../core/testing/fake-webdav.js'
-import { ModuleManager } from './modules.js'
+import { ModuleManager, mountDefaults } from './modules.js'
 
 /**
  * 真机测试：真的去 rclone 官网下载、校验、解压，再用 WinFsp 挂一个真盘符，读写后卸载。
@@ -24,6 +24,13 @@ function freeDrive(): string {
   throw new Error('没有空闲盘符')
 }
 
+/** 找一个空的临时目录当父目录，挂载点用它的子目录（rclone 要求挂载点本身不存在）。 */
+function folderParent(dir: string): string {
+  const parent = join(dir, 'mount-parent')
+  mkdirSync(parent, { recursive: true })
+  return parent
+}
+
 describe.runIf(enabled)('rclone 模块（真机）', () => {
   const dir = mkdtempSync(join(tmpdir(), 'kura-real-rclone-'))
   let dav: FakeWebdav | undefined
@@ -37,6 +44,16 @@ describe.runIf(enabled)('rclone 模块（真机）', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
+  /** 起假 NAS + 带范围裁剪的本机 WebDAV。多条用例各自调用，互不依赖彼此留下的状态。 */
+  async function startNas() {
+    await server?.close()
+    await dav?.stop()
+    dav = await new FakeWebdav().start()
+    dav.file('/volume1/docs/readme.txt', 'hello from fake nas').file('/volume1/private/secret.txt', 'secret')
+    server = new DavServer({ settings: { ...davServerDefaults, port: 0, include: ['/volume1/docs'], exclude: [] }, upstream: async () => dav!.url })
+    await server.start()
+  }
+
   it('下载并安装固定版本，SHA256 校验通过', async () => {
     manager = new ModuleManager({ dir, davUrl: () => server!.status().url })
     await manager.installRclone()
@@ -48,15 +65,12 @@ describe.runIf(enabled)('rclone 模块（真机）', () => {
 
   it('挂载为盘符：只看得到放行目录，能读能写，卸载后盘符消失', async () => {
     expect(manager!.status().winfsp.installed).toBe(true)
-    dav = await new FakeWebdav().start()
-    dav.file('/volume1/docs/readme.txt', 'hello from fake nas').file('/volume1/private/secret.txt', 'secret')
-    server = new DavServer({ settings: { ...davServerDefaults, port: 0, include: ['/volume1/docs'], exclude: [] }, upstream: async () => dav!.url })
-    await server.start()
+    await startNas()
 
     const drive = freeDrive()
-    manager!.saveMountSettings({ drive, volumeName: 'Kura Test', readOnly: false, autoMount: false, cacheMode: 'writes' })
+    manager!.saveMountSettings({ ...mountDefaults, mode: 'disk', drive, volumeName: 'Kura Test' })
     await manager!.mount()
-    expect(manager!.status().mount).toMatchObject({ state: 'mounted', drive })
+    expect(manager!.status().mount).toMatchObject({ state: 'mounted', target: drive })
 
     // 必须用异步 fs：假 NAS 和本机 WebDAV 就跑在这个进程里，同步调用会卡住事件循环，
     // 谁也答不了 rclone 的请求 → 互相等死（实测 10 分钟后 ECANCELED）
@@ -65,12 +79,27 @@ describe.runIf(enabled)('rclone 模块（真机）', () => {
     expect(await readFile(`${drive}\\volume1\\docs\\readme.txt`, 'utf8')).toBe('hello from fake nas')
     await writeFile(`${drive}\\volume1\\docs\\from-windows.txt`, '写进去了')
     // vfs writes 缓存：关闭文件后异步上传，等它落到 NAS
-    for (let i = 0; i < 50 && !dav.nodes.has('/volume1/docs/from-windows.txt'); i++) await new Promise((r) => setTimeout(r, 200))
-    expect(dav.nodes.get('/volume1/docs/from-windows.txt')?.data.toString()).toBe('写进去了')
+    for (let i = 0; i < 50 && !dav!.nodes.has('/volume1/docs/from-windows.txt'); i++) await new Promise((r) => setTimeout(r, 200))
+    expect(dav!.nodes.get('/volume1/docs/from-windows.txt')?.data.toString()).toBe('写进去了')
     expect(await exists(`${drive}\\volume1\\private`)).toBe(false)
 
     await manager!.unmount()
     for (let i = 0; i < 25 && (await exists(`${drive}\\`)); i++) await new Promise((r) => setTimeout(r, 200))
     expect(await exists(`${drive}\\`)).toBe(false)
+  }, 120_000)
+
+  it('挂到目录：不占盘符，卸载后挂载点消失', async () => {
+    expect(manager!.status().winfsp.installed).toBe(true)
+    await startNas()
+
+    const target = join(folderParent(dir), 'KuraNAS')
+    manager!.saveMountSettings({ ...mountDefaults, mode: 'folder', folder: target })
+    await manager!.mount()
+    expect(manager!.status().mount).toMatchObject({ state: 'mounted', target })
+    expect(await readFile(`${target}\\volume1\\docs\\readme.txt`, 'utf8')).toBe('hello from fake nas')
+
+    await manager!.unmount()
+    for (let i = 0; i < 25 && (await exists(target)); i++) await new Promise((r) => setTimeout(r, 200))
+    expect(await exists(target)).toBe(false)
   }, 120_000)
 })

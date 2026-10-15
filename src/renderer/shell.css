@@ -978,6 +978,44 @@ body {
   align-items: end;
 }
 
+/* 挂载形态选择器与它的说明占整行，下面的表单项再各占一格 */
+.kura-module__mode,
+.kura-module__settings > .kura-form__note,
+.kura-module__folder {
+  grid-column: 1 / -1;
+}
+
+.kura-module__mode {
+  display: grid;
+  gap: 8px;
+}
+
+/* FluidSegmented 默认按内容宽自适应；三个中文标签要平分整行才不至于竖排折行 */
+.kura-module__mode .sk-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.kura-module__mode .sk-segmented-label {
+  white-space: nowrap;
+}
+
+.kura-module__mode .kura-form__note {
+  margin: 0;
+}
+
+.kura-module__folder {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px 12px;
+  align-items: end;
+}
+
+.kura-module__folder > .kura-form__note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
 .kura-module__log pre {
   max-height: 220px;
   overflow: auto;

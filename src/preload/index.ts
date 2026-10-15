@@ -139,6 +139,7 @@ const kura: KuraBridge = {
     mount: () => invoke(ch.modulesMount),
     unmount: () => invoke(ch.modulesUnmount),
     openDrive: () => invoke(ch.modulesOpenDrive),
+    pickFolder: () => invoke(ch.modulesPickFolder),
   },
 }
 

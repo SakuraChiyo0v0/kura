@@ -428,6 +428,19 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     // ⑦e v0.3 模块页：能显示依赖检测结果（不在冒烟里真去下载 rclone）
     await nav('模块')
     check('模块页', await waitFor(`document.querySelector('[data-testid="module-rclone"] .kura-req') !== null`))
+    // 挂载形态三选一：切到「挂到文件夹」应换成父目录输入，且不再显示盘符/卷名
+    const seg = `[data-testid="module-rclone"] .sk-segmented`
+    const segReady = await waitFor(`document.querySelectorAll('${seg} input[type="radio"]').length === 3`)
+    const pickMode = (mode: string) => js(`(() => { const i = document.querySelector('${seg} input[value="${mode}"]'); i?.click(); return !!i })()`)
+    await pickMode('folder')
+    const folderMode = await waitFor(
+      `document.querySelector('[data-testid="module-rclone"]')?.innerText.includes('父目录') && !document.querySelector('[data-testid="module-rclone"]')?.innerText.includes('卷名')`,
+    )
+    await pickMode('network')
+    const netMode = await waitFor(`document.querySelector('${seg} input[value="network"]')?.checked === true`)
+    await pickMode('disk')
+    const diskMode = await waitFor(`document.querySelector('[data-testid="module-rclone"]')?.innerText.includes('卷名')`)
+    check('挂载形态可切换：硬盘 / 网络位置 / 文件夹', segReady && folderMode && netMode && diskMode, `seg=${segReady} folder=${folderMode} net=${netMode} disk=${diskMode}`)
     await shot('v0.3-模块.png')
 
     // ⑦f v0.5 关于与更新：版本号、本版本更新内容（读的是打进包里的 CHANGELOG）。

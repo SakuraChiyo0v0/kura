@@ -72,6 +72,7 @@ export const kuraChannels = {
   modulesMount: 'kura:modules:mount',
   modulesUnmount: 'kura:modules:unmount',
   modulesOpenDrive: 'kura:modules:open-drive',
+  modulesPickFolder: 'kura:modules:pick-folder',
   // ---- 容器管理 ----
   dockerAvailable: 'kura:docker:available',
   dockerOverview: 'kura:docker:overview',
@@ -183,15 +184,19 @@ export type TerminalEventView =
 export interface ModulesStatusView {
   rclone: { state: 'missing' | 'installing' | 'ready' | 'error'; path: string; version: string; source: 'kura' | 'system' | ''; progress: number; error: string }
   winfsp: { installed: boolean; path: string }
-  mount: { state: 'stopped' | 'starting' | 'mounted' | 'error'; drive: string; error: string; log: string[] }
+  mount: { state: 'stopped' | 'starting' | 'mounted' | 'error'; target: string; error: string; log: string[] }
   pinnedVersion: string
   winfspDownloadPage: string
   /** 本机 WebDAV 有没有在跑（挂载靠它） */
   davRunning: boolean
 }
 
+export type MountModeView = 'disk' | 'network' | 'folder'
+
 export interface MountSettingsView {
+  mode: MountModeView
   drive: string
+  folder: string
   volumeName: string
   readOnly: boolean
   autoMount: boolean
@@ -365,5 +370,7 @@ export interface KuraBridge {
     mount(): Promise<void>
     unmount(): Promise<void>
     openDrive(): Promise<void>
+    /** 选一个目录作为 folder 模式的挂载点父目录；取消返回 '' */
+    pickFolder(): Promise<string>
   }
 }

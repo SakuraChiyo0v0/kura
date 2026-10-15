@@ -1,11 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CheckCircle2, CircleAlert, Download, ExternalLink, FolderOpen, HardDrive, RefreshCw } from 'lucide-react'
-import { Button, ConfirmDialog, ProgressBar, SelectField, StatusBadge, SwitchField, TextField, useToast } from '@sakura-ui/react'
+import { CheckCircle2, CircleAlert, Download, ExternalLink, FolderOpen, FolderTree, HardDrive, HardDriveDownload, Network, RefreshCw } from 'lucide-react'
+import { Button, ConfirmDialog, FluidSegmented, ProgressBar, SelectField, StatusBadge, SwitchField, TextField, useToast } from '@sakura-ui/react'
 import type { ModulesStatusView, MountSettingsView } from '../shared/ipc.js'
 
 const icon = { size: 16, strokeWidth: 1.7, 'aria-hidden': true } as const
 
 const drives = 'DEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((d) => ({ value: `${d}:`, label: `${d}:` }))
+// 文件夹模式的挂载点固定用这个子目录名（rclone 要求挂载点本身不存在，由它自己建）
+const folderLeaf = 'KuraNAS'
+
+const mountModes: { value: MountSettingsView['mode']; label: string; icon: React.ReactNode; description: string }[] = [
+  { value: 'disk', label: '模拟成硬盘', icon: <HardDrive {...icon} />, description: '出现在「此电脑」里，和 C:、D: 并列。程序看不出它是远程盘，兼容性最好。' },
+  { value: 'network', label: '网络位置', icon: <Network {...icon} />, description: '出现在「网络位置」里，系统当成一个网络共享。更像远程盘的本来面目，但每次卸载会在资源管理器留下一条历史。' },
+  { value: 'folder', label: '挂到文件夹', icon: <FolderTree {...icon} />, description: '不占盘符，只挂成某个目录（如 D:\\KuraNAS）。盘符紧张、或只想让特定程序按路径访问时用。' },
+]
+
 const cacheModes = [
   { value: 'writes', label: '写入缓存（推荐）', description: 'Office、图片编辑器这类「写临时文件再改名」的程序能正常保存' },
   { value: 'minimal', label: '最少', description: '只缓存正在打开写入的文件' },
@@ -71,7 +80,7 @@ export function ModulesView() {
   if (!status || !settings) return null
   const rclone = status.rclone
   const mount = status.mount
-  const ready = rclone.state === 'ready' && status.winfsp.installed && status.davRunning
+  const ready = rclone.state === 'ready' && status.winfsp.installed && status.davRunning && (settings.mode !== 'folder' || Boolean(settings.folder))
   const mounted = mount.state === 'mounted' || mount.state === 'starting'
   const saveSettings = (next: MountSettingsView) => {
     setSettings(next)
@@ -89,7 +98,14 @@ export function ModulesView() {
   }
 
   const mountTone = mount.state === 'mounted' ? 'success' : mount.state === 'starting' ? 'accent' : mount.state === 'error' ? 'danger' : 'neutral'
-  const mountLabel = { mounted: `已挂载为 ${mount.drive}`, starting: '挂载中…', error: '挂载失败', stopped: '未挂载' }[mount.state]
+  const mountLabel = { mounted: `已挂载到 ${mount.target}`, starting: '挂载中…', error: '挂载失败', stopped: '未挂载' }[mount.state]
+  // 这次挂载会落在哪儿：folder 模式用「父目录\KuraNAS」，其它模式用盘符。挂载前的按钮与提示都读它
+  const folderTarget = settings.folder ? `${settings.folder.replace(/[\\/]+$/, '')}\\${folderLeaf}` : ''
+  const plannedTarget = settings.mode === 'folder' ? folderTarget : settings.drive
+  const pickFolder = async () => {
+    const picked = await window.kura!.modules.pickFolder()
+    if (picked) saveSettings({ ...settings, folder: picked })
+  }
 
   return (
     <div className="kura-modules">
@@ -97,9 +113,9 @@ export function ModulesView() {
         <header className="kura-module__head">
           <HardDrive size={22} strokeWidth={1.6} aria-hidden />
           <div>
-            <h2>挂载为本机磁盘</h2>
+            <h2>挂载到本机</h2>
             <p className="kura-form__note">
-              用 rclone 把 NAS 挂成一个盘符，任何程序都能像本地磁盘一样读写。挂载走的是「本机 WebDAV」，暴露范围、只读设置一并生效。
+              用 rclone 把 NAS 挂成本机的一块盘或一个目录，任何程序都能按路径读写。挂载走的是「本机 WebDAV」，暴露范围、只读设置一并生效。
             </p>
           </div>
           <StatusBadge tone={mountTone} dot>
@@ -166,15 +182,42 @@ export function ModulesView() {
         </ul>
 
         <div className="kura-module__settings">
-          <SelectField label="盘符" value={settings.drive} options={drives} disabled={mounted} onValueChange={(v) => saveSettings({ ...settings, drive: v })} />
-          <TextField
-            label="卷名"
-            value={settings.volumeName}
-            disabled={mounted}
-            maxLength={32}
-            onChange={(e) => setSettings({ ...settings, volumeName: e.target.value })}
-            onBlur={() => saveSettings(settings)}
-          />
+          <div className="kura-module__mode">
+            <FluidSegmented label="挂载形态" options={mountModes} value={settings.mode} onValueChange={(v) => saveSettings({ ...settings, mode: v as MountSettingsView['mode'] })} />
+            <p className="kura-form__note">{mountModes.find((m) => m.value === settings.mode)?.description}</p>
+          </div>
+
+          {settings.mode === 'folder' ? (
+            <div className="kura-module__folder">
+              <TextField
+                label="父目录"
+                value={settings.folder}
+                disabled={mounted}
+                placeholder="D:\\"
+                onChange={(e) => setSettings({ ...settings, folder: e.target.value })}
+                onBlur={() => saveSettings(settings)}
+              />
+              <Button variant="secondary" icon={<FolderOpen {...icon} />} disabled={mounted} onClick={() => void pickFolder()}>
+                选择…
+              </Button>
+              <p className="kura-form__note">
+                {folderTarget ? `会挂到 ${folderTarget}（这个目录由 rclone 创建，不能已存在）` : '选一个文件夹，Kura 会在它下面建 KuraNAS 子目录作为挂载点'}
+              </p>
+            </div>
+          ) : (
+            <SelectField label="盘符" value={settings.drive} options={drives} disabled={mounted} onValueChange={(v) => saveSettings({ ...settings, drive: v })} />
+          )}
+
+          {settings.mode !== 'folder' && (
+            <TextField
+              label="卷名"
+              value={settings.volumeName}
+              disabled={mounted}
+              maxLength={32}
+              onChange={(e) => setSettings({ ...settings, volumeName: e.target.value })}
+              onBlur={() => saveSettings(settings)}
+            />
+          )}
           <SelectField
             label="缓存"
             value={settings.cacheMode}
@@ -199,8 +242,8 @@ export function ModulesView() {
               </Button>
             </>
           ) : (
-            <Button icon={<HardDrive {...icon} />} disabled={!ready || Boolean(busy)} onClick={() => void run('挂载', () => window.kura!.modules.mount())}>
-              {busy === '挂载' ? '挂载中…' : `挂载为 ${settings.drive}`}
+            <Button icon={<HardDriveDownload {...icon} />} disabled={!ready || Boolean(busy)} onClick={() => void run('挂载', () => window.kura!.modules.mount())}>
+              {busy === '挂载' ? '挂载中…' : plannedTarget ? `挂载到 ${plannedTarget}` : '挂载'}
             </Button>
           )}
           <Button variant="ghost" icon={<RefreshCw {...icon} />} onClick={() => void refresh()}>

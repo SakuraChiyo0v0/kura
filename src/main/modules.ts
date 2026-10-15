@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { get as httpsGet } from 'node:https'
@@ -37,9 +37,25 @@ export interface RcloneModuleStatus {
   mount: MountStatus
 }
 
+/**
+ * 挂出来的形态。三者的差别是 Windows **把它们放哪儿**，跟读写能力无关：
+ *
+ * - `disk`：固定磁盘。资源管理器「此电脑」里和 C:/D: 并列，程序看不出是远程盘。
+ * - `network`：网络驱动器。进「网络位置」区，系统当它是个 SMB 共享；
+ *   代价是每次挂载都会在 `HKCU\...\MountPoints2` 留一条 `\\server\<卷名>` 历史，
+ *   卸载只卸盘符不删这条，攒久了「网络位置」里全是点不开的死图标 —— 卸载时得顺手清。
+ * - `folder`：只挂到一个目录，不占盘符。rclone 在 Windows 上挂目录要求**挂载点必须不存在**
+ *   （它自己建、自己删），且不支持与 network 同用，所以这里只允许固定磁盘。
+ */
+export type MountMode = 'disk' | 'network' | 'folder'
+
 export interface MountSettings {
-  /** 盘符，如 "N:" */
+  /** 挂出来的形态 */
+  mode: MountMode
+  /** 盘符，如 "N:"；mode 为 folder 时不用 */
   drive: string
+  /** mode 为 folder 时的挂载点目录（父目录要存在，最后一级由 rclone 建） */
+  folder: string
   /** 挂载时显示的卷名 */
   volumeName: string
   /** 只读挂载（另外，本机 WebDAV 设为只读时也写不进去） */
@@ -51,7 +67,9 @@ export interface MountSettings {
 }
 
 export const mountDefaults: MountSettings = {
+  mode: 'disk',
   drive: 'N:',
+  folder: '',
   volumeName: 'Kura NAS',
   readOnly: false,
   autoMount: false,
@@ -60,17 +78,47 @@ export const mountDefaults: MountSettings = {
 
 export interface MountStatus {
   state: 'stopped' | 'starting' | 'mounted' | 'error'
-  drive: string
+  /** 实际挂出来的位置：盘符（"N:"）或目录路径 */
+  target: string
   error: string
   /** rclone 最近几行输出，排障用 */
   log: string[]
 }
 
-/** 盘符要么 "X:"，要么就别挂：rclone 也接受目录路径，但那是另一种用法，先不做。 */
+/** 盘符要么 "X:"，要么就别挂。 */
 export function validateDrive(drive: string): string {
   const d = drive.trim().toUpperCase().replace(/\\$/, '')
   if (!/^[D-Z]:$/.test(d)) throw new Error(`盘符不对：${drive}（用 D: 到 Z: 之间的一个）`)
   return d
+}
+
+/** 目录挂载点：必须是绝对路径，最后一级留给 rclone 自己建。 */
+export function validateFolder(folder: string): string {
+  const trimmed = folder.trim().replace(/[\\/]+$/, '')
+  if (!/^[A-Za-z]:\\/.test(trimmed)) throw new Error(`挂载目录要写成绝对路径：${folder || '（空）'}（例如 D:\\KuraNAS）`)
+  if (trimmed.includes('..')) throw new Error(`挂载目录里不能有 ..：${folder}`)
+  // 只把盘符统一成大写（和盘符的规范化一致），路径其余部分原样保留
+  return trimmed[0]!.toUpperCase() + trimmed.slice(1)
+}
+
+/** 这次挂载实际用的位置：盘符还是目录。挂载点与卸载提示都读它。 */
+export function mountTarget(settings: MountSettings): string {
+  return settings.mode === 'folder' ? validateFolder(settings.folder) : validateDrive(settings.drive)
+}
+
+/**
+ * 清理 Explorer 留下的网络位置历史：`HKCU\...\MountPoints2\##server#<卷名>`。
+ * 网络模式下 rclone 把卷暴露成 `\\server\<卷名>`，Explorer 每次访问都记一条，
+ * 卸载后盘符没了但那一条还在，就成了「网络位置」里点不开的死图标。
+ * 删不掉不算挂载失败，所以这里只返回错误信息，由调用方记日志。
+ */
+export function clearNetworkHistory(volumeName: string): string {
+  try {
+    execFileSync('reg', ['delete', `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2\\##server#${volumeName}`, '/f'], { stdio: 'ignore' })
+    return ''
+  } catch (error) {
+    return errorMessage(error)
+  }
 }
 
 /** rclone mount 的参数。remote 用连接串语法，免得写 rclone.conf。 */
@@ -80,7 +128,7 @@ export function mountArgs(settings: MountSettings, davUrl: string, cacheDir: str
     'mount',
     // :webdav,url='...': 这种「连接串」形态不需要任何配置文件
     `:webdav,url='${url}',vendor=other:/`,
-    validateDrive(settings.drive),
+    mountTarget(settings),
     '--volname',
     settings.volumeName || 'Kura NAS',
     '--vfs-cache-mode',
@@ -90,7 +138,8 @@ export function mountArgs(settings: MountSettings, davUrl: string, cacheDir: str
     // 资源管理器会频繁列目录，目录缓存短一点：NAS 上别处改了文件能较快看到
     '--dir-cache-time',
     '30s',
-    '--network-mode',
+    // 只有网络模式加这个开关；固定磁盘与目录挂载都不加
+    ...(settings.mode === 'network' ? ['--network-mode'] : []),
     '--no-console',
     ...(settings.readOnly ? ['--read-only'] : []),
     '--log-level',
@@ -203,6 +252,11 @@ function driveExists(drive: string): Promise<boolean> {
   )
 }
 
+/** 挂载点是否已经能访问。盘符与目录挂载点的探测方式不同，都必须是异步的（见 driveExists）。 */
+function mountPointReady(mode: MountMode, target: string): Promise<boolean> {
+  return mode === 'folder' ? access(target).then(() => true, () => false) : driveExists(target)
+}
+
 export interface ModuleManagerOptions {
   dir: string
   log?: Logger
@@ -217,7 +271,7 @@ export class ModuleManager {
   private installing: Promise<void> | undefined
   private rcloneState: RcloneModuleStatus['rclone'] = { state: 'missing', path: '', version: '', source: '', progress: 0, error: '' }
   private child: ChildProcess | undefined
-  private mountState: MountStatus = { state: 'stopped', drive: '', error: '', log: [] }
+  private mountState: MountStatus = { state: 'stopped', target: '', error: '', log: [] }
   private settings: MountSettings
   private readonly settingsFile: string
   /** 用户主动卸载时不报「意外退出」 */
@@ -265,8 +319,12 @@ export class ModuleManager {
   }
 
   saveMountSettings(next: MountSettings): MountSettings {
+    const mode: MountMode = (['disk', 'network', 'folder'] as const).includes(next.mode) ? next.mode : mountDefaults.mode
     const clean: MountSettings = {
+      mode,
       drive: validateDrive(next.drive),
+      // 目录挂载点必须存在父目录；folder 模式下才较真，其它模式允许留空
+      folder: mode === 'folder' ? validateFolder(next.folder) : String(next.folder ?? '').trim(),
       volumeName: next.volumeName.trim().slice(0, 32) || mountDefaults.volumeName,
       readOnly: Boolean(next.readOnly),
       autoMount: Boolean(next.autoMount),
@@ -349,11 +407,13 @@ export class ModuleManager {
     const status = this.status()
     if (status.rclone.state !== 'ready') throw new Error('还没有安装 rclone')
     if (!status.winfsp.installed && !this.options.spawnMount) throw new Error('还没有安装 WinFsp（挂载磁盘需要它，装一次即可，需要管理员权限）')
-    const drive = validateDrive(this.settings.drive)
-    if (!this.options.spawnMount && (await driveExists(drive))) throw new Error(`盘符 ${drive} 已被占用，换一个`)
+    const target = mountTarget(this.settings)
+    // 目录挂载点：rclone 要求它**不存在**（自己建自己删），存在就直接拒绝，别把它当成空目录用
+    if (this.settings.mode === 'folder' && !this.options.spawnMount && existsSync(target)) throw new Error(`挂载点 ${target} 已存在，换个不存在的路径`)
+    if (this.settings.mode !== 'folder' && !this.options.spawnMount && (await driveExists(target))) throw new Error(`盘符 ${target} 已被占用，换一个`)
     const args = mountArgs(this.settings, this.options.davUrl(), join(this.options.dir, 'rclone-cache'))
     this.stopping = false
-    this.mountState = { state: 'starting', drive, error: '', log: [] }
+    this.mountState = { state: 'starting', target, error: '', log: [] }
     const child = this.options.spawnMount
       ? this.options.spawnMount(status.rclone.path, args)
       : spawn(status.rclone.path, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -378,19 +438,19 @@ export class ModuleManager {
       this.mountState = { ...this.mountState, state: 'error', error: `rclone 意外退出（${code}）${last ? `：${last}` : ''}` }
       this.log.warn('rclone 挂载进程退出', { code, last })
     })
-    // rclone mount 成功时不会主动报告；等盘符出现（WinFsp 挂好后 X:\ 就能访问）
+    // rclone mount 成功时不会主动报告；等挂载点出现（WinFsp 挂好后就能访问）
     const until = Date.now() + 15_000
     while (Date.now() < until && this.child === child && !spawnFailed) {
-      if (this.options.spawnMount || (await driveExists(drive))) {
+      if (this.options.spawnMount || (await mountPointReady(this.settings.mode, target))) {
         this.mountState = { ...this.mountState, state: 'mounted' }
-        this.log.info('已挂载为磁盘', { 盘符: drive })
+        this.log.info('已挂载', { 形态: this.settings.mode, 位置: target })
         return
       }
       await new Promise((r) => setTimeout(r, 300))
     }
     if (this.child !== child) throw new Error(this.mountState.error || 'rclone 启动后立刻退出了')
-    // 15 秒没出现盘符：仍在跑就当作还在挂（外网慢），状态留在 starting，界面会继续刷新
-    this.pushLog('15 秒内盘符尚未出现，rclone 仍在运行')
+    // 15 秒没出现挂载点：仍在跑就当作还在挂（外网慢），状态留在 starting，界面会继续刷新
+    this.pushLog('15 秒内挂载点尚未出现，rclone 仍在运行')
   }
 
   async unmount(): Promise<void> {
@@ -399,6 +459,8 @@ export class ModuleManager {
       this.mountState = { ...this.mountState, state: 'stopped', error: '' }
       return
     }
+    const mode = this.settings.mode
+    const volumeName = this.settings.volumeName || mountDefaults.volumeName
     this.stopping = true
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
@@ -415,5 +477,11 @@ export class ModuleManager {
     })
     this.child = undefined
     this.mountState = { ...this.mountState, state: 'stopped', error: '' }
+    // 网络模式挂一次就在 Explorer 留一条 \\server\<卷名> 历史（见 MountMode 注释），卸载时顺手清掉。
+    // 清不掉不影响卸载结果，记一行日志就好。
+    if (mode === 'network') {
+      const failed = clearNetworkHistory(volumeName)
+      if (failed) this.log.warn('清理网络位置历史失败', { 卷名: volumeName, err: failed })
+    }
   }
 }
