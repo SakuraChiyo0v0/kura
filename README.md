@@ -15,7 +15,11 @@
 | v0.2 | 文件管理器（经映射层的 WebDAV）、**本机 WebDAV**（放行 / 排除 / 只读的暴露范围）、终端（xterm.js 多标签，接 nas-console） |
 | v0.3 | 模块页：rclone 挂载为本机磁盘（固定版本下载 + SHA256 校验；WinFsp 需自行安装） |
 
-**尚未在真实 NAS 上验收**（单测与冒烟用的是本地假 NAS；rclone + WinFsp 挂载在本机真跑过）。
+NAS 侧的 **kura-server**（`server/`，一个镜像两个入口 serve / shell）已部署到真机 8898 并逐项验收：
+12 个服务、终端连真宿主 shell、两层 WebDAV、rclone 挂载、管理页，外网中继下 WebSocket 可用。
+**暴露范围只有一份**，存在 NAS 的 `state/webdav.json`，客户端「文件」页与 NAS 管理页读写同一处。
+
+**当前状态看 [`docs/交接.md`](docs/交接.md)**（验过什么、什么没做、已知坑；lan 模式那条链路未验）。
 使用前先停掉 Go 版 nas-mirror：两者会抢同样的本机端口。
 
 NAS 侧依赖：服务端清单里要有 `webdav`（文件、本机 WebDAV、挂载）与 `nas-console`（终端）两个服务。
@@ -41,6 +45,9 @@ $env:KURA_REAL_RCLONE=1; npx vitest run src/main/modules.real.test.ts
 | `src/shared/` | 两侧共用的设置结构与 IPC 契约 |
 | `src/renderer/` | React + Sakura UI 界面 |
 | `vendor/sakura-ui/` | Sakura UI 交付包（tgz） |
+| `server/` | NAS 侧 kura-server（网关 + WebDAV + 终端，一个镜像两个入口） |
+| `docs/交接.md` | **状态快照**：验过什么、什么没做、已知坑 |
+| `docs/kura-server 设计.md` | kura-server 的设计与决策 |
 | `docs/参考/` | 前身项目资料（脱敏快照） |
 | `docs/归档/` | 每一步做了什么、踩过的坑 |
 
@@ -52,7 +59,6 @@ $env:KURA_REAL_RCLONE=1; npx vitest run src/main/modules.real.test.ts
 | `settings.json` | 界面设置 |
 | `mirror/services.json` | 各服务的开关、本机端口改动 |
 | `mirror/discovered.json` | 上次拉到的服务端清单（拉不到时兜底） |
-| `webdav.json` | 本机 WebDAV 的端口、只读、放行 / 排除目录 |
-| `console.json` | nas-console 登录凭据（safeStorage / DPAPI 加密） |
+| `webdav.json` | 本机 WebDAV 的端口、启用开关（范围不在这里 —— 只有 NAS 那份说了算，见 `docs/交接.md`） |
 | `modules/` | rclone（Kura 下载的副本）、挂载设置 `mount.json`、VFS 缓存 |
 | `logs/kura.log` | 日志，10 MiB 轮转；`KURA_VERBOSE=1` 打开 debug |
