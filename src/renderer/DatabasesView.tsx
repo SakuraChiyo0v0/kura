@@ -9,6 +9,7 @@ import {
   EmptyState,
   MotionTabs,
   Section,
+  SelectField,
   StatusBadge,
   SwitchField,
   TextField,
@@ -440,16 +441,13 @@ function ConnectTab({
   return (
     <Section title="连接信息" description="本机程序连这里的地址就能用这个数据库（在家直连、在外走中继，都一样）。">
       <div className="kura-db-connect">
-        <label className="kura-db-field">
-          <span className="kura-db-field__label">数据库</span>
-          <select value={selected} onChange={(e) => onSelect(e.target.value)}>
-            {databases.map((d) => (
-              <option key={d.name} value={d.name}>
-                {d.name}（{engineLabel[d.engine]}）
-              </option>
-            ))}
-          </select>
-        </label>
+        <SelectField
+          label="数据库"
+          data-testid="db-picker"
+          value={selected || null}
+          onValueChange={onSelect}
+          options={databases.map((d) => ({ value: d.name, label: `${d.name}（${engineLabel[d.engine]}）` }))}
+        />
 
         {!tunnelAvailable ? (
           <Banner tone="neutral" description="隧道只对 Kura 装过、或能认出引擎的数据库开放。先装一个，或从列表里挑一个。" />
@@ -590,16 +588,13 @@ function QueryTab({ databases, selected, onSelect }: { databases: DbView[]; sele
       description={`直接在这个数据库里跑命令（用容器自带的 ${cli || 'CLI'}）。输出是文本；结构化的活建议交给 AI —— Kura 的 MCP 工具更全。`}
     >
       <div className="kura-db-connect">
-        <label className="kura-db-field">
-          <span className="kura-db-field__label">数据库</span>
-          <select value={selected} onChange={(e) => onSelect(e.target.value)}>
-            {databases.map((d) => (
-              <option key={d.name} value={d.name}>
-                {d.name}（{engineLabel[d.engine]}）
-              </option>
-            ))}
-          </select>
-        </label>
+        <SelectField
+          label="数据库"
+          data-testid="db-picker-query"
+          value={selected || null}
+          onValueChange={onSelect}
+          options={databases.map((d) => ({ value: d.name, label: `${d.name}（${engineLabel[d.engine]}）` }))}
+        />
         <form
           className="kura-rules__add"
           onSubmit={(e) => {
@@ -679,16 +674,13 @@ function InstallTab({ templates, onDone }: { templates: DatabaseTemplate[]; onDo
     <Section title="快捷安装" description="用官方镜像装一个数据库：自动生成强口令、建好数据目录、接到共享网络上启动。装完去「连接信息」开本机隧道。">
       <div className="kura-db-connect">
         <div className="kura-db-portrow">
-          <label className="kura-db-field">
-            <span className="kura-db-field__label">类型</span>
-            <select value={engine} onChange={(e) => setEngine(e.target.value as DbEngine)}>
-              {templates.map((t) => (
-                <option key={t.engine} value={t.engine}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <SelectField
+            label="类型"
+            data-testid="db-engine-picker"
+            value={engine}
+            onValueChange={(v) => setEngine(v as DbEngine)}
+            options={templates.map((t) => ({ value: t.engine, label: t.label }))}
+          />
           <TextField label="名字" value={name} onChange={(e) => setName(e.target.value)} placeholder="如 my-pg" spellCheck={false} />
         </div>
 

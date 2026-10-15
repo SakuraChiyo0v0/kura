@@ -124,24 +124,13 @@ export function isNoReleaseError(error: unknown): boolean {
 }
 
 /**
- * electron-updater 的 checkForUpdates 在没有新版本时**不返回 null**，而是返回
- * `{ isUpdateAvailable: false, updateInfo }`（实测：0.5.1 上再查，返回的是它自己的版本号）。
- * Sakura 那个后端只看 `updateInfo.version` 在不在，于是这种情况会被当成「发现新版本 0.5.1」，
- * 接着下载就报 "Please check update first"。这里在 checkForUpdates 外面先判一次这个标志。
+ * 直接用 Sakura UI 的 electron-updater 后端。
  *
- * 只包 check：download / install 原样转发，签名也不为它改。
+ * 「已是最新时 updateInfo 里回的是当前版本号」那个坑原先在 Kura 这边绕（曾经的 nsisBackend），
+ * 已于 2026-10-15 修进库里，这里不再需要自己包一层。
  */
-export function nsisBackend(updater: ElectronUpdaterLike): UpdateBackend {
-  const inner = createElectronUpdaterBackend({ updater })
-  return {
-    async check() {
-      const result = (await updater.checkForUpdates()) as { isUpdateAvailable?: boolean } | null | undefined
-      if (result && result.isUpdateAvailable === false) return null
-      return inner.check()
-    },
-    download: (onProgress) => inner.download(onProgress),
-    install: () => inner.install(),
-  }
+export function updaterBackend(updater: ElectronUpdaterLike): UpdateBackend {
+  return createElectronUpdaterBackend({ updater })
 }
 
 /**

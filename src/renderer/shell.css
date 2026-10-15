@@ -1480,27 +1480,9 @@ body {
   gap: 14px;
 }
 
-.kura-db-field {
-  display: grid;
-  gap: 6px;
+/* 数据库下拉：宽度收在 420px，别让一个名字把整行撑满（原来是 .kura-db-field 上的） */
+.kura-db-connect .sk-select-field {
   max-width: 420px;
-}
-
-.kura-db-field__label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--sk-muted);
-}
-
-.kura-db-field select {
-  height: 34px;
-  padding: 0 10px;
-  border: 1px solid var(--sk-line);
-  border-radius: var(--sk-radius-control);
-  background: var(--sk-surface);
-  color: inherit;
-  font-family: inherit;
-  font-size: 13px;
 }
 
 /* 端口输入 + 「自动挑一个」并排 */

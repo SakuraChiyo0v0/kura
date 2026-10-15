@@ -183,6 +183,32 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
   const clickButton = (text: string) =>
     js<boolean>(`(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(text)} && !b.disabled); b?.click(); return Boolean(b) })()`)
 
+  /**
+   * 在 Sakura UI 的 SelectField 里选一项。
+   *
+   * 它不再是原生 <select>，而是 Base UI 的合成组件：先点 trigger 展开，
+   * 再点 [role="option"]。按选项文字匹配（比 value 更稳——value 是应用内部标识）。
+   * 展开是异步的，所以要等选项出现。
+   */
+  const pickSelect = async (testId: string, optionLabel: string): Promise<boolean> => {
+    const opened = await js<boolean>(`(() => {
+      const trigger = document.querySelector('[data-testid="${testId}"] .sk-select-trigger')
+      if (!trigger) return false
+      trigger.click()
+      return true
+    })()`)
+    if (!opened) return false
+    const clicked = await waitFor(`(() => {
+      const option = [...document.querySelectorAll('[role="option"]')]
+        .find(o => (o.textContent ?? '').trim().startsWith(${JSON.stringify(optionLabel)}))
+      if (!option) return false
+      option.click()
+      return true
+    })()`, 5_000)
+    await delay(100)
+    return clicked
+  }
+
   const timeout = setTimeout(() => {
     console.error('SMOKE 超时未完成', JSON.stringify(results))
     process.exit(1)
@@ -513,16 +539,8 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
 
     // 切到连接信息 → 给 sakura-pg 开隧道 → 本机端口真的在监听
     await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === '连接信息')?.click()`)
-    await waitFor(`document.querySelector('[data-testid="copy-连接地址"]') !== null || document.querySelector('.kura-db-connect select') !== null`, 5_000)
-    await js(`(() => {
-      const sel = document.querySelector('.kura-db-connect select')
-      if (!sel) return false
-      const opt = [...sel.options].find(o => o.value === 'sakura-pg')
-      if (!opt) return false
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(sel, 'sakura-pg')
-      sel.dispatchEvent(new Event('change', { bubbles: true }))
-      return true
-    })()`)
+    await waitFor(`document.querySelector('[data-testid="copy-连接地址"]') !== null || document.querySelector('[data-testid="db-picker"]') !== null`, 5_000)
+    await pickSelect('db-picker', 'sakura-pg')
     await delay(300)
     const tunnelSwitch = await waitFor(`document.querySelector('.kura-db-connect input[type="checkbox"]') !== null`, 5_000)
     check('连接信息：能给接管的数据库开隧道', tunnelSwitch)
@@ -547,7 +565,7 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
 
     // 安装：走模板装一个，列表里应该多出来
     await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === '安装')?.click()`)
-    await waitFor(`document.querySelector('.kura-db-connect select') !== null`, 5_000)
+    await waitFor(`document.querySelector('[data-testid="db-engine-picker"]') !== null`, 5_000)
     await fill('名字', 'smoke-new-pg')
     // 按 data-* 找提交按钮：标签页也叫「安装」，按文字找会点到标签上（那一步已经切过去了，等于没点）
     await js(`[...document.querySelectorAll('.kura-db-connect button')].find(b => b.textContent.trim().startsWith('安装'))?.click()`)

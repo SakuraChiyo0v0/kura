@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { UpdateStatus } from '@sakura-ui/electron/shared'
-import { UpdateScheduler, checkIntervalMs, firstCheckDelayMs, friendlyBackend, friendlyUpdateError, nsisBackend, updateSource } from './updates.js'
+import { UpdateScheduler, checkIntervalMs, firstCheckDelayMs, friendlyBackend, friendlyUpdateError, updaterBackend, updateSource } from './updates.js'
 
 /** 手动推进的定时器：只记最新排的那一个（调度器同一时刻只排一个） */
 function fakeTimers() {
@@ -173,7 +173,7 @@ describe('friendlyBackend', () => {
   })
 })
 
-describe('nsisBackend', () => {
+describe('updaterBackend', () => {
   const fakeUpdater = (result: unknown) => ({
     checkForUpdates: async () => result,
     downloadUpdate: async () => {},
@@ -182,19 +182,16 @@ describe('nsisBackend', () => {
     removeListener: () => {},
   })
 
-  it('没有新版本（isUpdateAvailable: false）时报「已是最新」，不能再往下走下载', async () => {
-    // electron-updater 这时也会把 updateInfo 填成当前版本号，只按 version 在不在判断就会误报「发现新版本」
-    const backend = nsisBackend(fakeUpdater({ isUpdateAvailable: false, updateInfo: { version: '0.5.1' } }))
+  // 「已是最新时 electron-updater 会在 updateInfo 里回当前版本号」这个坑，
+  // 原先在这里绕（nsisBackend），2026-10-15 修进 Sakura UI 库、由库的测试覆盖。
+  // 这里只确认接线没接错。
+  it('没有新版本时报「已是最新」', async () => {
+    const backend = updaterBackend(fakeUpdater({ isUpdateAvailable: false, updateInfo: { version: '0.5.1' } }))
     await expect(backend.check()).resolves.toBeNull()
   })
 
-  it('有新版本时照常返回版本号', async () => {
-    const backend = nsisBackend(fakeUpdater({ isUpdateAvailable: true, updateInfo: { version: '9.9.9' } }))
+  it('有新版本时把版本号透传出来', async () => {
+    const backend = updaterBackend(fakeUpdater({ isUpdateAvailable: true, updateInfo: { version: '9.9.9' } }))
     await expect(backend.check()).resolves.toEqual({ version: '9.9.9', releaseNotes: undefined })
-  })
-
-  it('上游返回 null（开发模式没接更新源）时也是没有更新', async () => {
-    const backend = nsisBackend(fakeUpdater(null))
-    await expect(backend.check()).resolves.toBeNull()
   })
 })
