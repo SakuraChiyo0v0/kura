@@ -11,6 +11,8 @@ export interface SmokeContext {
   showMainWindow(): void
   /** 本机 WebDAV 的地址 */
   davUrl(): string
+  /** 冒烟里起在临时端口上的 MCP 端点（设置里默认是关的，这里显式打开来验协议） */
+  mcp: { url: string; token: string }
 }
 
 function httpGet(url: string): Promise<{ status: number; body: string }> {
@@ -296,6 +298,52 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     await fill('NAS 路径', '/volume1/private')
     await js(`[...document.querySelectorAll('.kura-dav .kura-rules__add button')].find(b => b.textContent.trim() === '检查')?.click()`)
     check('可见性自检', await waitFor(`document.querySelector('[data-testid="scope-probe"]')?.dataset.visibility === 'hidden'`))
+
+    // ⑦c-2 MCP：AI 客户端要走的协议路径。范围刚好被上面收成 /volume1/docs，
+    // 所以顺带能验「AI 也受同一份范围裁剪」——它没有自己的旁路。
+    const mcpCall = (body: unknown, token = ctx.mcp.token): Promise<{ status: number; body: string }> =>
+      httpSend('POST', ctx.mcp.url, { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, JSON.stringify(body))
+    const mcpRaw = (init: { method?: string; headers?: Record<string, string>; body?: string }) => httpSend(init.method ?? 'POST', ctx.mcp.url, init.headers ?? {}, init.body)
+
+    const init = await mcpCall({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'smoke', version: '1' } } })
+    let initBody: { result?: { protocolVersion?: string; capabilities?: unknown; serverInfo?: { name?: string } } } = {}
+    try {
+      initBody = JSON.parse(init.body) as typeof initBody
+    } catch {
+      // 下面按失败报，detail 里带上原文
+    }
+    check(
+      'MCP：握手返回协议版本与工具能力',
+      init.status === 200 && initBody.result?.protocolVersion === '2025-06-18' && initBody.result?.serverInfo?.name === 'kura' && 'tools' in ((initBody.result?.capabilities ?? {}) as object),
+      `${init.status} ${init.body.slice(0, 160)}`,
+    )
+
+    const list = await mcpCall({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
+    const tools = (JSON.parse(list.body) as { result?: { tools?: Array<{ name: string; annotations?: { readOnlyHint?: boolean } }> } }).result?.tools ?? []
+    check('MCP：工具表非空且读工具标了 readOnlyHint', tools.length >= 20 && tools.some((t) => t.name === 'kura_status' && t.annotations?.readOnlyHint === true), `${tools.length} 个`)
+
+    // 真调一个读工具：走的是同一批服务实例（映射层 → 假 NAS 的 WebDAV）
+    const callList = await mcpCall({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'kura_files_list', arguments: { path: '/volume1/docs' } } })
+    check('MCP：读工具能列出 NAS 目录', callList.status === 200 && callList.body.includes('readme.txt'), callList.body.slice(0, 160))
+
+    // 范围外的路径：AI 与界面、外部 HTTP 看到的是同一份裁剪（上游 404 → 工具执行失败）
+    const outside = await mcpCall({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'kura_files_list', arguments: { path: '/volume1/private' } } })
+    check('MCP：范围外的路径读不到，且是执行失败不是协议错误', (JSON.parse(outside.body) as { result?: { isError?: boolean }; error?: unknown }).result?.isError === true, outside.body.slice(0, 160))
+
+    const unknown = await mcpCall({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'kura_nope', arguments: {} } })
+    check('MCP：不存在的工具回协议错误 -32602', (JSON.parse(unknown.body) as { error?: { code?: number } }).error?.code === -32602, unknown.body.slice(0, 120))
+
+    const notif = await mcpCall({ jsonrpc: '2.0', method: 'notifications/initialized' })
+    check('MCP：通知回 202 无 body', notif.status === 202 && notif.body === '', `${notif.status}`)
+
+    // GET 405 是客户端判定「没有 SSE 流」的依据，不能改成别的
+    const get = await mcpRaw({ method: 'GET', headers: { authorization: `Bearer ${ctx.mcp.token}` } })
+    check('MCP：GET 回 405（客户端据此判定无 SSE 流）', get.status === 405, `${get.status}`)
+
+    const badToken = await mcpCall({ jsonrpc: '2.0', id: 6, method: 'ping' }, 'wrong-token')
+    check('MCP：令牌不对回 401', badToken.status === 401, `${badToken.status}`)
+    const badOrigin = await mcpRaw({ headers: { authorization: `Bearer ${ctx.mcp.token}`, 'content-type': 'application/json', origin: 'https://evil.example' }, body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'ping' }) })
+    check('MCP：非回环 Origin 回 403（防 DNS 重绑定）', badOrigin.status === 403, `${badOrigin.status}`)
     await shot('v0.2-本机WebDAV.png')
 
     // ⑦d v0.2 终端：**不需要任何凭据**（认的是映射层的网关会话）→ 直接开标签 → 键入回显
@@ -460,6 +508,19 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     })()`)
     check('「历次更新内容」是按钮样式', historyButton.border !== '0px' || !/rgba\(0, 0, 0, 0\)|transparent/.test(historyButton.bg), JSON.stringify(historyButton))
     check('新用户不弹「本次更新内容」', (await js<number>(`document.querySelectorAll('.kura-whats-new').length`)) === 0)
+
+    // ⑦g MCP 设置一节：开关、运行状态、接入命令都是真的（不是写死的文案）
+    const mcpSection = await waitFor(`document.querySelector('[data-testid="mcp-section"]') !== null`)
+    const mcpSwitch = await js<boolean>(`document.querySelector('[data-testid="mcp-section"] input[type="checkbox"]')?.checked === true`)
+    const mcpUrlShown = await js<boolean>(
+      `document.querySelector('[data-testid="mcp-url"]')?.textContent === ${JSON.stringify(ctx.mcp.url)}`,
+    )
+    const mcpCommand = await js<string>(`document.querySelector('[data-testid="mcp-command"]')?.textContent ?? ''`)
+    check(
+      'MCP 设置一节：开关是开的、状态显示真实地址、接入命令带令牌',
+      mcpSection && mcpSwitch && mcpUrlShown && mcpCommand.includes(ctx.mcp.url) && mcpCommand.includes(ctx.mcp.token) && mcpCommand.includes('claude mcp add'),
+      `section=${mcpSection} switch=${mcpSwitch} url=${mcpUrlShown} cmd=${mcpCommand.slice(0, 80)}`,
+    )
     await shot('v0.5-关于与更新.png')
 
     // ⑧ 布局：侧栏撑到窗口底（判据对视口，不对父容器）

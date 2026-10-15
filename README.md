@@ -16,6 +16,7 @@
 | v0.3 | 模块页：rclone 挂载为本机磁盘（固定版本下载 + SHA256 校验；WinFsp 需自行安装） |
 | v0.4 | 容器管理（以 Arcane 为蓝本）：compose 项目启停 / 重建 / 编辑 / 新建 / 删除，容器详情与实时日志，镜像，审计。设计见 [`docs/容器管理 设计.md`](docs/容器管理%20设计.md) |
 | v0.5 | 自动更新（GitHub Releases，后台下载、退出时安装）、应用内更新公告（[`CHANGELOG.md`](CHANGELOG.md)） |
+| v0.6 | MCP 服务器：给 AI 客户端（Claude Code 等）连的回环 HTTP 端点，可读写 NAS 文件、管理容器与映射 |
 
 NAS 侧的 **kura-server**（`server/`，一个镜像两个入口 serve / shell）已部署到真机 8898 并逐项验收：
 12 个服务、终端连真宿主 shell、两层 WebDAV、rclone 挂载、管理页，外网中继下 WebSocket 可用。
@@ -26,6 +27,18 @@ NAS 侧的 **kura-server**（`server/`，一个镜像两个入口 serve / shell�
 
 NAS 侧依赖：服务端清单里要有 `webdav`（文件、本机 WebDAV、挂载）与 `nas-console`（终端）两个服务；
 容器页要 `docker`（kura-server 挂了 docker.sock、且项目目录按原路径挂进来）。
+
+## 给 AI 用（MCP）
+
+设置页「MCP」一节里打开开关，把生成的命令复制到 AI 客户端：
+
+```bash
+claude mcp add --transport http kura http://127.0.0.1:18007/mcp --header "Authorization: Bearer <令牌>"
+```
+
+只监听回环（`127.0.0.1`），并校验 `Host` / `Origin` 与 Bearer 令牌，**默认关闭**。
+工具覆盖文件读写、容器启停与 compose、服务映射、暴露范围、rclone 挂载；调的就是界面上那批能力，
+范围仍由 NAS 那份裁剪、容器仍走 kura-server 的具名接口白名单。**不含** NAS 宿主命令执行。
 
 ## 发版
 
@@ -84,6 +97,7 @@ $env:KURA_REAL_RCLONE=1; npx vitest run src/main/modules.real.test.ts
 | `mirror/services.json` | 各服务的开关、本机端口改动 |
 | `mirror/discovered.json` | 上次拉到的服务端清单（拉不到时兜底） |
 | `webdav.json` | 本机 WebDAV 的端口、启用开关（范围不在这里 —— 只有 NAS 那份说了算，见 `docs/交接.md`） |
+| `mcp.json` | MCP 的接入令牌（0600）；开关与端口在 `settings.json` 里 |
 | `modules/` | rclone（Kura 下载的副本）、挂载设置 `mount.json`、VFS 缓存 |
 | `%LOCALAPPDATA%\kura-updater\` | 自动更新下载的安装包（不在 `%APPDATA%\Kura\` 下，electron-updater 固定放这里） |
 | `logs/kura.log` | 日志，10 MiB 轮转；`KURA_VERBOSE=1` 打开 debug |

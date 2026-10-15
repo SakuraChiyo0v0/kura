@@ -98,6 +98,10 @@ export const kuraChannels = {
   dockerStreamClose: 'kura:docker:stream-close',
   /** 主进程推送：流式操作的输出与结束 */
   dockerStreamEvent: 'kura:docker:stream-event',
+  // ---- MCP（给 AI 客户端连的服务器）----
+  mcpStatus: 'kura:mcp:status',
+  mcpSave: 'kura:mcp:save',
+  mcpRotateToken: 'kura:mcp:rotate-token',
 } as const
 
 // ---- v0.2 文件管理器 ----
@@ -209,6 +213,21 @@ export interface AppInfo {
   userData: string
   /** 这个构建接没接更新源（开发模式、冒烟不接）；没接时界面不显示「检查更新」 */
   updatesEnabled: boolean
+}
+
+// ---- MCP ----
+
+/** 给 AI 客户端连的 MCP 服务器的状态。令牌回明文 —— 它就是给人复制到客户端配置里的。 */
+export interface McpStatusView {
+  enabled: boolean
+  port: number
+  running: boolean
+  lastError: string
+  /** 接入地址，如 http://127.0.0.1:18007/mcp */
+  url: string
+  token: string
+  /** 暴露给 AI 的工具个数 */
+  toolCount: number
 }
 
 /**
@@ -372,5 +391,13 @@ export interface KuraBridge {
     openDrive(): Promise<void>
     /** 选一个目录作为 folder 模式的挂载点父目录；取消返回 '' */
     pickFolder(): Promise<string>
+  }
+  /** 给 AI 客户端连的 MCP 服务器。开关与端口同时存在设置里（mcpEnabled / mcpPort），这里是运行状态与令牌。 */
+  mcp: {
+    status(): Promise<McpStatusView>
+    /** 开 / 关并应用端口 */
+    save(enabled: boolean, port: number): Promise<McpStatusView>
+    /** 换一把新令牌；旧客户端会立刻连不上 */
+    rotateToken(): Promise<McpStatusView>
   }
 }

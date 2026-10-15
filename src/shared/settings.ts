@@ -14,6 +14,10 @@ export interface KuraSettings {
   autoCheckUpdates: boolean
   /** 上次看过「更新内容」的版本；升级后与当前版本不同就弹一次 */
   lastSeenVersion: string
+  /** 给 AI 客户端（Claude Code 等）连的 MCP 服务器。默认关：新增的对外接口不该默认开着 */
+  mcpEnabled: boolean
+  /** MCP 监听的回环端口 */
+  mcpPort: number
 }
 
 export const kuraSettingsDefaults: KuraSettings = {
@@ -23,4 +27,6 @@ export const kuraSettingsDefaults: KuraSettings = {
   sidebarCollapsed: false,
   autoCheckUpdates: true,
   lastSeenVersion: '',
+  mcpEnabled: false,
+  mcpPort: 18007,
 }

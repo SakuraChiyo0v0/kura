@@ -26,6 +26,7 @@ import { kuraSettingsDefaults, type KuraSettings, type ThemePreference } from '.
 import { ConnectionForm } from './ConnectionForm.js'
 import { ContainersView } from './ContainersView.js'
 import { FilesView } from './FilesView.js'
+import { McpSection } from './McpView.js'
 import { MirrorView } from './MirrorView.js'
 import { ModulesView } from './ModulesView.js'
 import { OverviewView } from './OverviewView.js'
@@ -126,6 +127,7 @@ function SettingsView({
         </div>
       </SettingsSection>
       <UpdatesSection autoCheck={settings.autoCheckUpdates} onAutoCheckChange={(value) => set('autoCheckUpdates', value)} />
+      <McpSection enabled={settings.mcpEnabled} port={settings.mcpPort} onSetting={set} />
     </SettingsPage>
   )
 }

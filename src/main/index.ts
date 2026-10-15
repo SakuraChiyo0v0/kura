@@ -32,6 +32,7 @@ import { kuraSettingsDefaults, type KuraSettings } from '../shared/settings.js'
 import { ConnectionService } from './connection.js'
 import { ContainerService, FileService, LocalDavService, NasScopeService, TerminalService, safeLocalName } from './features.js'
 import type { ProjectAction } from '../core/docker-client.js'
+import { McpService } from './mcp.js'
 import { ModuleManager, rcloneRelease, winfspDownloadPage } from './modules.js'
 import { fileLogger } from './file-log.js'
 import { decideWindowClose, isHiddenLaunch, loginItemSettings } from './lifecycle.js'
@@ -94,6 +95,21 @@ const modules = new ModuleManager({
     if (!view.running) throw new Error('本机 WebDAV 没有在运行（文件页 → 本机 WebDAV 里打开它）')
     return view.url
   },
+})
+/**
+ * MCP：给 AI 客户端（Claude Code 等）连的回环 HTTP 端点。与其它能力层共用同一批服务实例 ——
+ * AI 的操作走的还是映射层、kura-server 白名单、NAS 那份范围，不另开一条路。
+ */
+const mcp = new McpService({
+  mirror: () => connection.current(),
+  dataDir: userData,
+  log,
+  version: () => app.getVersion(),
+  files,
+  containers,
+  nasScope,
+  localDav,
+  modules,
 })
 
 let quitting = false
@@ -228,7 +244,7 @@ app.on('before-quit', (event) => {
   if (stopping) return
   terminals.closeAll()
   containers.closeAll()
-  stopping =Promise.allSettled([modules.unmount(), localDav.close()])
+  stopping = Promise.allSettled([modules.unmount(), localDav.close(), mcp.close()])
     .then(() => connection.stop())
     .finally(() => {
       stopped = true
@@ -463,6 +479,22 @@ function registerKuraIpc(): void {
     const picked = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options)
     return picked.canceled || !picked.filePaths[0] ? '' : picked.filePaths[0]
   })
+
+  // ---- MCP ----
+  router.handle(ch.mcpStatus, () => mcp.view())
+  router.handle(ch.mcpSave, async (_event, enabled: boolean, port: number) => {
+    const next = Number(port)
+    if (!Number.isInteger(next) || next < 1 || next > 65535) throw new Error(`端口 ${port} 不合法`)
+    // 运行时改动先做，成功了才落盘（与本机 WebDAV 同一个取舍）：端口绑不上时磁盘上留的仍是仍在生效的那份
+    await mcp.apply(Boolean(enabled), next)
+    settingsStore.set('mcpEnabled', Boolean(enabled))
+    settingsStore.set('mcpPort', next)
+    return mcp.view()
+  })
+  router.handle(ch.mcpRotateToken, () => {
+    mcp.rotateToken()
+    return mcp.view()
+  })
 }
 
 app.whenReady().then(async () => {
@@ -514,6 +546,16 @@ app.whenReady().then(async () => {
 
   await localDav.start()
 
+  // MCP：按设置起（默认关）。起不来的原因留在状态里给界面显示，不拖住启动 ——
+  // 与 localDav 一样，端口被占不该让整个程序起不来。
+  if (settingsStore.get('mcpEnabled')) {
+    try {
+      await mcp.apply(true, settingsStore.get('mcpPort'))
+    } catch (error) {
+      log.warn('MCP 服务器启动失败', { err: (error as Error).message })
+    }
+  }
+
   if (smokeRestart) {
     void runRestartSmoke({ window, startedAt: processStartedAt }).then((passed) => {
       process.exitCode = passed ? 0 : 1
@@ -523,7 +565,24 @@ app.whenReady().then(async () => {
   }
 
   if (smoke) {
-    void runSmoke({ window, userData, isTrayCreated: () => tray.isCreated(), showMainWindow, davUrl: () => localDav.view().url }).then((passed) => {
+    // MCP 平时默认关着；冒烟里起在端口 0（系统挑一个空闲口），免得跟日常在跑的那个 Kura 抢 18007。
+    // 设置也一并写上：界面读的是设置里那份，不写的话会出现「开关关着、却显示正在运行」。
+    settingsStore.set('mcpEnabled', true)
+    settingsStore.set('mcpPort', 0)
+    try {
+      await mcp.apply(true, 0)
+    } catch (error) {
+      log.warn('冒烟：MCP 启动失败', { err: (error as Error).message })
+    }
+    const mcpView = mcp.view()
+    void runSmoke({
+      window,
+      userData,
+      isTrayCreated: () => tray.isCreated(),
+      showMainWindow,
+      davUrl: () => localDav.view().url,
+      mcp: { url: mcpView.url, token: mcpView.token },
+    }).then((passed) => {
       process.exitCode = passed ? 0 : 1
       quitApp()
     })

@@ -141,6 +141,11 @@ const kura: KuraBridge = {
     openDrive: () => invoke(ch.modulesOpenDrive),
     pickFolder: () => invoke(ch.modulesPickFolder),
   },
+  mcp: {
+    status: () => invoke(ch.mcpStatus),
+    save: (enabled, port) => invoke(ch.mcpSave, enabled, port),
+    rotateToken: () => invoke(ch.mcpRotateToken),
+  },
 }
 
 contextBridge.exposeInMainWorld('kura', kura)
