@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { BrowserWindow, Menu, Tray, app, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell } from 'electron'
 import {
@@ -27,7 +27,8 @@ import {
 } from '../shared/ipc.js'
 import { kuraSettingsDefaults, type KuraSettings } from '../shared/settings.js'
 import { ConnectionService } from './connection.js'
-import { FileService, LocalDavService, NasScopeService, TerminalService, safeLocalName } from './features.js'
+import { ContainerService, FileService, LocalDavService, NasScopeService, TerminalService, safeLocalName } from './features.js'
+import type { ProjectAction } from '../core/docker-client.js'
 import { ModuleManager, rcloneRelease, winfspDownloadPage } from './modules.js'
 import { fileLogger } from './file-log.js'
 import { decideWindowClose, isHiddenLaunch, loginItemSettings } from './lifecycle.js'
@@ -80,6 +81,7 @@ const terminals = new TerminalService(
   featureDeps,
   (event) => windows.broadcast(ch.terminalEvent, event),
 )
+const containers = new ContainerService(featureDeps, (event) => windows.broadcast(ch.dockerStreamEvent, event))
 const modules = new ModuleManager({
   dir: join(userData, 'modules'),
   log,
@@ -188,7 +190,8 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   if (stopping) return
   terminals.closeAll()
-  stopping = Promise.allSettled([modules.unmount(), localDav.close()])
+  containers.closeAll()
+  stopping =Promise.allSettled([modules.unmount(), localDav.close()])
     .then(() => connection.stop())
     .finally(() => {
       stopped = true
@@ -345,6 +348,57 @@ function registerKuraIpc(): void {
   router.handle(ch.terminalAvailable, () => terminals.available())
 
   // ---- 模块 ----
+  // ---- 容器 ----
+  const dockerId = (id: unknown) => String(id)
+  router.handle(ch.dockerAvailable, () => containers.available())
+  router.handle(ch.dockerOverview, () => containers.client.overview())
+  router.handle(ch.dockerContainer, (_event, id: string) => containers.client.container(dockerId(id)))
+  router.handle(ch.dockerStats, (_event, id: string) => containers.client.stats(dockerId(id)))
+  router.handle(ch.dockerImages, () => containers.client.images())
+  router.handle(ch.dockerActivity, () => containers.client.activity())
+  router.handle(ch.dockerContainerAction, (_event, id: string, action: string) => {
+    if (action !== 'start' && action !== 'stop' && action !== 'restart') throw new Error(`不支持的操作：${action}`)
+    return containers.client.containerAction(dockerId(id), action)
+  })
+  router.handle(ch.dockerRemoveContainer, (_event, id: string, force: boolean) => containers.client.removeContainer(dockerId(id), Boolean(force)))
+  router.handle(ch.dockerRemoveImage, (_event, id: string) => containers.client.removeImage(dockerId(id)))
+  router.handle(ch.dockerPruneImages, (_event, all: boolean) => containers.client.pruneImages(Boolean(all)))
+  router.handle(ch.dockerSaveLogs, async (event, id: string, name: string) => {
+    const window = ownerWindow(event)
+    const options: Electron.SaveDialogOptions = {
+      title: '保存日志',
+      defaultPath: join(app.getPath('downloads'), safeLocalName(`${String(name) || 'container'}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.log`)),
+      filters: [{ name: '日志', extensions: ['log', 'txt'] }],
+    }
+    const saved = window ? await dialog.showSaveDialog(window, options) : await dialog.showSaveDialog(options)
+    if (saved.canceled || !saved.filePath) return ''
+    writeFileSync(saved.filePath, await containers.client.logsText(dockerId(id)))
+    return saved.filePath
+  })
+  router.handle(ch.dockerStreamOpen, (_event, kind: string, target: string, action?: string, removeOptions?: { volumes?: unknown; files?: unknown }) => {
+    if (kind !== 'logs' && kind !== 'project' && kind !== 'remove' && kind !== 'pull') throw new Error(`不支持的流：${kind}`)
+    if (action !== undefined && action !== null && !['up', 'down', 'restart', 'pull'].includes(action)) throw new Error(`不支持的操作：${action}`)
+    const remove = { volumes: removeOptions?.volumes === true, files: removeOptions?.files === true }
+    return containers.open(kind, String(target), (action ?? undefined) as ProjectAction | undefined, remove)
+  })
+  router.handle(ch.dockerProjectFiles, (_event, name: string) => containers.client.projectFiles(String(name)))
+  router.handle(ch.dockerVolumes, (_event, withSize: boolean) => containers.client.volumes(Boolean(withSize)))
+  router.handle(ch.dockerNetworks, () => containers.client.networks())
+  router.handle(ch.dockerCheckUpdates, (_event, images: unknown) => containers.client.checkUpdates(Array.isArray(images) ? images.map(String).slice(0, 100) : []))
+  router.handle(ch.dockerShellOpen, (_event, container: string, cols: number, rows: number) => containers.openShell(String(container), Number(cols) || 80, Number(rows) || 24))
+  router.handle(ch.dockerShellInput, (_event, id: string, data: string) => containers.shellInput(String(id), String(data)))
+  router.handle(ch.dockerShellResize, (_event, id: string, cols: number, rows: number) => containers.shellResize(String(id), Number(cols), Number(rows)))
+  router.handle(ch.dockerSaveProjectFiles, (_event, name: string, next: { compose?: unknown; env?: unknown }) => {
+    const compose = Array.isArray(next?.compose)
+      ? next.compose.map((c: { path?: unknown; content?: unknown }) => ({ path: String(c.path), content: String(c.content) }))
+      : []
+    return containers.client.saveProjectFiles(String(name), { compose, env: typeof next?.env === 'string' ? next.env : undefined })
+  })
+  router.handle(ch.dockerCreateProject, (_event, input: { name?: unknown; compose?: unknown; env?: unknown }) =>
+    containers.client.createProject({ name: String(input?.name ?? ''), compose: String(input?.compose ?? ''), env: typeof input?.env === 'string' ? input.env : undefined }),
+  )
+  router.handle(ch.dockerStreamClose, (_event, id: string) => containers.close(String(id)))
+
   router.handle(ch.modulesStatus, (): ModulesStatusView => ({
     ...modules.status(),
     pinnedVersion: rcloneRelease.version,

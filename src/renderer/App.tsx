@@ -24,6 +24,7 @@ import '@sakura-ui/electron-react/styles.css'
 import type { ConnectionSummary } from '../shared/ipc.js'
 import { kuraSettingsDefaults, type KuraSettings, type ThemePreference } from '../shared/settings.js'
 import { ConnectionForm } from './ConnectionForm.js'
+import { ContainersView } from './ContainersView.js'
 import { FilesView } from './FilesView.js'
 import { MirrorView } from './MirrorView.js'
 import { ModulesView } from './ModulesView.js'
@@ -206,6 +207,8 @@ function Shell() {
       case 'terminal':
         // 终端页的正文常驻在下面的 .kura-term-host 里，这里只留页头（见那里的注释）
         return null
+      case 'containers':
+        return <ContainersView mapped={snapshot?.services ?? []} onOpenMirror={() => setActiveId('mirror')} />
       case 'modules':
         return <ModulesView />
       default:

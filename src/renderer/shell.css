@@ -990,6 +990,388 @@ body {
   white-space: pre-wrap;
 }
 
+/* ---------------- 容器管理 ---------------- */
+
+.kura-docker {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.kura-docker__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+/* 宽屏：详情在右侧并排；窄了就排到下面，不去挤标签页 */
+@media (min-width: 1100px) {
+  .kura-docker__body[data-drawer='open'] {
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
+  }
+}
+
+.kura-docker-list,
+.kura-docker-members,
+.kura-docker-activity,
+.kura-docker-mounts,
+.kura-docker-env {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kura-docker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kura-docker-project {
+  padding: 12px 14px;
+  border: 1px solid var(--sk-line);
+  border-radius: 12px;
+  background: var(--sk-surface);
+}
+
+.kura-docker-project__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.kura-docker-project__head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.kura-docker-project__dir {
+  display: flex;
+  gap: 12px;
+  margin: 6px 0 0;
+  color: var(--sk-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.kura-docker-project__dir code,
+.kura-docker-image,
+.kura-docker-facts code,
+.kura-docker-members code,
+.kura-docker-activity code {
+  font-family: var(--kura-font-mono);
+  font-size: 12px;
+}
+
+.kura-docker-project__links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 6px 0 0;
+  color: var(--sk-muted);
+  font-size: 12px;
+}
+
+.kura-docker-project__links .kura-card__local {
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.kura-docker-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 8px;
+}
+
+.kura-docker-members li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kura-docker-members button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.kura-docker-members button:hover {
+  background: var(--sk-surface-sunken);
+}
+
+.kura-docker-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sk-muted);
+}
+
+.kura-docker-dot[data-tone='success'] {
+  background: var(--sk-success);
+}
+
+.kura-docker-dot[data-tone='warning'] {
+  background: var(--sk-warning);
+}
+
+.kura-docker-dot[data-tone='danger'] {
+  background: var(--sk-danger);
+}
+
+.kura-docker-dot[data-tone='accent'] {
+  background: var(--sk-accent);
+}
+
+.kura-docker-tag {
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--sk-surface-sunken);
+  color: var(--sk-muted);
+  font-size: 12px;
+}
+
+.kura-docker-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.kura-docker-image {
+  display: inline-block;
+  margin-right: 6px;
+  overflow-wrap: anywhere;
+}
+
+.kura-docker-output__text {
+  max-height: 320px;
+  min-height: 80px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--sk-surface-sunken);
+  font-family: var(--kura-font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.kura-docker-output[data-state='error'] {
+  border-color: var(--sk-danger);
+}
+
+.kura-docker-drawer {
+  position: sticky;
+  top: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: calc(100vh - 140px);
+  overflow: auto;
+  padding: 14px 16px;
+  border: 1px solid var(--sk-line);
+  border-radius: 14px;
+  background: var(--sk-surface);
+}
+
+.kura-docker-drawer .kura-section__head h2 {
+  overflow-wrap: anywhere;
+}
+
+.kura-docker-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+
+.kura-docker-facts > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.kura-docker-facts dt {
+  color: var(--sk-muted);
+  font-size: 12px;
+}
+
+.kura-docker-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.kura-docker-mounts li,
+.kura-docker-env li {
+  margin-bottom: 2px;
+  overflow-wrap: anywhere;
+}
+
+.kura-docker-logs h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.kura-docker-logs .kura-docker-output__text {
+  max-height: 360px;
+}
+
+.kura-docker-activity {
+  display: flex;
+  flex-direction: column;
+}
+
+.kura-docker-activity li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--sk-line);
+}
+
+.kura-docker-activity time {
+  color: var(--sk-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.kura-docker-activity li[data-ok='false'] strong {
+  color: var(--sk-danger);
+}
+
+.kura-docker-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kura-docker-shell__term {
+  height: 280px;
+  padding: 6px;
+  border-radius: 8px;
+  background: var(--sk-surface-sunken);
+  overflow: hidden;
+}
+
+.kura-docker-shell__idle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.kura-docker-images {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.kura-docker-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.kura-docker-editor__panes {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 12px;
+}
+
+.kura-docker-editor__pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.kura-docker-editor__label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--sk-muted);
+  font-size: 12px;
+}
+
+.kura-docker-editor__text {
+  min-height: 320px;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--sk-line);
+  border-radius: 8px;
+  background: var(--sk-surface-sunken);
+  color: var(--sk-ink);
+  font-family: var(--kura-font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.kura-docker-editor__text:focus-visible {
+  outline: 2px solid var(--sk-accent);
+  outline-offset: 1px;
+}
+
+.kura-docker-editor__error {
+  margin: 0;
+  font-family: var(--kura-font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.kura-docker-review {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kura-docker-review h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.kura-docker-diff {
+  max-height: 260px;
+  overflow: auto;
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--sk-surface-sunken);
+  font-family: var(--kura-font-mono);
+  font-size: 12px;
+}
+
+.kura-docker-diff span[data-kind='add'] {
+  color: var(--sk-success);
+}
+
+.kura-docker-diff span[data-kind='del'] {
+  color: var(--sk-danger);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--sk-danger) 45%, transparent);
+}
+
+.kura-docker-diff span[data-kind='gap'],
+.kura-docker-diff span[data-kind='same'] {
+  color: var(--sk-muted);
+}
+
 /* ---------------- 启动进度（替代「映射正在启动」空白页） ---------------- */
 
 .kura-startup {

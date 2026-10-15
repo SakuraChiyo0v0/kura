@@ -2,6 +2,7 @@ import { createReadStream, createWriteStream, mkdirSync, renameSync, rmSync, sta
 import { basename, join } from 'node:path'
 import { ConsoleSession, ConsoleTerminal } from '../core/console.js'
 import { DavClient, type DavEntry } from '../core/dav-client.js'
+import { DockerClient, type DockerStream, type ProjectAction } from '../core/docker-client.js'
 import { normalizeDavPath } from '../core/dav-scope.js'
 import { DavServer, davServerDefaults, type DavServerSettings } from '../core/dav-server.js'
 import { errorMessage } from '../core/errors.js'
@@ -14,6 +15,8 @@ import type {
   DavCheckResult,
   DavSettingsView,
   DavStatusView,
+  DockerStreamEvent,
+  DockerStreamKind,
   FileListing,
   NasScopeCheck,
   NasScopeView,
@@ -24,6 +27,8 @@ import type {
 /** 服务端清单里的服务名（nas-mirror 网关 map 里的键，见 server/nginx/conf.d/default.conf）。 */
 export const webdavService = 'webdav'
 export const consoleService = 'nas-console'
+/** kura-server 挂了 docker.sock 时才出现在清单上 */
+export const dockerService = 'docker'
 
 /**
  * v0.2 的三样东西都建在映射层之上（AGENTS.md 架构原则 1）：
@@ -295,6 +300,95 @@ export class NasScopeService {
 
   private async request(method: string, path: string, body?: string): Promise<Buffer> {
     return requireMirror(this.deps).gatewayRequest(method, path, body)
+  }
+}
+
+// ---------------------------------------------------------------- 容器
+
+/**
+ * 容器管理（docs/容器管理 设计.md）：连 kura-server 的内置服务 `docker`。
+ * 流式操作（日志、compose、拉镜像）每个给一个 id，输出与结束按事件推给界面 —— 和终端同一个形状。
+ */
+export class ContainerService {
+  readonly client: DockerClient
+  private readonly streams = new Map<string, DockerStream>()
+  private seq = 0
+
+  constructor(
+    private readonly deps: FeatureDeps,
+    private readonly emit: (event: DockerStreamEvent) => void,
+  ) {
+    this.client = new DockerClient(() => requireMirror(deps).internalEndpoint(dockerService))
+  }
+
+  available(): boolean {
+    return this.deps.mirror()?.hasService(dockerService) ?? false
+  }
+
+  /** 开一个流，立刻返回 id；输出与结束按事件推（界面先显示「进行中」）。 */
+  async open(kind: DockerStreamKind, target: string, action?: ProjectAction, removeOptions?: { volumes: boolean; files: boolean }): Promise<string> {
+    const id = `ds-${++this.seq}`
+    const stream =
+      kind === 'logs'
+        ? await this.client.logs(target)
+        : kind === 'project'
+          ? await this.client.project(target, action ?? 'up')
+          : kind === 'remove'
+            ? await this.client.removeProject(target, removeOptions ?? { volumes: false, files: false })
+            : await this.client.pull(target)
+    this.streams.set(id, stream)
+    stream.onData((data) => this.emit({ id, type: 'data', data }))
+    void stream.done.then((code) => {
+      this.streams.delete(id)
+      this.emit({ id, type: 'exit', code: code ?? null })
+    })
+    return id
+  }
+
+  close(id: string): void {
+    this.streams.get(id)?.close()
+    this.streams.delete(id)
+    this.shells.get(id)?.close()
+    this.shells.delete(id)
+  }
+
+  closeAll(): void {
+    for (const s of this.streams.values()) s.close()
+    this.streams.clear()
+    for (const s of this.shells.values()) s.close()
+    this.shells.clear()
+  }
+
+  // ---- 进容器 shell：事件走同一个 dockerStreamEvent（data / exit），输入与尺寸单独两个通道 ----
+
+  private readonly shells = new Map<string, import('ws').WebSocket>()
+
+  async openShell(container: string, cols: number, rows: number): Promise<string> {
+    const id = `sh-${++this.seq}`
+    const ws = await this.client.shell(container, cols, rows)
+    this.shells.set(id, ws)
+    ws.on('message', (data) => this.emit({ id, type: 'data', data: data.toString() }))
+    ws.on('unexpected-response', (_req, res) => {
+      res.resume()
+      this.emit({ id, type: 'data', data: `\r\n连接被拒绝：HTTP ${res.statusCode}${res.statusCode === 404 ? '（NAS 上的 kura-server 镜像太旧）' : ''}\r\n` })
+    })
+    ws.on('error', (error) => this.emit({ id, type: 'data', data: `\r\n${error.message}\r\n` }))
+    ws.on('close', () => {
+      this.shells.delete(id)
+      this.emit({ id, type: 'exit', code: 0 })
+    })
+    return id
+  }
+
+  shellInput(id: string, data: string): void {
+    const ws = this.shells.get(id)
+    if (ws?.readyState === ws?.OPEN) ws?.send(data)
+  }
+
+  shellResize(id: string, cols: number, rows: number): void {
+    if (!Number.isFinite(cols) || !Number.isFinite(rows)) return
+    const ws = this.shells.get(id)
+    if (ws?.readyState === ws?.OPEN) ws?.send(JSON.stringify({ type: 'resize', cols: Math.round(cols), rows: Math.round(rows) }))
   }
 }
 

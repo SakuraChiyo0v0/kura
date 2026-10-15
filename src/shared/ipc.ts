@@ -1,6 +1,18 @@
 /** Kura 自己的 IPC 通道与 preload 暴露的 window.kura 形状。 */
+import type { DockerActivity, ProjectAction, ProjectFilesView } from '../core/docker-client.js'
+import type { ContainerDetail, ContainerStats, DockerOverview, ImageView, NetworkView, UpdateCheck, VolumeView } from '../core/docker-types.js'
 import type { LinkModeSetting } from '../core/link.js'
 import type { MirrorSnapshot } from '../core/mirror.js'
+
+export type { DockerActivity, ProjectAction, ProjectFilesView }
+
+/** 容器管理的流式操作：实时日志 / 项目 compose 动作 / 删除项目 / 拉镜像 */
+export type DockerStreamKind = 'logs' | 'project' | 'remove' | 'pull'
+
+export type DockerStreamEvent =
+  | { id: string; type: 'data'; data: string }
+  /** code = null：连接断了、没收到结束帧 */
+  | { id: string; type: 'exit'; code: number | null }
 
 export const kuraChannels = {
   appInfo: 'kura:app-info',
@@ -58,6 +70,31 @@ export const kuraChannels = {
   modulesMount: 'kura:modules:mount',
   modulesUnmount: 'kura:modules:unmount',
   modulesOpenDrive: 'kura:modules:open-drive',
+  // ---- 容器管理 ----
+  dockerAvailable: 'kura:docker:available',
+  dockerOverview: 'kura:docker:overview',
+  dockerContainer: 'kura:docker:container',
+  dockerStats: 'kura:docker:stats',
+  dockerImages: 'kura:docker:images',
+  dockerActivity: 'kura:docker:activity',
+  dockerContainerAction: 'kura:docker:container-action',
+  dockerRemoveContainer: 'kura:docker:remove-container',
+  dockerRemoveImage: 'kura:docker:remove-image',
+  dockerPruneImages: 'kura:docker:prune-images',
+  dockerSaveLogs: 'kura:docker:save-logs',
+  dockerStreamOpen: 'kura:docker:stream-open',
+  dockerProjectFiles: 'kura:docker:project-files',
+  dockerVolumes: 'kura:docker:volumes',
+  dockerNetworks: 'kura:docker:networks',
+  dockerCheckUpdates: 'kura:docker:check-updates',
+  dockerShellOpen: 'kura:docker:shell-open',
+  dockerShellInput: 'kura:docker:shell-input',
+  dockerShellResize: 'kura:docker:shell-resize',
+  dockerSaveProjectFiles: 'kura:docker:save-project-files',
+  dockerCreateProject: 'kura:docker:create-project',
+  dockerStreamClose: 'kura:docker:stream-close',
+  /** 主进程推送：流式操作的输出与结束 */
+  dockerStreamEvent: 'kura:docker:stream-event',
 } as const
 
 // ---- v0.2 文件管理器 ----
@@ -281,6 +318,37 @@ export interface KuraBridge {
     close(id: string): Promise<void>
     onEvent(listener: (event: TerminalEventView) => void): () => void
     available(): Promise<boolean>
+  }
+  docker: {
+    /** 服务端清单里有没有 docker（kura-server 挂了 docker.sock 才有） */
+    available(): Promise<boolean>
+    overview(): Promise<DockerOverview>
+    container(id: string): Promise<ContainerDetail>
+    stats(id: string): Promise<ContainerStats>
+    images(): Promise<ImageView[]>
+    activity(): Promise<DockerActivity[]>
+    containerAction(id: string, action: 'start' | 'stop' | 'restart'): Promise<void>
+    removeContainer(id: string, force: boolean): Promise<void>
+    removeImage(id: string): Promise<void>
+    /** 返回回收的字节数 */
+    pruneImages(all: boolean): Promise<number>
+    /** 弹保存框存完整日志；返回保存路径（取消 = 空串） */
+    saveLogs(id: string, name: string): Promise<string>
+    /** 开一个流（实时日志 / 项目操作 / 删除项目 / 拉镜像），返回流 id；输出按 onStream 推 */
+    openStream(kind: DockerStreamKind, target: string, action?: ProjectAction, removeOptions?: { volumes: boolean; files: boolean }): Promise<string>
+    volumes(withSize: boolean): Promise<VolumeView[]>
+    networks(): Promise<NetworkView[]>
+    /** 问仓库有没有新版（不拉镜像） */
+    checkUpdates(images: string[]): Promise<UpdateCheck[]>
+    /** 进容器 shell：返回会话 id；输出与结束走 onStream（和流同一个通道），输入 / 尺寸走下面两个 */
+    openShell(container: string, cols: number, rows: number): Promise<string>
+    shellInput(id: string, data: string): Promise<void>
+    shellResize(id: string, cols: number, rows: number): Promise<void>
+    projectFiles(name: string): Promise<ProjectFilesView>
+    saveProjectFiles(name: string, next: { compose: Array<{ path: string; content: string }>; env?: string }): Promise<ProjectFilesView>
+    createProject(input: { name: string; compose: string; env?: string }): Promise<{ dir: string; configFiles: string[] }>
+    closeStream(id: string): Promise<void>
+    onStream(listener: (event: DockerStreamEvent) => void): () => void
   }
   modules: {
     status(): Promise<ModulesStatusView>

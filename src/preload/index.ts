@@ -10,6 +10,7 @@ import {
   type ConnectionSummary,
   type ConnectionTestProgress,
   type ConnectionTestResult,
+  type DockerStreamEvent,
   type KuraBootstrap,
   type KuraBridge,
   type TerminalEventView,
@@ -97,6 +98,35 @@ const kura: KuraBridge = {
       return () => ipcRenderer.off(ch.terminalEvent, handler)
     },
     available: () => invoke(ch.terminalAvailable),
+  },
+  docker: {
+    available: () => invoke(ch.dockerAvailable),
+    overview: () => invoke(ch.dockerOverview),
+    container: (id) => invoke(ch.dockerContainer, id),
+    stats: (id) => invoke(ch.dockerStats, id),
+    images: () => invoke(ch.dockerImages),
+    activity: () => invoke(ch.dockerActivity),
+    containerAction: (id, action) => invoke(ch.dockerContainerAction, id, action),
+    removeContainer: (id, force) => invoke(ch.dockerRemoveContainer, id, force),
+    removeImage: (id) => invoke(ch.dockerRemoveImage, id),
+    pruneImages: (all) => invoke(ch.dockerPruneImages, all),
+    saveLogs: (id, name) => invoke(ch.dockerSaveLogs, id, name),
+    openStream: (kind, target, action, removeOptions) => invoke(ch.dockerStreamOpen, kind, target, action, removeOptions),
+    projectFiles: (name) => invoke(ch.dockerProjectFiles, name),
+    volumes: (withSize) => invoke(ch.dockerVolumes, withSize),
+    networks: () => invoke(ch.dockerNetworks),
+    checkUpdates: (images) => invoke(ch.dockerCheckUpdates, images),
+    openShell: (container, cols, rows) => invoke(ch.dockerShellOpen, container, cols, rows),
+    shellInput: (id, data) => invoke(ch.dockerShellInput, id, data),
+    shellResize: (id, cols, rows) => invoke(ch.dockerShellResize, id, cols, rows),
+    saveProjectFiles: (name, next) => invoke(ch.dockerSaveProjectFiles, name, next),
+    createProject: (input) => invoke(ch.dockerCreateProject, input),
+    closeStream: (id) => invoke(ch.dockerStreamClose, id),
+    onStream: (listener) => {
+      const handler = (_event: unknown, payload: DockerStreamEvent) => listener(payload)
+      ipcRenderer.on(ch.dockerStreamEvent, handler)
+      return () => ipcRenderer.off(ch.dockerStreamEvent, handler)
+    },
   },
   modules: {
     status: () => invoke(ch.modulesStatus),

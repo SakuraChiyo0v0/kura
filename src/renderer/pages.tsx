@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
-import { Blocks, FolderOpen, LayoutDashboard, Network, Settings, SquareTerminal } from 'lucide-react'
+import { Blocks, Boxes, FolderOpen, LayoutDashboard, Network, Settings, SquareTerminal } from 'lucide-react'
 
-export type PageId = 'overview' | 'mirror' | 'files' | 'terminal' | 'modules' | 'settings'
+export type PageId = 'overview' | 'mirror' | 'files' | 'terminal' | 'containers' | 'modules' | 'settings'
 
 export interface PageDef {
   id: PageId
@@ -43,6 +43,13 @@ export const pages: readonly PageDef[] = [
     icon: <SquareTerminal {...iconProps} />,
     summary: '连接 NAS 的命令行（经 nas-console），支持多标签；拿到的是宿主 root shell',
     plannedIn: 'v0.2',
+  },
+  {
+    id: 'containers',
+    label: '容器',
+    icon: <Boxes {...iconProps} />,
+    summary: 'NAS 上的 Docker：按 compose 项目启停、重建，看容器日志与镜像；每个改动都留审计',
+    plannedIn: 'v0.4',
   },
   {
     id: 'modules',
