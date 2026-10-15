@@ -33,9 +33,24 @@ nsis:
   oneClick: false
   perMachine: false # 装到当前用户，不要管理员权限（开机自启写的也是 HKCU）
   allowToChangeInstallationDirectory: true
+  # 自动更新时跳过「为谁安装」那一页，沿用原来的安装方式（见 assets/installer.nsh）。
+  # 不跳的话更新会停在这一页等人点 —— 这页只认 /allusers、/currentuser 参数，electron-updater 不传
+  include: assets/installer.nsh
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: Kura
   artifactName: Kura-Setup-${version}.${ext}
   # 卸载时**保留** %APPDATA%\Kura（凭据、设置、模块）；要清干净由用户自己删
   deleteAppDataOnUninstall: false
+
+# 自动更新的来源：GitHub Releases（仓库公开，客户端不用 token）。
+# 打包时写进 resources/app-update.yml；发布由 .github/workflows/release.yml 推 v* 标签触发，
+# 本机 `npm run dist` 只出包、不上传（electron-builder 只在 CI 的 tag 构建里自动 publish）。
+publish:
+  provider: github
+  owner: SakuraChiyo0v0
+  repo: kura
+  releaseType: release
+# Release 正文与 latest.yml 的 releaseNotes：发布脚本从 CHANGELOG.md 抽出当前版本那一节写到这里
+releaseInfo:
+  releaseNotesFile: release/release-notes.md

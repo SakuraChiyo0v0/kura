@@ -11,7 +11,7 @@
  */
 import { spawn } from 'node:child_process'
 import { generateKeyPairSync, privateDecrypt, constants } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -404,6 +404,10 @@ function runKura(phase) {
 let code = await runKura('first')
 if (code === 0) {
   slowServicesMs = 2_500
+  // 假装第一轮是旧版本：第二轮就是「升级后第一次打开」，应该弹「本次更新内容」
+  const settingsFile = join(userData, 'settings.json')
+  const settings = JSON.parse(readFileSync(settingsFile, 'utf8'))
+  writeFileSync(settingsFile, JSON.stringify({ ...settings, lastSeenVersion: '0.0.1' }))
   code = await runKura('restart')
 }
 nas.close()

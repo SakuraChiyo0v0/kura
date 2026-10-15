@@ -75,6 +75,16 @@ export async function runRestartSmoke(ctx: { window: BrowserWindow; startedAt: n
     const pushed = await waitUntil(js, `document.querySelector('.kura-section__foot')?.textContent.includes('秒前') ?? false`, 1_500)
     check('清单到达后界面立即更新（推送）', synced && pushed, `syncingShown=${syncingShown} synced=${synced} pushed=${pushed}`)
     check('启动到窗口可用的耗时', openedMs < 8_000, `${openedMs}ms`)
+
+    // 冒烟脚本在两轮之间把 lastSeenVersion 改成了 0.0.1：这一轮等于「升级后第一次打开」
+    const version = await js<string>(`window.kura.appInfo().then((i) => i.version)`)
+    const shown = await waitUntil(js, `document.querySelector('.kura-whats-new .kura-changelog__entry') !== null`, 5_000)
+    const title = await js<string>(`document.querySelector('.kura-whats-new .sk-dialog-title')?.textContent ?? ''`)
+    check('升级后弹「本次更新内容」', shown && title.includes(version), title)
+    await js(`[...document.querySelectorAll('.kura-whats-new button')].find((b) => b.textContent === '知道了')?.click()`)
+    const seen = await waitUntil(js, `window.__SAKURA_SETTINGS__.get().then((s) => s.lastSeenVersion === ${JSON.stringify(version)})`, 3_000)
+    const closed = await waitUntil(js, `document.querySelector('.kura-whats-new') === null`, 3_000)
+    check('关掉后记下当前版本，不再弹', seen && closed, `seen=${seen} closed=${closed}`)
   } catch (error) {
     check('执行异常', false, (error as Error).stack)
   } finally {
@@ -419,6 +429,18 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     await nav('模块')
     check('模块页', await waitFor(`document.querySelector('[data-testid="module-rclone"] .kura-req') !== null`))
     await shot('v0.3-模块.png')
+
+    // ⑦f v0.5 关于与更新：版本号、本版本更新内容（读的是打进包里的 CHANGELOG）。
+    // 冒烟不接更新源，所以不该出现检查更新的提示条；刚走完引导的新用户也不该弹「本次更新内容」
+    await nav('设置')
+    const version = await js<string>(`window.kura.appInfo().then((i) => i.version)`)
+    const about = await waitFor(
+      `document.querySelector('[data-testid="app-version"]')?.textContent === ${JSON.stringify(version)} && document.querySelectorAll('[data-testid="updates-section"] .kura-changelog__entry').length === 1`,
+    )
+    check('设置页显示版本与本版本更新内容', about, await js<string>(`document.querySelector('[data-testid="updates-section"]')?.innerText.slice(0, 200) ?? '无'`))
+    check('冒烟不接更新源', (await js<number>(`document.querySelectorAll('.sk-el-update-banner').length`)) === 0)
+    check('新用户不弹「本次更新内容」', (await js<number>(`document.querySelectorAll('.kura-whats-new').length`)) === 0)
+    await shot('v0.5-关于与更新.png')
 
     // ⑧ 布局：侧栏撑到窗口底（判据对视口，不对父容器）
     const layout = await js<{ bottom: number; viewport: number }>(

@@ -1,0 +1,51 @@
+# Kura 客户端发布：推 v* 标签 → 在 Windows 上打安装包 → 发到 GitHub Release。
+#
+#   1. 改 package.json 的 version，在 CHANGELOG.md 顶上写这个版本的一节
+#   2. 提交、push 到 main
+#   3. git tag v<版本> && git push origin v<版本>
+#
+# 产物：Kura-Setup-<版本>.exe、.blockmap、latest.yml。已装的客户端靠 latest.yml 发现新版本（自动更新），
+# 靠 .blockmap 做差量下载。Release 正文是 CHANGELOG 里这个版本那一节。
+#
+# 标签与 package.json 版本对不上、CHANGELOG 没写这一节：直接失败，不发。
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # 创建 Release、上传产物
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Check tag & release notes
+        run: node scripts/release-notes.mjs --tag "${{ github.ref_name }}"
+
+      # 与本机 `npm run check` 的前三步相同；冒烟要真开窗口，CI 上不跑
+      - name: Typecheck & test
+        run: |
+          npm run typecheck
+          node server/build.mjs
+          npm test
+
+      - name: Build & publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node build.mjs
+          npx electron-builder --win --x64 --publish always

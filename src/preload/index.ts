@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { unwrapIpcResponse, type IpcResponse } from '@sakura-ui/electron/shared'
-import { exposeSettings, exposeWindowControls } from '@sakura-ui/electron/preload'
+import { exposeSettings, exposeUpdater, exposeWindowControls } from '@sakura-ui/electron/preload'
 import type { LinkModeSetting } from '../core/link.js'
 import type { MirrorSnapshot } from '../core/mirror.js'
 import {
@@ -19,6 +19,7 @@ import type { KuraSettings } from '../shared/settings.js'
 
 exposeWindowControls({ contextBridge, ipcRenderer })
 exposeSettings<KuraSettings>({ contextBridge, ipcRenderer })
+exposeUpdater({ contextBridge, ipcRenderer })
 
 async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
   return unwrapIpcResponse((await ipcRenderer.invoke(channel, ...args)) as IpcResponse<T>)
@@ -39,6 +40,7 @@ function readBootstrap(): KuraBootstrap | null {
 const kura: KuraBridge = {
   bootstrap: readBootstrap(),
   appInfo: () => invoke<AppInfo>(ch.appInfo),
+  changelog: () => invoke<string>(ch.changelog),
   quit: () => invoke<void>(ch.quit),
   connection: {
     get: () => invoke<ConnectionSummary>(ch.connectionGet),

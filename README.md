@@ -15,6 +15,7 @@
 | v0.2 | 文件管理器（经映射层的 WebDAV）、**本机 WebDAV**（放行 / 排除 / 只读的暴露范围）、终端（xterm.js 多标签，接 nas-console） |
 | v0.3 | 模块页：rclone 挂载为本机磁盘（固定版本下载 + SHA256 校验；WinFsp 需自行安装） |
 | v0.4 | 容器管理（以 Arcane 为蓝本）：compose 项目启停 / 重建 / 编辑 / 新建 / 删除，容器详情与实时日志，镜像，审计。设计见 [`docs/容器管理 设计.md`](docs/容器管理%20设计.md) |
+| v0.5 | 自动更新（GitHub Releases，后台下载、退出时安装）、应用内更新公告（[`CHANGELOG.md`](CHANGELOG.md)） |
 
 NAS 侧的 **kura-server**（`server/`，一个镜像两个入口 serve / shell）已部署到真机 8898 并逐项验收：
 12 个服务、终端连真宿主 shell、两层 WebDAV、rclone 挂载、管理页，外网中继下 WebSocket 可用。
@@ -26,6 +27,15 @@ NAS 侧的 **kura-server**（`server/`，一个镜像两个入口 serve / shell�
 NAS 侧依赖：服务端清单里要有 `webdav`（文件、本机 WebDAV、挂载）与 `nas-console`（终端）两个服务；
 容器页要 `docker`（kura-server 挂了 docker.sock、且项目目录按原路径挂进来）。
 
+## 发版
+
+1. 改 `package.json` 的 `version`，在 `CHANGELOG.md` 顶上写这个版本的一节（`## 0.5.1 · 2026-10-16` 加若干 `- ` 条目）
+2. 提交、push 到 main
+3. `git tag v<版本>` 并 `git push origin v<版本>`
+
+标签触发 `.github/workflows/release.yml`：在 Windows 上测试、打包，把安装包、`.blockmap`、`latest.yml` 发到 GitHub Release，
+正文取自 CHANGELOG 那一节。标签与版本号对不上、CHANGELOG 没写这一节，工作流直接失败。已装的客户端靠 `latest.yml` 发现新版本。
+
 ## 开发
 
 需要 Node 24 + npm 11（Windows）。
@@ -34,8 +44,11 @@ NAS 侧依赖：服务端清单里要有 `webdav`（文件、本机 WebDAV、挂
 npm install
 npm start          # 构建并启动
 npm run check      # 类型检查 + 单测 + 真实 Electron 冒烟
-npm run dist       # 打 Windows 安装包 → release/Kura-Setup-<版本>.exe（未签名）
+npm run dist       # 打 Windows 安装包 → release/Kura-Setup-<版本>.exe（未签名，只出包不上传）
 npm run icon       # 改了图标图形后重新生成 assets/icon.ico、tray.png
+
+# 演练自动更新：开发模式默认不检查更新，指一个本机更新源（放 latest.yml + 安装包）就会接上
+$env:KURA_UPDATE_URL="http://127.0.0.1:18123/"; npm start
 
 # 对打包产物跑同一套冒烟
 $env:KURA_SMOKE_EXE="release\win-unpacked\Kura.exe"; node scripts/smoke.mjs
@@ -54,6 +67,7 @@ $env:KURA_REAL_RCLONE=1; npx vitest run src/main/modules.real.test.ts
 | `src/preload/` | 暴露给渲染层的 `window.kura` |
 | `src/shared/` | 两侧共用的设置结构与 IPC 契约 |
 | `src/renderer/` | React + Sakura UI 界面 |
+| `CHANGELOG.md` | 更新日志：Release 正文与应用内「更新内容」的唯一来源 |
 | `vendor/sakura-ui/` | Sakura UI 交付包（tgz） |
 | `server/` | NAS 侧 kura-server（网关 + WebDAV + 终端，一个镜像两个入口） |
 | `docs/交接.md` | **状态快照**：验过什么、什么没做、已知坑 |
@@ -71,4 +85,5 @@ $env:KURA_REAL_RCLONE=1; npx vitest run src/main/modules.real.test.ts
 | `mirror/discovered.json` | 上次拉到的服务端清单（拉不到时兜底） |
 | `webdav.json` | 本机 WebDAV 的端口、启用开关（范围不在这里 —— 只有 NAS 那份说了算，见 `docs/交接.md`） |
 | `modules/` | rclone（Kura 下载的副本）、挂载设置 `mount.json`、VFS 缓存 |
+| `%LOCALAPPDATA%\kura-updater\` | 自动更新下载的安装包（不在 `%APPDATA%\Kura\` 下，electron-updater 固定放这里） |
 | `logs/kura.log` | 日志，10 MiB 轮转；`KURA_VERBOSE=1` 打开 debug |

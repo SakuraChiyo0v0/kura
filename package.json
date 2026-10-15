@@ -1,7 +1,7 @@
 {
   "name": "kura",
   "productName": "Kura",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Kura 蔵 —— 绿联 NAS 的 Windows 桌面客户端",
   "author": "SakuraChiyo0v0",
@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && node server/build.mjs && npm test && npm run smoke",
-    "dist": "node build.mjs && electron-builder --win --x64",
+    "dist": "node build.mjs && node scripts/release-notes.mjs && electron-builder --win --x64 --publish never",
     "icon": "node scripts/make-icon.mjs",
     "server:build": "node server/build.mjs",
     "server:start": "node server/build.mjs && node dist/server/main.mjs"
@@ -26,6 +26,7 @@
     "@sakura-ui/tokens": "file:./vendor/sakura-ui/sakura-ui-tokens-0.1.0.tgz",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
+    "electron-updater": "6.8.10",
     "lucide-react": "1.48.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",

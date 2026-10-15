@@ -10,6 +10,10 @@ export interface KuraSettings {
   openAtLogin: boolean
   /** 侧栏是否折叠 */
   sidebarCollapsed: boolean
+  /** 定时检查更新，发现新版本自动在后台下载 */
+  autoCheckUpdates: boolean
+  /** 上次看过「更新内容」的版本；升级后与当前版本不同就弹一次 */
+  lastSeenVersion: string
 }
 
 export const kuraSettingsDefaults: KuraSettings = {
@@ -17,4 +21,6 @@ export const kuraSettingsDefaults: KuraSettings = {
   closeToTray: true,
   openAtLogin: false,
   sidebarCollapsed: false,
+  autoCheckUpdates: true,
+  lastSeenVersion: '',
 }

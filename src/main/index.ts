@@ -1,18 +1,22 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { BrowserWindow, Menu, Tray, app, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell } from 'electron'
 import {
   acquireSingleInstanceLock,
   createIpcRouter,
   createSettingsStore,
+  createElectronUpdaterBackend,
   createTrayManager,
+  createUpdateManager,
   createWindowManager,
   createWindowStateStore,
   registerSettingsIpc,
+  registerUpdaterIpc,
   registerWindowControls,
   trackWindowMaximizedChange,
   trackWindowState,
 } from '@sakura-ui/electron/main'
+import { autoUpdater } from 'electron-updater'
 import { httpsProxyConfigured } from '../core/http.js'
 import { linkModeLabel, type LinkModeSetting } from '../core/link.js'
 import {
@@ -34,6 +38,7 @@ import { fileLogger } from './file-log.js'
 import { decideWindowClose, isHiddenLaunch, loginItemSettings } from './lifecycle.js'
 import { runRestartSmoke, runSmoke } from './smoke.js'
 import { applySmokeRoute, smokeRequester } from './smoke-seams.js'
+import { UpdateScheduler, friendlyBackend, updateSource } from './updates.js'
 import { CredentialVault } from './vault.js'
 
 // 用户数据固定在 %APPDATA%\Kura，与 Go 版 nas-mirror 的 ~/.nas-mirror 互不干扰
@@ -93,6 +98,36 @@ const modules = new ModuleManager({
 })
 
 let quitting = false
+
+/**
+ * 自动更新：打包后走 GitHub Releases（electron-builder 打包时写进 resources/app-update.yml），
+ * 开发模式设 KURA_UPDATE_URL 可以接本机的更新源演练；冒烟永远不接。
+ */
+const source = updateSource({ packaged: app.isPackaged, smoke, env: process.env })
+const updates = (() => {
+  if (source.kind === 'off') return undefined
+  autoUpdater.logger = {
+    info: (message?: unknown) => log.info('更新', { msg: String(message) }),
+    warn: (message?: unknown) => log.warn('更新', { msg: String(message) }),
+    // electron-updater 的 error 常带整段堆栈：只记第一行
+    error: (message?: unknown) => log.error('更新', { msg: String(message).split('\n')[0] }),
+  }
+  // 下完了用户没点「重启安装」：退出时静默装上（electron-updater 默认就是 true，这里写明）
+  autoUpdater.autoInstallOnAppQuit = true
+  if (source.kind === 'generic') {
+    // 演练用：没打包时 electron-updater 要读 dev-app-update.yml（下载阶段取缓存目录名），这里写一份到 userData
+    const config = join(userData, 'dev-app-update.yml')
+    writeFileSync(config, `provider: generic\nurl: ${JSON.stringify(source.url)}\nupdaterCacheDirName: kura-updater\n`)
+    autoUpdater.updateConfigPath = config
+    autoUpdater.forceDevUpdateConfig = true
+    autoUpdater.setFeedURL({ provider: 'generic', url: source.url })
+  }
+  const manager = createUpdateManager({
+    backend: friendlyBackend(createElectronUpdaterBackend({ updater: autoUpdater }), log),
+    broadcast: (channel, ...args) => windows.broadcast(channel, ...args),
+  })
+  return { manager, scheduler: new UpdateScheduler({ manager, enabled: () => settingsStore.get('autoCheckUpdates'), log }) }
+})()
 
 const windows = createWindowManager<BrowserWindow>({
   create: (name) => {
@@ -232,7 +267,8 @@ function requireMirror() {
 }
 
 function registerKuraIpc(): void {
-  router.handle(ch.appInfo, (): AppInfo => ({ version: app.getVersion(), userData }))
+  router.handle(ch.appInfo, (): AppInfo => ({ version: app.getVersion(), userData, updatesEnabled: updates !== undefined }))
+  router.handle(ch.changelog, () => readFileSync(join(distDir, 'CHANGELOG.md'), 'utf8'))
   router.handle(ch.quit, () => quitApp())
 
   router.handle(ch.connectionGet, () => connection.summary())
@@ -432,6 +468,13 @@ app.whenReady().then(async () => {
     },
   })
   registerKuraIpc()
+  if (updates) {
+    registerUpdaterIpc({ router, manager: updates.manager })
+    updates.scheduler.start()
+    settingsStore.onChange((_settings, changed) => {
+      if (changed.autoCheckUpdates !== undefined) updates.scheduler.setEnabled(changed.autoCheckUpdates)
+    })
+  }
 
   // 开机自启：以设置为准写进 HKCU\…\Run。冒烟不碰注册表。
   if (!smoke) {

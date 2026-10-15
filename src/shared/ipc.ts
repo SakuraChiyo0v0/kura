@@ -16,6 +16,8 @@ export type DockerStreamEvent =
 
 export const kuraChannels = {
   appInfo: 'kura:app-info',
+  /** 打进包里的 CHANGELOG.md 原文 */
+  changelog: 'kura:changelog',
   quit: 'kura:quit',
   connectionGet: 'kura:connection:get',
   connectionTest: 'kura:connection:test',
@@ -200,6 +202,8 @@ export interface AppInfo {
   version: string
   /** 用户数据目录（设置、凭据、日志都在这里） */
   userData: string
+  /** 这个构建接没接更新源（开发模式、冒烟不接）；没接时界面不显示「检查更新」 */
+  updatesEnabled: boolean
 }
 
 /**
@@ -261,6 +265,8 @@ export interface KuraBridge {
   /** 页面加载前就已取好；第一帧直接用，不用等一次异步往返 */
   bootstrap: KuraBootstrap | null
   appInfo(): Promise<AppInfo>
+  /** 打进包里的更新日志原文（解析见 shared/changelog.ts） */
+  changelog(): Promise<string>
   /** 真正退出程序（托盘常驻时关窗口不会退出） */
   quit(): Promise<void>
   connection: {

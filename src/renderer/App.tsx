@@ -31,6 +31,7 @@ import { ModulesView } from './ModulesView.js'
 import { OverviewView } from './OverviewView.js'
 import { StartupProgress } from './StartupProgress.js'
 import { TerminalView } from './TerminalView.js'
+import { UpdateReadyToast, UpdatesSection, WhatsNew } from './UpdatesView.js'
 import { findPage, pages, type PageDef, type PageId } from './pages.js'
 import { useConnection, useMirrorSnapshot } from './use-mirror.js'
 
@@ -124,6 +125,7 @@ function SettingsView({
           )}
         </div>
       </SettingsSection>
+      <UpdatesSection autoCheck={settings.autoCheckUpdates} onAutoCheckChange={(value) => set('autoCheckUpdates', value)} />
     </SettingsPage>
   )
 }
@@ -156,10 +158,12 @@ function Onboarding({ onSaved }: { onSaved: (summary: ConnectionSummary) => void
 }
 
 function Shell() {
-  const { settings, set } = useSettings<KuraSettings>(kuraSettingsDefaults)
+  const { settings, set, loading } = useSettings<KuraSettings>(kuraSettingsDefaults)
   const [activeId, setActiveId] = useState<PageId>('overview')
   const { summary, reload, setSummary } = useConnection()
   const configured = summary?.configured === true
+  // 启动那一刻有没有连过 NAS：刚走完引导的新用户不弹「更新内容」（summary 第一帧就由 preload 同步取好）
+  const [configuredAtStart] = useState(configured)
   const { snapshot, refresh } = useMirrorSnapshot(configured)
   const page = findPage(activeId)
 
@@ -218,6 +222,12 @@ function Shell() {
 
   return (
     <div className="kura-body">
+      <WhatsNew
+        lastSeen={settings.lastSeenVersion}
+        existingUser={configuredAtStart}
+        ready={!loading}
+        onSeen={(version) => set('lastSeenVersion', version)}
+      />
       <SidebarNav
         items={pages}
         activeId={activeId}
@@ -258,6 +268,8 @@ export function App() {
       <ToastProvider>
         <div className="kura-app">
           <TitleBar title="Kura" actions={<WindowControls />} />
+          {/* 放在 Shell 外：引导页上也要能收到「新版本已下载」 */}
+          <UpdateReadyToast />
           <Shell />
         </div>
       </ToastProvider>
