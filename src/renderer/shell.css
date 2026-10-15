@@ -322,6 +322,22 @@ body {
   font-size: 12px;
 }
 
+/* 服务在监听时地址可点，开在本机浏览器里 */
+.kura-service-list__addr--open {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--sk-accent-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.kura-service-list__addr--open:hover {
+  text-decoration: underline;
+}
+
 .kura-service-list__empty {
   color: var(--sk-muted);
 }

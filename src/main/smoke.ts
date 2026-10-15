@@ -303,6 +303,11 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     // ⑦ 概览
     await js(`document.querySelector('.sk-sidebar-item[aria-label="概览"]')?.click()`)
     check('概览页', await waitFor(`document.querySelector('.kura-stats') !== null`))
+    // 在监听的服务，地址是个可点的按钮（点了开本机浏览器）；没起来的服务不给点
+    const addrButtons = await js<number>(`document.querySelectorAll('.kura-service-list__addr--open').length`)
+    const inListen = await js<number>(`[...document.querySelectorAll('.kura-service-list li')].filter(li => li.innerText.includes('监听中')).length`)
+    const addrTags = await js<string>(`JSON.stringify([...document.querySelectorAll('.kura-service-list__addr')].map(a => a.tagName + (a.classList.contains('--open') ? ':' + a.title : '')))`)
+    check('概览页服务地址：在监听的可点，其余是纯文本', addrButtons > 0 && addrButtons === inListen, `可点=${addrButtons} 监听中=${inListen} ${addrTags}`)
     await delay(500)
     await shot('v0.1-概览.png')
 

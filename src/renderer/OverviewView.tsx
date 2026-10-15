@@ -101,7 +101,19 @@ export function OverviewView({ snapshot, onOpenMirror }: { snapshot: MirrorSnaps
           {snapshot.services.map((view, i) => (
             <li key={view.key}>
               <span className="kura-service-list__name">{view.spec.label}</span>
-              <span className="kura-service-list__addr">{view.localUrl.replace('http://', '')}</span>
+              {/* 只在确实在监听时可点：没起来的服务点开也是打不开，不如让它就是一行地址 */}
+              {states[i]!.tone === 'success' ? (
+                <button
+                  type="button"
+                  className="kura-service-list__addr kura-service-list__addr--open"
+                  title="在浏览器打开"
+                  onClick={() => void window.kura?.openExternal(view.localUrl)}
+                >
+                  {view.localUrl.replace('http://', '')}
+                </button>
+              ) : (
+                <span className="kura-service-list__addr">{view.localUrl.replace('http://', '')}</span>
+              )}
               <StatusBadge tone={states[i]!.tone} dot size="sm">
                 {states[i]!.label}
               </StatusBadge>
