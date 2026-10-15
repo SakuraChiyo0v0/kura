@@ -24,7 +24,10 @@ function freeDrive(): string {
   throw new Error('没有空闲盘符')
 }
 
-/** 找一个空的临时目录当父目录，挂载点用它的子目录（rclone 要求挂载点本身不存在）。 */
+/**
+ * 找一个空的临时目录当**父目录**。设置里存的就是父目录，挂载点（父目录下的 KuraNAS）
+ * 由 Kura 拼、rclone 建 —— rclone 要求挂载点本身不存在，所以不能直接把父目录当挂载点。
+ */
 function folderParent(dir: string): string {
   const parent = join(dir, 'mount-parent')
   mkdirSync(parent, { recursive: true })
@@ -92,8 +95,9 @@ describe.runIf(enabled)('rclone 模块（真机）', () => {
     expect(manager!.status().winfsp.installed).toBe(true)
     await startNas()
 
-    const target = join(folderParent(dir), 'KuraNAS')
-    manager!.saveMountSettings({ ...mountDefaults, mode: 'folder', folder: target })
+    const parent = folderParent(dir)
+    const target = join(parent, 'KuraNAS')
+    manager!.saveMountSettings({ ...mountDefaults, mode: 'folder', folder: parent })
     await manager!.mount()
     expect(manager!.status().mount).toMatchObject({ state: 'mounted', target })
     expect(await readFile(`${target}\\volume1\\docs\\readme.txt`, 'utf8')).toBe('hello from fake nas')

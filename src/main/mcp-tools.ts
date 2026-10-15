@@ -512,12 +512,12 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
       name: 'kura_module_save_mount_settings',
       title: '改挂载设置',
       description:
-        '改挂载设置（字段含义同 kura_module_mount_settings）。改完要调 kura_module_mount 才会生效。folder 模式必须给已存在的父目录下的 folder 路径；挂载点目录本身必须不存在。',
+        '改挂载设置（字段含义同 kura_module_mount_settings）。改完要调 kura_module_mount 才会生效。folder 模式给一个**已存在的父目录**（如 D:\\），实际挂载点是它下面的 KuraNAS 子目录，由 Kura 拼、rclone 建。',
       inputSchema: object(
         {
           mode: { type: 'string', enum: ['disk', 'network', 'folder'] },
           drive: { type: 'string', description: '盘符，如 N:（disk / network 模式用）' },
-          folder: { type: 'string', description: '挂载到的目录（folder 模式用）' },
+          folder: { type: 'string', description: '父目录（folder 模式用），挂载点是它下面的 KuraNAS' },
           volumeName: { type: 'string', description: '卷标' },
           readOnly: { type: 'boolean' },
           autoMount: { type: 'boolean', description: '开机自动挂载' },

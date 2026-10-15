@@ -159,6 +159,20 @@ body {
   font-size: 12px;
 }
 
+/* 表单里的行内提示：缺必填项这类「还没填完」的事说在字段旁，别弹全局 toast */
+.kura-form__hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--sk-warning-text);
+}
+
+.kura-form__hint > svg {
+  flex: none;
+}
+
 .kura-form__actions {
   display: flex;
   flex-wrap: wrap;

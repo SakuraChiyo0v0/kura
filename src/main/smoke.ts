@@ -484,6 +484,19 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     const folderMode = await waitFor(
       `document.querySelector('[data-testid="module-rclone"]')?.innerText.includes('父目录') && !document.querySelector('[data-testid="module-rclone"]')?.innerText.includes('卷名')`,
     )
+    // 切到「挂到文件夹」时还没选目录：不能弹「保存失败」，要在字段下说清缺什么。
+    // 只看「保存失败」——前面几步留下的成功提示还挂在屏幕上，数 toast 总数会误判
+    await delay(300)
+    const noToast = (await js<number>(`[...document.querySelectorAll('.sk-toast-root')].filter((t) => t.textContent.includes('保存失败')).length`)) === 0
+    const missingHint = await waitFor(`document.querySelector('[data-testid="folder-missing"]')?.textContent.includes('还没选文件夹') === true`)
+    // 挂载按钮这时显示的是「挂载」（没选目录就没有目标可写），所以按前缀找，别写死「挂载到 X:」。
+    // 必须真有这么个按钮，否则 every 落空也返回 true —— 那就成了假通过
+    const mountButton = await js<string>(
+      `[...document.querySelectorAll('.kura-form__actions button')].map((b) => b.textContent.trim() + '|' + b.disabled).find((s) => s.startsWith('挂载')) ?? '没找到'`,
+    )
+    const mountDisabled = mountButton.startsWith('挂载') && mountButton.endsWith('|true')
+    check('文件夹模式没选目录：不弹保存失败、给行内提示、挂载按钮灰着', noToast && missingHint && mountDisabled, `noToast=${noToast} hint=${missingHint} 按钮=${mountButton}`)
+    await shot('v0.3-模块-文件夹模式.png')
     await pickMode('network')
     const netMode = await waitFor(`document.querySelector('${seg} input[value="network"]')?.checked === true`)
     await pickMode('disk')

@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { CheckCircle2, CircleAlert, Download, ExternalLink, FolderOpen, FolderTree, HardDrive, HardDriveDownload, Network, RefreshCw } from 'lucide-react'
 import { Button, ConfirmDialog, FluidSegmented, ProgressBar, SelectField, StatusBadge, SwitchField, TextField, useToast } from '@sakura-ui/react'
+import { folderLeaf, folderTarget } from '../shared/mount.js'
 import type { ModulesStatusView, MountSettingsView } from '../shared/ipc.js'
 
 const icon = { size: 16, strokeWidth: 1.7, 'aria-hidden': true } as const
 
 const drives = 'DEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((d) => ({ value: `${d}:`, label: `${d}:` }))
-// 文件夹模式的挂载点固定用这个子目录名（rclone 要求挂载点本身不存在，由它自己建）
-const folderLeaf = 'KuraNAS'
 
 const mountModes: { value: MountSettingsView['mode']; label: string; icon: React.ReactNode; description: string }[] = [
   { value: 'disk', label: '模拟成硬盘', icon: <HardDrive {...icon} />, description: '出现在「此电脑」里，和 C:、D: 并列。程序看不出它是远程盘，兼容性最好。' },
@@ -80,7 +79,9 @@ export function ModulesView() {
   if (!status || !settings) return null
   const rclone = status.rclone
   const mount = status.mount
-  const ready = rclone.state === 'ready' && status.winfsp.installed && status.davRunning && (settings.mode !== 'folder' || Boolean(settings.folder))
+  // 「文件夹」模式还没选父目录时不算就绪：挂载按钮灰着，并在字段下说清缺什么
+  const folderMissing = settings.mode === 'folder' && !settings.folder.trim()
+  const ready = rclone.state === 'ready' && status.winfsp.installed && status.davRunning && !folderMissing
   const mounted = mount.state === 'mounted' || mount.state === 'starting'
   const saveSettings = (next: MountSettingsView) => {
     setSettings(next)
@@ -100,8 +101,8 @@ export function ModulesView() {
   const mountTone = mount.state === 'mounted' ? 'success' : mount.state === 'starting' ? 'accent' : mount.state === 'error' ? 'danger' : 'neutral'
   const mountLabel = { mounted: `已挂载到 ${mount.target}`, starting: '挂载中…', error: '挂载失败', stopped: '未挂载' }[mount.state]
   // 这次挂载会落在哪儿：folder 模式用「父目录\KuraNAS」，其它模式用盘符。挂载前的按钮与提示都读它
-  const folderTarget = settings.folder ? `${settings.folder.replace(/[\\/]+$/, '')}\\${folderLeaf}` : ''
-  const plannedTarget = settings.mode === 'folder' ? folderTarget : settings.drive
+  const mountPoint = settings.folder.trim() ? folderTarget(settings.folder) : ''
+  const plannedTarget = settings.mode === 'folder' ? mountPoint : settings.drive
   const pickFolder = async () => {
     const picked = await window.kura!.modules.pickFolder()
     if (picked) saveSettings({ ...settings, folder: picked })
@@ -200,9 +201,15 @@ export function ModulesView() {
               <Button variant="secondary" icon={<FolderOpen {...icon} />} disabled={mounted} onClick={() => void pickFolder()}>
                 选择…
               </Button>
-              <p className="kura-form__note">
-                {folderTarget ? `会挂到 ${folderTarget}（这个目录由 rclone 创建，不能已存在）` : '选一个文件夹，Kura 会在它下面建 KuraNAS 子目录作为挂载点'}
+              <p className="kura-form__note" data-testid="folder-note">
+                {mountPoint ? `会挂到 ${mountPoint}（这个目录由 rclone 创建，不能已存在）` : `选一个文件夹，Kura 会在它下面建 ${folderLeaf} 子目录作为挂载点`}
               </p>
+              {folderMissing && (
+                <p className="kura-form__hint" data-testid="folder-missing">
+                  <CircleAlert {...icon} />
+                  还没选文件夹，选好才能挂载
+                </p>
+              )}
             </div>
           ) : (
             <SelectField label="盘符" value={settings.drive} options={drives} disabled={mounted} onValueChange={(v) => saveSettings({ ...settings, drive: v })} />

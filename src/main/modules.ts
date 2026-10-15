@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { errorMessage } from '../core/errors.js'
 import { silentLogger, type Logger } from '../core/log.js'
 import { readJson, writeJsonAtomic } from '../core/store.js'
+import { folderLeaf as mountLeaf, folderTarget } from '../shared/mount.js'
 
 /**
  * 按需安装的模块。首个：rclone 挂载为磁盘（rclone + WinFsp）。
@@ -54,7 +55,7 @@ export interface MountSettings {
   mode: MountMode
   /** 盘符，如 "N:"；mode 为 folder 时不用 */
   drive: string
-  /** mode 为 folder 时的挂载点目录（父目录要存在，最后一级由 rclone 建） */
+  /** mode 为 folder 时的**父目录**（要存在）；挂载点是它下面的 mountLeaf，由 Kura 拼、rclone 建。可为空 = 还没选 */
   folder: string
   /** 挂载时显示的卷名 */
   volumeName: string
@@ -92,18 +93,27 @@ export function validateDrive(drive: string): string {
   return d
 }
 
-/** 目录挂载点：必须是绝对路径，最后一级留给 rclone 自己建。 */
+/**
+ * folder 模式的**父目录**：必须是绝对路径。两种合法形态 —— `D:\sub`（子目录）与 `D:\`
+ * （盘根，去掉末尾分隔符后就是 `D:`）。设成空不算错 —— 那是「还没选」，挂载时才拦
+ * （见 mountTarget）。保存设置时不该因为没填完就报「保存失败」。
+ */
 export function validateFolder(folder: string): string {
   const trimmed = folder.trim().replace(/[\\/]+$/, '')
-  if (!/^[A-Za-z]:\\/.test(trimmed)) throw new Error(`挂载目录要写成绝对路径：${folder || '（空）'}（例如 D:\\KuraNAS）`)
-  if (trimmed.includes('..')) throw new Error(`挂载目录里不能有 ..：${folder}`)
+  if (!trimmed) return ''
+  // `D:` 单独一个也是绝对路径（盘根）；但 `D:sub` 是「盘符相对」，不是绝对路径
+  if (!/^[A-Za-z]:\\/.test(trimmed) && !/^[A-Za-z]:$/.test(trimmed)) throw new Error(`父目录要写成绝对路径：${folder}（例如 D:\\ 或 D:\\KuraNAS）`)
+  if (trimmed.includes('..')) throw new Error(`父目录里不能有 ..：${folder}`)
   // 只把盘符统一成大写（和盘符的规范化一致），路径其余部分原样保留
   return trimmed[0]!.toUpperCase() + trimmed.slice(1)
 }
 
 /** 这次挂载实际用的位置：盘符还是目录。挂载点与卸载提示都读它。 */
 export function mountTarget(settings: MountSettings): string {
-  return settings.mode === 'folder' ? validateFolder(settings.folder) : validateDrive(settings.drive)
+  if (settings.mode !== 'folder') return validateDrive(settings.drive)
+  const parent = validateFolder(settings.folder)
+  if (!parent) throw new Error('还没有选挂载到哪个文件夹（folder 模式要填父目录）')
+  return folderTarget(parent)
 }
 
 /**
@@ -409,7 +419,7 @@ export class ModuleManager {
     if (!status.winfsp.installed && !this.options.spawnMount) throw new Error('还没有安装 WinFsp（挂载磁盘需要它，装一次即可，需要管理员权限）')
     const target = mountTarget(this.settings)
     // 目录挂载点：rclone 要求它**不存在**（自己建自己删），存在就直接拒绝，别把它当成空目录用
-    if (this.settings.mode === 'folder' && !this.options.spawnMount && existsSync(target)) throw new Error(`挂载点 ${target} 已存在，换个不存在的路径`)
+    if (this.settings.mode === 'folder' && !this.options.spawnMount && existsSync(target)) throw new Error(`${target} 已经存在了，换个父目录（挂载点得由 rclone 现建）`)
     if (this.settings.mode !== 'folder' && !this.options.spawnMount && (await driveExists(target))) throw new Error(`盘符 ${target} 已被占用，换一个`)
     const args = mountArgs(this.settings, this.options.davUrl(), join(this.options.dir, 'rclone-cache'))
     this.stopping = false

@@ -19,17 +19,22 @@ describe('rclone 挂载参数', () => {
     const dav = 'http://127.0.0.1:18006/'
     expect(mountArgs({ ...mountDefaults, mode: 'network' }, dav, 'C:\\cache')).toContain('--network-mode')
     expect(mountArgs({ ...mountDefaults, mode: 'disk' }, dav, 'C:\\cache')).not.toContain('--network-mode')
-    expect(mountArgs({ ...mountDefaults, mode: 'folder', folder: 'D:\\KuraNAS' }, dav, 'C:\\cache')).not.toContain('--network-mode')
+    expect(mountArgs({ ...mountDefaults, mode: 'folder', folder: 'D:\\' }, dav, 'C:\\cache')).not.toContain('--network-mode')
   })
 
-  it('目录模式的挂载点是目录，其余模式是盘符', () => {
+  it('目录模式：设置里存父目录，挂载点是它下面的 KuraNAS', () => {
     const dav = 'http://127.0.0.1:18006/'
-    const folder = mountArgs({ ...mountDefaults, mode: 'folder', drive: 'Q:', folder: 'd:\\KuraNAS\\' }, dav, 'C:\\cache')
+    const folder = mountArgs({ ...mountDefaults, mode: 'folder', drive: 'Q:', folder: 'd:\\' }, dav, 'C:\\cache')
     expect(folder[2]).toBe('D:\\KuraNAS')
     expect(folder).not.toContain('Q:')
-    expect(mountTarget({ ...mountDefaults, mode: 'folder', folder: 'D:\\KuraNAS' })).toBe('D:\\KuraNAS')
+    expect(mountTarget({ ...mountDefaults, mode: 'folder', folder: 'd:\\' })).toBe('D:\\KuraNAS')
     expect(mountTarget({ ...mountDefaults, mode: 'disk', drive: 'q:' })).toBe('Q:')
     expect(mountTarget({ ...mountDefaults, mode: 'network', drive: 'q:' })).toBe('Q:')
+  })
+
+  it('目录模式没选父目录时不能挂（但可以存）', () => {
+    expect(() => mountTarget({ ...mountDefaults, mode: 'folder', folder: '' })).toThrow(/还没有选/)
+    expect(() => mountTarget({ ...mountDefaults, mode: 'folder', folder: '  ' })).toThrow(/还没有选/)
   })
 
   it('盘符只认 D: 到 Z:', () => {
@@ -38,10 +43,13 @@ describe('rclone 挂载参数', () => {
     expect(() => validateDrive('C:\\Users')).toThrow(/盘符/)
   })
 
-  it('挂载目录要绝对路径、不能含 ..', () => {
+  it('父目录要绝对路径、不能含 ..；留空是「还没选」不是错', () => {
     expect(validateFolder(' d:\\KuraNAS\\ ')).toBe('D:\\KuraNAS')
+    expect(validateFolder('d:\\')).toBe('D:') // 盘根：去掉末尾分隔符就是 D:
+    expect(validateFolder('')).toBe('')
+    expect(validateFolder('   ')).toBe('')
     expect(() => validateFolder('KuraNAS')).toThrow(/绝对路径/)
-    expect(() => validateFolder('')).toThrow(/绝对路径/)
+    expect(() => validateFolder('D:sub')).toThrow(/绝对路径/) // 盘符相对，不是绝对路径
     expect(() => validateFolder('D:\\a\\..\\b')).toThrow(/\.\./)
   })
 
@@ -117,18 +125,23 @@ describe('ModuleManager', () => {
     installFake()
     const m = manager()
     await m.detect()
-    m.saveMountSettings({ ...mountDefaults, mode: 'folder', drive: 'Q:', folder: 'D:\\KuraNAS' })
+    // 设置里存父目录；挂载点是 Kura 拼的
+    m.saveMountSettings({ ...mountDefaults, mode: 'folder', drive: 'Q:', folder: 'D:\\' })
     await m.mount()
     expect(m.status().mount).toMatchObject({ state: 'mounted', target: 'D:\\KuraNAS' })
     expect(spawned[0]!.args[2]).toBe('D:\\KuraNAS')
     expect(spawned[0]!.args).not.toContain('--network-mode')
   })
 
-  it('目录模式：挂载目录不合法就不给存', async () => {
+  it('目录模式：父目录不合法就不给存；留空能存但挂不了', async () => {
     installFake()
     const m = manager()
     await m.detect()
     expect(() => m.saveMountSettings({ ...mountDefaults, mode: 'folder', folder: 'relative\\path' })).toThrow(/绝对路径/)
+    // 还没选目录：存得下去（不是「保存失败」），但挂载要拦
+    m.saveMountSettings({ ...mountDefaults, mode: 'folder', folder: '' })
+    expect(m.mountSettings()).toMatchObject({ mode: 'folder', folder: '' })
+    await expect(m.mount()).rejects.toThrow(/还没有选/)
     // 非目录模式允许 folder 留空
     m.saveMountSettings({ ...mountDefaults, mode: 'disk', folder: '' })
     expect(m.mountSettings()).toMatchObject({ mode: 'disk', folder: '' })
