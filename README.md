@@ -43,7 +43,7 @@ NAS 侧依赖：服务端清单里要有 `webdav`（文件、本机 WebDAV、挂
 ```powershell
 npm install
 npm start          # 构建并启动
-npm run check      # 类型检查 + 单测 + 真实 Electron 冒烟
+npm run check      # 类型检查 + 单测 + 真实 Electron 冒烟（窗口默认放在屏幕外，要看着跑设 KURA_SMOKE_OFFSCREEN=0）
 npm run dist       # 打 Windows 安装包 → release/Kura-Setup-<版本>.exe（未签名，只出包不上传）
 npm run icon       # 改了图标图形后重新生成 assets/icon.ico、tray.png
 
