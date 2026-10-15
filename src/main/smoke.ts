@@ -69,8 +69,10 @@ export async function runRestartSmoke(ctx: { window: BrowserWindow; startedAt: n
     // 清单接口被拖慢了：这时应该显示「正在同步」而不是空白；到了之后自动刷新（推送）
     const syncingShown = await js<boolean>(`document.querySelector('.kura-section__foot')?.textContent.includes('同步') ?? false`)
     const synced = await waitUntil(js, `window.kura.mirror.snapshot().then(s => s?.phase === 'ready')`, 15_000)
-    // 主进程同步完成后，界面在 1 秒内（远小于 3 秒轮询）就该反映出来
-    const pushed = await waitUntil(js, `document.querySelector('.kura-section__foot')?.textContent.includes('秒前') ?? false`, 1_000)
+    // 主进程同步完成后，界面在 1 秒内（远小于 3 秒轮询）就该反映出来。
+    // 从「主进程说 ready」那一刻计时：主进程推送前有 150ms 合并窗口，查 snapshot 本身还要一次 IPC 往返，
+    // 而 waitUntil 每 100ms 才看一次 —— 机器忙时（8 次里 1 次）卡在 1 秒边上。判据是「远小于 3 秒」，给 1.5 秒
+    const pushed = await waitUntil(js, `document.querySelector('.kura-section__foot')?.textContent.includes('秒前') ?? false`, 1_500)
     check('清单到达后界面立即更新（推送）', synced && pushed, `syncingShown=${syncingShown} synced=${synced} pushed=${pushed}`)
     check('启动到窗口可用的耗时', openedMs < 8_000, `${openedMs}ms`)
   } catch (error) {
@@ -211,9 +213,9 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     check('凭据已加密落盘', disk.length > 0 && !/smoke-pass|smoke-user|smoke-nas-id/.test(disk))
 
     // ⑤ 服务卡片出现，本机端口真能访问到 NAS 上的应用
-    const cards = await waitFor(`document.querySelectorAll('[data-testid="service-card"]').length === 4`, 15_000)
+    const cards = await waitFor(`document.querySelectorAll('[data-testid="service-card"]').length === 5`, 15_000)
     check(
-      '清单里的四个服务出现',
+      '清单里的五个服务出现',
       cards,
       `visibility=${await js<string>('document.visibilityState')} 主进程快照服务数=${await js<number>('window.kura.mirror.snapshot().then(s => s?.services.length ?? -1)')} 卡片数=${await js<number>(`document.querySelectorAll('[data-testid="service-card"]').length`)}`,
     )
@@ -326,6 +328,92 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
           main: Math.round(document.querySelector('main').getBoundingClientRect().height) })`,
     )
     check('终端占满页面高度', termLayout.host >= termLayout.main - 160 && termLayout.panes > 0, JSON.stringify(termLayout))
+
+    // ⑦d3 容器管理：项目列表 → Kura 自己只读 → 重启项目，输出实时出现、结束后状态刷新 → 容器详情（密码遮住）与日志
+    await nav('容器')
+    const projectsShown = await waitFor(`document.querySelector('[data-testid="project-list"] [data-project="openlist"]') !== null`, 10_000)
+    const selfReadOnly = await js<boolean>(
+      `(() => { const li = document.querySelector('[data-project="kura-server"]'); return Boolean(li) && li.innerText.includes('只读') && ![...li.querySelectorAll('button')].some(b => b.textContent.trim() === '重启') })()`,
+    )
+    check('容器页：项目列表，Kura 自己只读', projectsShown && selfReadOnly, `projects=${projectsShown} selfReadOnly=${selfReadOnly}`)
+    // 和服务映射互链：openlist 在映射页被关掉了（⑥），所以这里不该给它的本机地址；重新打开后应该出现
+    const hiddenWhenOff = await js<boolean>(`!document.querySelector('[data-project="openlist"] [data-testid="project-mapped"]')`)
+    await js(`window.kura.mirror.setEnabled('openlist', true)`)
+    const linked = await waitFor(`document.querySelector('[data-project="openlist"] [data-testid="project-mapped"]')?.textContent.includes('127.0.0.1:${process.env.SMOKE_PORT_A}')`, 8_000)
+    check('容器页：项目链到服务映射的本机地址（映射关着时不给）', hiddenWhenOff && linked, `hiddenWhenOff=${hiddenWhenOff} linked=${linked}`)
+    await js(`[...document.querySelectorAll('[data-project="openlist"] button')].find(b => b.textContent.trim() === '重启')?.click()`)
+    const outputDone = await waitFor(`document.querySelector('[data-testid="docker-output"]')?.dataset.state === 'ok' && document.querySelector('[data-testid="docker-output"] pre')?.textContent.includes('Started')`, 10_000)
+    check('项目操作：输出实时显示并以成功结束', outputDone, await js<string>(`document.querySelector('[data-testid="docker-output"]')?.innerText.slice(0, 200) ?? '没有输出面板'`))
+    await js(`[...document.querySelectorAll('[data-project="openlist"] .kura-docker-members button')][0]?.click()`)
+    const drawer = await waitFor(`document.querySelector('[data-testid="container-drawer"]')?.innerText.includes('ADMIN_PASSWORD') && document.querySelector('[data-testid="container-logs"]')?.textContent.includes('openlist started')`, 10_000)
+    const masked = await js<boolean>(`document.querySelector('[data-testid="container-drawer"]')?.innerText.includes('已隐藏') ?? false`)
+    check('容器详情：环境变量里的密码遮住、实时日志在跑', drawer && masked, await js<string>(`document.querySelector('[data-testid="container-drawer"]')?.innerText.slice(0, 300) ?? '没有详情'`))
+
+    // ⑦d3b 进容器 shell：点「连接 shell」→ 出提示符 → 键入回显
+    await clickButton('连接 shell')
+    const shellText = `document.querySelector('[data-testid="container-shell"]')?.kuraText?.() ?? ''`
+    const shellPrompt = await waitFor(`(${shellText}).includes('/opt/openlist #')`, 8_000)
+    await waitFor(`(() => { const ta = document.querySelector('[data-testid="container-shell"] textarea'); ta?.focus(); return document.activeElement === ta })()`)
+    window.webContents.sendInputEvent({ type: 'char', keyCode: 'p' })
+    window.webContents.sendInputEvent({ type: 'char', keyCode: 'w' })
+    window.webContents.sendInputEvent({ type: 'char', keyCode: 'd' })
+    const shellEcho = await waitFor(`(${shellText}).includes('/opt/openlist # pwd')`)
+    check('进容器 shell：连上并回显输入', shellPrompt && shellEcho, `prompt=${shellPrompt} 缓冲区=${JSON.stringify(await js<string>(shellText))}`)
+    await js(`document.querySelector('[data-testid="container-shell"]')?.scrollIntoView()`)
+    await shot('v0.4-容器shell.png')
+    await clickButton('断开')
+
+    // ⑦d3c 检查更新：openlist 的镜像有新版 → 项目上出「有更新」
+    await js(`document.querySelector('[data-testid="container-drawer"] button[aria-label="关闭详情"]')?.click()`)
+    await clickButton('检查更新')
+    const updateBadge = await waitFor(`document.querySelector('[data-project="openlist"] [data-testid="project-update"]') !== null && document.querySelector('[data-project="kura-server"] [data-testid="project-update"]') === null`, 8_000)
+    check('检查更新：有新版的项目出标记，Kura 自己不查', updateBadge)
+    await js(`document.querySelector('[data-project="openlist"]')?.scrollIntoView({ block: 'center' })`)
+    await shot('v0.4-检查更新.png')
+
+    // ⑦d3d 卷与网络（只读）
+    await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === '卷')?.click()`)
+    const volumes = await waitFor(`document.body.innerText.includes('old-cache') && document.body.innerText.includes('1 个没有容器在用')`, 8_000)
+    await clickButton('计算占用')
+    const sized = await waitFor(`document.body.innerText.includes('1.2 MiB')`, 8_000)
+    await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === '网络')?.click()`)
+    const networks = await waitFor(`document.querySelector('[data-testid="network-list"] [data-network="sso-net"]')?.innerText.includes('172.20.0.3')`, 8_000)
+    check('卷与网络：列表、谁在用、点了才算占用、网络成员', volumes && sized && networks, `volumes=${volumes} sized=${sized} networks=${networks}`)
+    await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim().startsWith('项目'))?.click()`)
+    await waitFor(`document.querySelector('[data-project="openlist"]') !== null`)
+    await shot('v0.4-容器.png')
+
+    // ⑦d4 编辑 compose：改坏了存不进去且原因写清；改好了先看改动、再保存；进审计
+    await js(`document.querySelector('[data-testid="container-drawer"] button[aria-label="关闭详情"]')?.click()`)
+    await js(`[...document.querySelectorAll('[data-project="openlist"] button')].find(b => b.textContent.trim() === '编辑')?.click()`)
+    const editorOpen = await waitFor(`document.querySelector('[data-testid="project-editor"] textarea')?.value.includes('openlistteam/openlist')`, 8_000)
+    const setEditor = (value: string) =>
+      js(`(() => {
+        const ta = document.querySelector('[data-testid="project-editor"] textarea')
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(ta, ${JSON.stringify(value)})
+        ta.dispatchEvent(new Event('input', { bubbles: true }))
+      })()`)
+    // 打开改动预览 → 关掉「保存后应用」（冒烟只验文件这一步；开关是原生 checkbox，看 .checked）→ 点保存。
+    // 按钮文字随开关变（「保存并应用」/「保存」），所以按 data-testid 找，不按文字
+    const reviewAndSave = async () => {
+      await clickButton('查看改动并保存')
+      await waitFor(`document.querySelector('[data-testid="editor-review"]') !== null`)
+      await js(`(() => { const s = document.querySelector('[data-testid="editor-review"] input[role="switch"]'); if (s?.checked) s.click() })()`)
+      await waitFor(`document.querySelector('[data-testid="editor-save"]')?.textContent.trim() === '保存'`, 2_000)
+      await js(`document.querySelector('[data-testid="editor-save"]')?.click()`)
+    }
+    await setEditor('oops: [')
+    await reviewAndSave()
+    const rejected = await waitFor(`document.querySelector('[data-testid="editor-error"]')?.textContent.includes('services must be a mapping')`)
+    await setEditor('services:\n  openlist:\n    image: openlistteam/openlist:v4.2.7\n    restart: unless-stopped\n')
+    await clickButton('查看改动并保存')
+    const diffShown = await waitFor(`document.querySelector('[data-testid="editor-review"] [data-kind="add"]')?.textContent.includes('v4.2.7')`)
+    await clickButton('接着改')
+    await reviewAndSave()
+    const saved = await waitFor(`!document.querySelector('[data-testid="editor-review"]') && !document.querySelector('[data-testid="project-editor"]')?.innerText.includes('有未保存的改动')`)
+    check('编辑 compose：坏的被拒并说清原因、保存前能看改动、好的存上', editorOpen && rejected && diffShown && saved, `open=${editorOpen} rejected=${rejected} diff=${diffShown} saved=${saved}`)
+    await shot('v0.4-编辑项目.png')
+    await js(`document.querySelector('[data-testid="project-editor"] button[aria-label="关闭编辑"]')?.click()`)
 
     // ⑦e v0.3 模块页：能显示依赖检测结果（不在冒烟里真去下载 rclone）
     await nav('模块')

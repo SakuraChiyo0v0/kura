@@ -114,6 +114,134 @@ async function handleDav(req, res, body) {
   }
 }
 
+// 假 NAS 上的容器管理（kura-server 的 docker 内置服务）。接口形状照 server/src/docker/handler.ts，
+// 处理器本身由 server/test/docker*.test.ts 单测；这里只要够界面走通「看 → 操作 → 输出流 → 状态刷新」。
+const dockerState = {
+  containers: [
+    { id: 'c-openlist', name: 'openlist', image: 'openlistteam/openlist:latest', state: 'running', status: 'Up 2 hours', health: '', created: Date.now(), ports: [{ private: 5244, public: 5244, type: 'tcp' }], project: 'openlist', service: 'openlist', protected: false },
+    { id: 'c-kura', name: 'kura-server', image: 'ghcr.io/sakurachiyo0v0/kura-server:latest', state: 'running', status: 'Up 1 hour', health: '', created: Date.now(), ports: [], project: 'kura-server', service: 'kura-server', protected: true },
+  ],
+  activity: [],
+  files: {
+    compose: [{ path: '/volume1/docker/openlist/docker-compose.yaml', content: 'services:\n  openlist:\n    image: openlistteam/openlist:latest\n    restart: unless-stopped\n' }],
+    env: { path: '/volume1/docker/openlist/.env', content: 'TZ=Asia/Shanghai\n', exists: true },
+    backups: [],
+  },
+}
+const dockerProjects = () =>
+  ['openlist', 'kura-server'].map((name) => {
+    const members = dockerState.containers.filter((c) => c.project === name)
+    const running = members.filter((c) => c.state === 'running').length
+    return {
+      name,
+      status: running === members.length && members.length ? 'running' : running ? 'partial' : 'stopped',
+      kind: name === 'kura-server' ? 'self' : 'managed',
+      dir: `/volume1/docker/${name}`,
+      configFiles: [`/volume1/docker/${name}/docker-compose.yaml`],
+      containers: members.length,
+      running,
+      services: members.map((c) => c.service),
+    }
+  })
+function handleDocker(req, res, body) {
+  const url = new URL(req.url, 'http://x')
+  const json = (status, data) => {
+    res.statusCode = status
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify(data))
+  }
+  if (req.method !== 'GET' && req.headers['x-kura-docker'] !== '1') return json(403, { error: '写操作必须带 x-kura-docker: 1 头' })
+  const m = /^\/api\/containers\/([^/]+)(?:\/(\w+))?$/.exec(url.pathname)
+  if (url.pathname === '/api/overview') return json(200, { containers: dockerState.containers, projects: dockerProjects() })
+  if (url.pathname === '/api/images') return json(200, [{ id: 'sha256:aaa', tags: ['openlistteam/openlist:latest'], size: 52_000_000, created: Date.now(), usedBy: 1, dangling: false }])
+  if (url.pathname === '/api/activity') return json(200, [...dockerState.activity].reverse())
+  if (url.pathname === '/api/volumes') {
+    const size = url.searchParams.get('size') === '1' ? 1_234_567 : -1
+    return json(200, [
+      { name: 'kura-server_shell-token', driver: 'local', mountpoint: '/volume1/@docker/volumes/kura-server_shell-token/_data', created: Date.now(), project: 'kura-server', usedBy: ['kura-server'], size },
+      { name: 'old-cache', driver: 'local', mountpoint: '/volume1/@docker/volumes/old-cache/_data', created: Date.now(), project: '', usedBy: [], size },
+    ])
+  }
+  if (url.pathname === '/api/networks') {
+    return json(200, [{ id: 'n1', name: 'sso-net', driver: 'bridge', scope: 'local', internal: false, subnet: '172.20.0.0/16', gateway: '172.20.0.1', project: '', containers: [{ name: 'openlist', ip: '172.20.0.3' }], builtin: false }])
+  }
+  if (url.pathname === '/api/updates' && req.method === 'POST') {
+    const { images = [] } = JSON.parse(body.toString() || '{}')
+    return json(200, images.map((image) => ({ image, status: image.startsWith('openlistteam/') ? 'update' : 'current', local: 'sha256:old', remote: 'sha256:new', reason: '', checkedAt: Date.now() })))
+  }
+  if (url.pathname === '/api/projects/openlist/files') {
+    if (req.method === 'GET') return json(200, dockerState.files)
+    // 和真服务端一样：坏的存不进去（真机上是 docker compose config -q）
+    const next = JSON.parse(body.toString() || '{}')
+    const edited = next.compose?.[0]?.content
+    if (typeof edited === 'string' && !/^services:/m.test(edited)) return json(422, { error: 'compose 校验没通过，没有保存：\ndocker-compose.yaml: services must be a mapping' })
+    if (typeof edited === 'string') dockerState.files.compose[0].content = edited
+    if (typeof next.env === 'string') dockerState.files.env = { ...dockerState.files.env, content: next.env, exists: true }
+    dockerState.files.backups.unshift(new Date().toISOString().replace(/[:.]/g, '-'))
+    dockerState.activity.push({ at: new Date().toISOString(), action: 'docker-files-save', detail: 'openlist：docker-compose.yaml', exitCode: 0 })
+    return json(200, dockerState.files)
+  }
+  if (m) {
+    const c = dockerState.containers.find((x) => x.id === decodeURIComponent(m[1]))
+    if (!c) return json(404, { error: '没有这个容器' })
+    if (req.method === 'GET' && !m[2]) {
+      return json(200, { ...c, command: '/openlist server', restartPolicy: 'unless-stopped', env: [{ name: 'TZ', value: 'Asia/Shanghai', masked: false }, { name: 'ADMIN_PASSWORD', value: '', masked: true }], mounts: [{ type: 'bind', source: '/volume1/docker/openlist/data', destination: '/opt/openlist/data', rw: true }], networks: ['sso-net'], labels: {}, startedAt: '', finishedAt: '', exitCode: 0, restartCount: 0 })
+    }
+    if (m[2] === 'stats') return json(200, { cpuPercent: 1.5, memoryUsage: 48_000_000, memoryLimit: 1_000_000_000 })
+    if (m[2] === 'logs') {
+      res.setHeader('content-type', 'text/plain')
+      return res.end('openlist started\n')
+    }
+    if (req.method === 'POST' && ['start', 'stop', 'restart'].includes(m[2])) {
+      if (c.protected) return json(403, { error: '这是 Kura 自己的容器' })
+      c.state = m[2] === 'stop' ? 'exited' : 'running'
+      c.status = c.state === 'running' ? 'Up 1 second' : 'Exited (0) 1 second ago'
+      dockerState.activity.push({ at: new Date().toISOString(), action: `docker-${m[2]}`, detail: c.name, exitCode: 0 })
+      return json(200, { ok: true })
+    }
+  }
+  json(404, { error: 'not found' })
+}
+function upgradeDocker(req, socket, head) {
+  const url = new URL(req.url, 'http://x')
+  const logs = /^\/api\/containers\/([^/]+)\/logs$/.exec(url.pathname)
+  const project = /^\/api\/projects\/([^/]+)\/(up|down|restart|pull)$/.exec(url.pathname)
+  const shell = /^\/api\/containers\/([^/]+)\/shell$/.exec(url.pathname)
+  if (shell) {
+    if (req.headers['x-kura-docker'] !== '1') {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+      return socket.destroy()
+    }
+    return tty.handleUpgrade(req, socket, head, (ws) => {
+      ws.send('/opt/openlist # ')
+      ws.on('message', (data) => {
+        const text = data.toString()
+        if (/^\s*\{\s*"type"\s*:\s*"resize"/.test(text)) return
+        ws.send(text === '\r' ? '\r\n/opt/openlist # ' : text)
+      })
+    })
+  }
+  if (!logs && !project) return socket.destroy()
+  if (project && req.headers['x-kura-docker'] !== '1') {
+    socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+    return socket.destroy()
+  }
+  tty.handleUpgrade(req, socket, head, (ws) => {
+    if (logs) {
+      ws.send('2026-10-15T00:00:00Z openlist started\n')
+      return // 跟着：保持连接，等客户端关
+    }
+    const [, name, action] = project
+    ws.send(` Container ${name}  ${action === 'down' ? 'Removed' : 'Started'}\n`)
+    setTimeout(() => {
+      for (const c of dockerState.containers) if (c.project === name) c.state = action === 'down' ? 'exited' : 'running'
+      dockerState.activity.push({ at: new Date().toISOString(), action: `docker-compose-${action}`, detail: name, exitCode: 0, durationMs: 300 })
+      ws.send(JSON.stringify({ type: 'exit', code: 0 }))
+      ws.close()
+    }, 300)
+  })
+}
+
 const appServer = http.createServer(async (req, res) => {
   const chunks = []
   for await (const c of req) chunks.push(c)
@@ -126,11 +254,13 @@ const appServer = http.createServer(async (req, res) => {
     res.statusCode = 200
     return res.end('{}')
   }
+  if (service === 'docker') return handleDocker(req, res, body)
   res.setHeader('content-type', 'text/html; charset=utf-8')
   res.end(`<h1>fake ${service ?? 'direct'}</h1>`)
 })
 const tty = new WebSocketServer({ noServer: true })
 appServer.on('upgrade', (req, socket, head) => {
+  if (req.headers['x-nas-service'] === 'docker') return upgradeDocker(req, socket, head)
   if (req.headers['x-nas-service'] !== 'nas-console') {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
     return socket.destroy()
@@ -217,6 +347,7 @@ const nas = http.createServer(async (req, res) => {
           { name: 'navidrome', container_port: Number(process.env.SMOKE_PORT_B), host_port: 0, published: false },
           { name: 'webdav', container_port: 18005, host_port: Number(process.env.SMOKE_PORT_WEBDAV), published: true },
           { name: 'nas-console', container_port: 8890, host_port: Number(process.env.SMOKE_PORT_CONSOLE), published: true },
+          { name: 'docker', container_port: 2375, host_port: Number(process.env.SMOKE_PORT_DOCKER), published: true },
         ],
       })
     default:
@@ -242,6 +373,7 @@ process.env.SMOKE_DAV_PORT = String(await freePort())
 // 冒烟时的服务端口：清单里 webdav / nas-console 的本机端口也换成空闲的，免得撞上日常在跑的 Go 版
 process.env.SMOKE_PORT_WEBDAV = String(await freePort())
 process.env.SMOKE_PORT_CONSOLE = String(await freePort())
+process.env.SMOKE_PORT_DOCKER = String(await freePort())
 
 /** 起一次 Kura，跑完冒烟返回退出码。两轮共用同一份数据目录：第二轮就是「已配置过的用户再次打开」。 */
 function runKura(phase) {
