@@ -127,31 +127,43 @@ describe('registry：登记表与发现', () => {
 })
 
 describe('TunnelService：白名单', () => {
+  // 这些用例打的是**真实路径** `targetOf()`（handler 与 MCP 都从这里过），
+  // 不是一个"查登记表"的辅助函数 —— 那种函数很容易没人调用，单测全绿却挡不住任何东西。
+  const entryOf = (name: string, container = name, port = 5432) =>
+    ({ name, engine: 'postgres' as const, container, port, user: '', database: '', dir: '', managed: true, createdAt: '' })
+
   it('登记表为空时一律拒绝（没用过这功能的人，NAS 上零暴露面）', async () => {
-    await expect(tunnel.resolve('anything')).rejects.toThrow(/还没有登记任何数据库/)
+    await expect(tunnel.targetOf(entryOf('pg'))).rejects.toThrow(/还没有登记任何数据库/)
   })
 
-  it('未登记的名字拒绝，且不发起任何网络动作', async () => {
-    registry.add({ name: 'pg', engine: 'postgres', container: 'pg', port: 5432, user: '', database: '', dir: '', managed: true, createdAt: '' })
+  it('登记表为空时在碰容器之前就拦掉 —— 不发起任何网络动作', async () => {
     docker.addContainer('pg', { image: 'postgres:17-alpine', ports: [{ PrivatePort: 5432, Type: 'tcp' }] })
     docker.calls = []
-    await expect(tunnel.resolve('evil')).rejects.toThrow(/没有登记/)
-    // 白名单在校验之前就拦住：不该去 inspect 任何容器
+    await expect(tunnel.targetOf(entryOf('pg'))).rejects.toThrow(/还没有登记任何数据库/)
     expect(docker.calls.filter((c) => c.includes('containers'))).toHaveLength(0)
   })
 
+  it('接管的容器（登记表非空、但自己没登记）可以开隧道', async () => {
+    // 登记表里放别的库，让闸门放行；sakura-pg 本身是接管的、不在登记表里
+    registry.add(entryOf('some-pg'))
+    docker.addContainer('sakura-pg', { image: 'postgres:18', ports: [{ PrivatePort: 5444, Type: 'tcp' }] })
+    const target = await tunnel.targetOf({ ...entryOf('sakura-pg', 'sakura-pg', 5444), managed: false })
+    expect(target.host).toBe('sakura-pg')
+    expect(target.port).toBe(5444)
+  })
+
   it('解析到容器名（不是 IP）—— 重启后 IP 变了也不受影响', async () => {
-    registry.add({ name: 'pg', engine: 'postgres', container: 'pg', port: 5432, user: '', database: '', dir: '', managed: true, createdAt: '' })
+    registry.add(entryOf('pg'))
     docker.addContainer('pg', { image: 'postgres:17-alpine', ports: [{ PrivatePort: 5432, Type: 'tcp' }] })
-    const target = await tunnel.resolve('pg')
+    const target = await tunnel.targetOf(entryOf('pg'))
     expect(target.host).toBe('pg')
     expect(target.port).toBe(5432)
   })
 
   it('容器没在跑就拒绝，说清原因', async () => {
-    registry.add({ name: 'pg', engine: 'postgres', container: 'pg', port: 5432, user: '', database: '', dir: '', managed: true, createdAt: '' })
+    registry.add(entryOf('pg'))
     docker.addContainer('pg', { image: 'postgres:17-alpine', state: 'exited' })
-    await expect(tunnel.resolve('pg')).rejects.toThrow(/没有在运行/)
+    await expect(tunnel.targetOf(entryOf('pg'))).rejects.toThrow(/没有在运行/)
   })
 
   it('连接数上限：单目标满了就拒绝新隧道', async () => {
@@ -322,6 +334,55 @@ describe('createDbHandler：隧道 upgrade', () => {
     })
     expect(status).toBe(403)
     await s.close()
+  })
+
+  // 下面两条是这次补的那个缺口的回归。原来的用例都先 add 了登记项再开隧道，
+  // 于是「登记表为空时能不能开」从来没被走过 —— 闸门写在一个没人调用的函数里，
+  // 单测全绿，实际放开着。所以这里必须打**真实的 HTTP 升级路径**。
+  it('登记表为空：接管的数据库也开不了隧道（403），闸门确实在真实路径上', async () => {
+    docker.addContainer('sakura-pg', { image: 'postgres:18', ports: [{ PrivatePort: 5444, Type: 'tcp' }] })
+    expect(registry.list()).toHaveLength(0)
+    const s = await serveWs()
+    const ws = new WebSocket(`ws://127.0.0.1:${s.port}/api/db/sakura-pg/tunnel`, { headers: { 'x-kura-docker': '1' } })
+    const status = await new Promise<number>((resolve) => {
+      ws.on('unexpected-response', (_req, res) => resolve(res.statusCode ?? 0))
+      ws.on('error', () => resolve(-1))
+    })
+    expect(status).toBe(403)
+    await s.close()
+  })
+
+  it('登记表非空：接管的数据库能开隧道，字节原样来回', async () => {
+    const echo = net.createServer((socket) => socket.pipe(socket))
+    await new Promise<void>((r) => echo.listen(0, '127.0.0.1', r))
+    const dbPort = (echo.address() as AddressInfo).port
+
+    // 登记表里放别的库，只为让闸门放行；sakura-pg 自己是接管的，不在登记表里
+    registry.add({ name: 'other-pg', engine: 'postgres', container: 'other-pg', port: 5432, user: '', database: '', dir: '', managed: true, createdAt: '' })
+    docker.addContainer('sakura-pg', { image: 'postgres:18', ports: [{ PrivatePort: dbPort, Type: 'tcp' }] })
+    const localTunnel = new TunnelService({ registry, engine, connect: () => net.connect({ host: '127.0.0.1', port: dbPort }) })
+    const handler = createDbHandler({ registry, engine, tunnel: localTunnel, audit: () => {}, projectRoot: root })
+    const server = http.createServer((req, res) => void handler.handle(req, res))
+    server.on('upgrade', (req, socket, head) => handler.upgrade(req, socket as Socket, head))
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+    const port = (server.address() as AddressInfo).port
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/db/sakura-pg/tunnel`, { headers: { 'x-kura-docker': '1' } })
+    await new Promise<void>((resolve, reject) => {
+      ws.on('open', () => resolve())
+      ws.on('error', reject)
+    })
+    const payload = Buffer.from([0x00, 0xff, 0x10, 0x0a])
+    const echoed = await new Promise<Buffer>((resolve) => {
+      ws.on('message', (data: Buffer) => resolve(data))
+      ws.send(payload)
+    })
+    expect(echoed.equals(payload)).toBe(true)
+
+    ws.close()
+    localTunnel.closeAll()
+    await new Promise<void>((r) => server.close(() => r()))
+    await new Promise<void>((r) => echo.close(() => r()))
   })
 
   it('登记的数据库：隧道通了，字节原样来回（含 NUL 与 0xFF）', async () => {

@@ -138,6 +138,9 @@ export function defaultPort(engine: DbEngine): number {
  * 这样「绿联商店装的、用户手动起的」数据库也能列出来、能给连接信息、能开隧道，
  * 但 Kura 不会去改它们的 compose（商店升级会覆盖）。
  *
+ * 注意「能开隧道」有个前提：**登记表非空**（`TunnelService.targetOf()` 里的闸门）。
+ * 登记表为空时一律拒绝 —— 那种情况下没人用过这功能，NAS 上应当零暴露面。
+ *
  * 登记项优先（名字、用户、库名以登记为准）；容器提供实时状态与端口。
  */
 export async function discoverDatabases(engine: DockerEngine, registry: DatabaseRegistry): Promise<DatabaseEntry[]> {

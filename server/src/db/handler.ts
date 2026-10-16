@@ -279,7 +279,8 @@ export function createDbHandler(options: DbHandlerOptions): {
       return
     }
 
-    // 白名单必须在 101 之前做完：升级之后只能靠 close code，说不清原因
+    // 白名单必须在 101 之前做完：升级之后只能靠 close code，说不清原因。
+    // 登记表为空那道闸门在 tunnel.targetOf() 里（见那里的注释）—— 隧道与命令执行都要过它。
     void (async () => {
       try {
         const { entry, raw } = await lookup(name)
