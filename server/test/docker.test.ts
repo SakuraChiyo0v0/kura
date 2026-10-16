@@ -153,6 +153,18 @@ describe('compose：发现与参数', () => {
     expect(() => runCompose({ name: 'Bad Name', dir: root, configFiles: [] }, 'up')).toThrow(/项目名/)
   })
 
+  it('runCompose：项目目录没挂进来时 down 只按项目名跑，别的动作直接说清原因', async () => {
+    const script = join(root, 'argv.cjs')
+    writeFileSync(script, 'console.log(JSON.stringify({ argv: process.argv.slice(2) }))\n')
+    const missing = join(root, 'not-mounted', 'envtest')
+    const run = runCompose({ name: 'envtest', dir: missing, configFiles: [`${missing}/docker-compose.yaml`] }, 'down', process.execPath, [script])
+    let out = ''
+    run.onOutput((t) => (out += t))
+    expect(await run.done).toBe(0)
+    expect((JSON.parse(out) as { argv: string[] }).argv).toEqual(['compose', '-p', 'envtest', 'down'])
+    expect(() => runCompose({ name: 'envtest', dir: missing, configFiles: [] }, 'up', process.execPath, [script])).toThrow(/没有挂进/)
+  })
+
   it('down 不带 -v：卷默认保留', () => {
     expect(composeArgs('down')).toEqual(['down'])
     expect(composeArgs('up')).toEqual(['up', '-d', '--remove-orphans'])

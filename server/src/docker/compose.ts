@@ -107,13 +107,19 @@ export interface ComposeTarget {
  */
 export function runCompose(target: ComposeTarget, action: ComposeAction, bin = 'docker', prefix: string[] = []): ComposeRun {
   const args = [...prefix, 'compose', '-p', checkProjectName(target.name)]
-  for (const file of target.configFiles) args.push('-f', file)
+  // 项目目录外的项目（如 /tmp/xxx）没挂进容器：目录在这里不存在，spawn 会报一个误导人的 `spawn docker ENOENT`。
+  // down 只靠项目名就够（compose 按标签找容器、网络），不需要 compose 文件，也不需要在那个目录里跑
+  const reachable = existsSync(target.dir)
+  if (!reachable && action !== 'down') {
+    throw new Error(`项目目录 ${target.dir} 没有挂进 kura-server，无法执行 compose ${action}`)
+  }
+  if (reachable) for (const file of target.configFiles) args.push('-f', file)
   args.push(...composeArgs(action))
   const listeners: Array<(text: string) => void> = []
   const emit = (text: string) => {
     for (const l of listeners) l(text)
   }
-  const child = spawn(bin, args, { cwd: target.dir, env: { ...process.env, COMPOSE_PROGRESS: 'plain', COMPOSE_ANSI: 'never' } })
+  const child = spawn(bin, args, { cwd: reachable ? target.dir : '/', env: { ...process.env, COMPOSE_PROGRESS: 'plain', COMPOSE_ANSI: 'never' } })
   child.stdout?.on('data', (d: Buffer) => emit(d.toString('utf8')))
   child.stderr?.on('data', (d: Buffer) => emit(d.toString('utf8')))
   const done = new Promise<number>((resolve) => {
