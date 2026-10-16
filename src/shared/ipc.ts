@@ -28,8 +28,8 @@ export interface DbExecView {
   durationMs: number
 }
 
-/** 容器管理的流式操作：实时日志 / 项目 compose 动作 / 删除项目 / 拉镜像 */
-export type DockerStreamKind = 'logs' | 'project' | 'remove' | 'pull'
+/** 容器管理的流式操作：实时日志 / 项目 compose 动作 / 删除项目 / 拉镜像 / 清理镜像 */
+export type DockerStreamKind = 'logs' | 'project' | 'remove' | 'pull' | 'prune'
 
 export type DockerStreamEvent =
   | { id: string; type: 'data'; data: string }

@@ -559,6 +559,74 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === '网络')?.click()`)
     const networks = await waitFor(`document.querySelector('[data-testid="network-list"] [data-network="sso-net"]')?.innerText.includes('172.20.0.3')`, 8_000)
     check('卷与网络：列表、谁在用、点了才算占用、网络成员', volumes && sized && networks, `volumes=${volumes} sized=${sized} networks=${networks}`)
+
+    // ⑦d3e2 表格里滚轮能带动页面：容器表有 60 行、比视口高，滚轮指在表格上时页面必须跟着滚。
+    // 库里给 .sk-table-scroll 设了 overscroll-behavior: contain（它没有高度上限、永远滚不到底），
+    // 不放开的话滚轮会被整片吃掉 —— 只能把指针挪到表格外面才滚得动。
+    // 除了量属性，还真发滚轮看页面动没动：属性对了不代表行为对。
+    await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim().startsWith('容器'))?.click()`)
+    await waitFor(`document.querySelector('.sk-table-scroll') !== null`, 8_000)
+    const scrollBehavior = await js<string>(`getComputedStyle(document.querySelector('.sk-table-scroll')).overscrollBehaviorY`)
+    await js(`(() => { const m = document.querySelector('.kura-main'); m.scrollTop = 600 })()`)
+    // 把表格挪到视口里，再在表格正中往上滚几下（单发一次太抖，离屏窗口不稳）
+    const scrollTarget = await js<{ x: number; y: number } | null>(`(() => {
+      const m = document.querySelector('.kura-main')
+      const s = document.querySelector('.sk-table-scroll')
+      if (!m || !s) return null
+      m.scrollTop = m.scrollTop + s.getBoundingClientRect().top
+      const r = s.getBoundingClientRect()
+      return { x: Math.round(innerWidth / 2), y: Math.round(Math.min(r.bottom, innerHeight) / 2) }
+    })()`)
+    // 必须走 CDP 发滚轮：webContents.sendInputEvent 投出来的滚轮不参与滚动链
+    // （实测指在表格上恒为 0px，即便修好了也不动），用它只会得到一条永远绿的假断言。
+    try {
+      window.webContents.debugger.attach('1.3')
+    } catch {
+      // 已经挂上就继续（重跑冒烟时可能还在）
+    }
+    for (let i = 0; i < 5; i++) {
+      await window.webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+        type: 'mouseWheel', x: scrollTarget?.x ?? 600, y: Math.max(scrollTarget?.y ?? 300, 100), deltaX: 0, deltaY: -120,
+      })
+      await delay(60)
+    }
+    await delay(300)
+    if (window.webContents.debugger.isAttached()) window.webContents.debugger.detach()
+    await delay(300)
+    const scrolled = await js<number>(`Math.round(document.querySelector('.kura-main').scrollTop)`)
+    check(
+      '表格里滚轮能带动页面（不再被 contain 吃掉）',
+      scrollBehavior === 'auto' && scrolled < 600,
+      `overscrollBehaviorY=${scrollBehavior} 滚动后 scrollTop=${scrolled}（起始 600）`,
+    )
+
+    // ⑦d3f 清理悬空镜像：点了确认对话框要立刻关掉（清理转后台），进度在右下角浮窗里跑，跑完表也刷新。
+    // 以前这里是普通 Promise，ConfirmDialog 要等它落地才关 —— 清理期间对话框一直占着前台。
+    // 判据盯的是「对话框消失的那一刻，清理**还没**跑完」：假 NAS 那条流故意慢 600ms，
+    // 只看「最后关掉了」是测不出差别的（等它跑完再关也一样会关）。
+    await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === '镜像')?.click()`)
+    const danglingShown = await waitFor(`document.body.innerText.includes('清理悬空镜像（1）')`, 8_000)
+    await js(`[...document.querySelectorAll('button')].find(b => b.textContent.includes('清理悬空镜像'))?.click()`)
+    const dialogOpened = await waitFor(`document.querySelector('.sk-confirm-dialog') !== null`, 4_000)
+    await js(`(() => {
+      const b = [...document.querySelectorAll('.sk-confirm-dialog button')].find(x => x.textContent.trim() === '清理')
+      b?.click()
+    })()`)
+    const prunePanel = await waitFor(`document.querySelector('[data-testid="docker-output"]')?.innerText.includes('清理悬空镜像')`, 4_000)
+    // 清理还在跑（面板 state=running）时对话框就该没了
+    const closedWhileRunning = await waitFor(
+      `document.querySelector('.sk-confirm-dialog') === null && document.querySelector('[data-testid="docker-output"]')?.dataset.state === 'running'`,
+      500,
+    )
+    check(
+      '清理悬空镜像：确认后对话框立刻关掉（不等清理跑完）、清理转到后台浮窗',
+      dialogOpened && danglingShown && closedWhileRunning && prunePanel,
+      `弹框=${dialogOpened} 悬空计数=${danglingShown} 跑着时已关=${closedWhileRunning} 浮窗=${prunePanel}`,
+    )
+    const pruneDone = await waitFor(`document.querySelector('[data-testid="docker-output"]')?.dataset.state === 'ok'`, 10_000)
+    const pruneRefreshed = await waitFor(`document.body.innerText.includes('清理悬空镜像（0）')`, 8_000)
+    check('清理悬空镜像：跑完刷新列表（悬空的没了）', pruneDone && pruneRefreshed, `pruneDone=${pruneDone} pruneRefreshed=${pruneRefreshed}`)
+    await js(`document.querySelector('[data-testid="docker-output"] button[aria-label="关闭输出"]')?.click()`)
     await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim().startsWith('项目'))?.click()`)
     await waitFor(`document.querySelector('[data-project="openlist"]') !== null`)
     await shot('v0.4-容器.png')

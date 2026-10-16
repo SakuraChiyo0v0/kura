@@ -170,6 +170,11 @@ export class DockerClient {
     return this.stream(`/api/images/pull?image=${encodeURIComponent(image)}`, true)
   }
 
+  /** 清理镜像：和别的长任务一样走流，界面能一边清一边让人干别的。 */
+  pruneImagesStream(all: boolean): Promise<DockerStream> {
+    return this.stream(`/api/images/prune${all ? '?all=1' : ''}`, true)
+  }
+
   // ---- D4 ----
 
   volumes(withSize = false): Promise<VolumeView[]> {

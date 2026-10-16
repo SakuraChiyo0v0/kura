@@ -77,6 +77,15 @@ describe('DockerClient ↔ kura-server', () => {
     expect(text).toBe('{"level":"info"}\nrestart ok\n')
   })
 
+  it('清理镜像：走流式，回收字节数在输出里，退出码 0', async () => {
+    const stream = await client.pruneImagesStream(false)
+    let text = ''
+    stream.onData((t) => (text += t))
+    expect(await stream.done).toBe(0)
+    expect(text).toContain('1.2 KiB')
+    expect(docker.calls.some((c) => c.startsWith('POST /images/prune'))).toBe(true)
+  })
+
   it('旧镜像（没有 docker 服务）：说清是镜像太旧，不是一句 JSON 解析失败', async () => {
     const old = http.createServer((_req, res) => {
       res.writeHead(404, { 'content-type': 'text/plain' })

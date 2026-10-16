@@ -328,7 +328,10 @@ export class ContainerService {
     return this.deps.mirror()?.hasService(dockerService) ?? false
   }
 
-  /** 开一个流，立刻返回 id；输出与结束按事件推（界面先显示「进行中」）。 */
+  /**
+   * 开一个流，立刻返回 id；输出与结束按事件推（界面先显示「进行中」）。
+   * `prune` 的 target 是范围（'all' / 其余当「只清悬空」），别的 kind 的 target 是操作对象。
+   */
   async open(kind: DockerStreamKind, target: string, action?: ProjectAction, removeOptions?: { volumes: boolean; files: boolean }): Promise<string> {
     const id = `ds-${++this.seq}`
     const stream =
@@ -338,7 +341,9 @@ export class ContainerService {
           ? await this.client.project(target, action ?? 'up')
           : kind === 'remove'
             ? await this.client.removeProject(target, removeOptions ?? { volumes: false, files: false })
-            : await this.client.pull(target)
+            : kind === 'prune'
+              ? await this.client.pruneImagesStream(target === 'all')
+              : await this.client.pull(target)
     this.streams.set(id, stream)
     stream.onData((data) => this.emit({ id, type: 'data', data }))
     void stream.done.then((code) => {

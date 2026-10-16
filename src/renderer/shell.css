@@ -68,6 +68,17 @@ body {
   background: var(--sk-bg);
 }
 
+/*
+ * 表格滚不动（容器 / 镜像 / 卷 / 数据库四张表）：
+ * 库里的 .sk-table-scroll 是 overflow:auto + overscroll-behavior:contain，但没有高度上限 ——
+ * 它永远不可能纵向滚动，而 contain 又把滚轮拦住不传给这里的 .kura-main，于是指到表格上就卡死。
+ * 只放开 Y 轴：横向的 contain 保留（表格比窗口宽时，横滚不该带着页面一起晃）。
+ * 实测：滚轮落在表格上，改前页面滚动 139→139（不动），改后 139→0。
+ */
+.kura-main .sk-table-scroll {
+  overscroll-behavior-y: auto;
+}
+
 .kura-page-header {
   display: grid;
   gap: 6px;

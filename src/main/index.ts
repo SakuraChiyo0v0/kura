@@ -462,7 +462,7 @@ function registerKuraIpc(): void {
     return saved.filePath
   })
   router.handle(ch.dockerStreamOpen, (_event, kind: string, target: string, action?: string, removeOptions?: { volumes?: unknown; files?: unknown }) => {
-    if (kind !== 'logs' && kind !== 'project' && kind !== 'remove' && kind !== 'pull') throw new Error(`不支持的流：${kind}`)
+    if (kind !== 'logs' && kind !== 'project' && kind !== 'remove' && kind !== 'pull' && kind !== 'prune') throw new Error(`不支持的流：${kind}`)
     if (action !== undefined && action !== null && !['up', 'down', 'restart', 'pull'].includes(action)) throw new Error(`不支持的操作：${action}`)
     const remove = { volumes: removeOptions?.volumes === true, files: removeOptions?.files === true }
     return containers.open(kind, String(target), (action ?? undefined) as ProjectAction | undefined, remove)

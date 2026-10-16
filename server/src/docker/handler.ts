@@ -2,6 +2,7 @@ import type http from 'node:http'
 import type net from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { errorMessage } from '../../../src/core/errors.js'
+import { humanBytes } from '../../../src/core/stats.js'
 import type { AuditEntry } from '../shell/audit.js'
 import { checkProjectName, runCompose, type ComposeAction, type ComposeRun, type ComposeTarget } from './compose.js'
 import type { AutoUpdate } from './autoupdate.js'
@@ -30,6 +31,7 @@ import type { DockerService } from './service.js'
  *   /api/projects/:name/{up,down,restart,pull}
  *   /api/projects/:name/remove?volumes=1&files=1   删除项目（两个都默认不删）
  *   /api/images/pull?image=
+ *   /api/images/prune?all=1                 清理镜像（all=1 清所有未使用的，默认只清悬空的）
  * 项目文件（D3，只限项目目录下的项目）：
  *   GET  /api/projects/:name/files      compose 与 .env 的内容、备份列表
  *   PUT  /api/projects/:name/files      {compose:[{path,content}], env?} —— 先校验、再备份、再原子替换
@@ -368,6 +370,23 @@ export function createDockerHandler(options: DockerHandlerOptions): {
     })
   }
 
+  /**
+   * 清理镜像：跟其它长任务一个形状，输出走流、结束发退出码。
+   *
+   * 以前只有一次性 JSON 的 POST /api/images/prune，客户端只能「点了按钮就干等」——
+   * ConfirmDialog 要等 onConfirm 返回才关，于是清理期间那个对话框一直占着前台。
+   * 清理本身是几秒到几十秒，但用户看着一个不动的「正在处理…」就是被堵住了。
+   */
+  const streamPrune = async (ws: WebSocket, req: http.IncomingMessage, all: boolean): Promise<void> => {
+    const what = all ? '没有被用到的镜像' : '悬空镜像'
+    if (ws.readyState === ws.OPEN) ws.send(`正在清理${what}…\n`)
+    const startedAt = Date.now()
+    const reclaimed = await engine.pruneImages(all)
+    if (ws.readyState === ws.OPEN) ws.send(`回收 ${humanBytes(reclaimed)}\n`)
+    options.audit({ action: 'docker-image-prune', detail: `${all ? '所有未使用' : '悬空'}，回收 ${reclaimed} 字节`, exitCode: 0, durationMs: Date.now() - startedAt, ip: ip(req) })
+    finish(ws, 0)
+  }
+
   const streamPull = async (ws: WebSocket, req: http.IncomingMessage, image: string): Promise<void> => {
     const stream = await engine.pull(image)
     let buffer = ''
@@ -406,8 +425,9 @@ export function createDockerHandler(options: DockerHandlerOptions): {
     const isCompose = kind === 'projects' && ref && ['up', 'down', 'restart', 'pull'].includes(verb ?? '')
     const isRemove = kind === 'projects' && ref && verb === 'remove'
     const isPull = kind === 'images' && ref === 'pull'
+    const isPrune = kind === 'images' && ref === 'prune'
     const isShell = kind === 'containers' && ref && verb === 'shell'
-    if (parts[0] !== 'api' || !(isLogs || isCompose || isRemove || isPull || isShell)) {
+    if (parts[0] !== 'api' || !(isLogs || isCompose || isRemove || isPull || isPrune || isShell)) {
       socket.end('HTTP/1.1 404 Not Found\r\nconnection: close\r\n\r\n')
       return
     }
@@ -431,7 +451,9 @@ export function createDockerHandler(options: DockerHandlerOptions): {
           ? streamCompose(ws, req, ref!, verb as ComposeAction)
           : isRemove
             ? streamRemove(ws, req, ref!, url.searchParams.get('volumes') === '1', url.searchParams.get('files') === '1')
-            : streamPull(ws, req, url.searchParams.get('image') ?? '')
+            : isPrune
+              ? streamPrune(ws, req, url.searchParams.get('all') === '1')
+              : streamPull(ws, req, url.searchParams.get('image') ?? '')
       work.catch((error) => finish(ws, 1, `${errorMessage(error)}\n`))
     })
   }

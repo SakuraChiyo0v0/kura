@@ -356,6 +356,27 @@ describe('docker 内置服务：写', () => {
     expect(audit.at(-1)).toMatchObject({ action: 'docker-image-pull', exitCode: 1 })
   })
 
+  it('清理镜像走流式：回收多少写在输出里，结束时退出码 0 并进审计', async () => {
+    const { text, code } = await stream('/api/images/prune')
+    expect(code).toBe(0)
+    expect(text).toContain('悬空镜像')
+    expect(text).toContain('1.2 KiB') // fake-docker 固定回 SpaceReclaimed: 1234
+    expect(docker.calls.some((c) => c.startsWith('POST /images/prune'))).toBe(true)
+    expect(audit.at(-1)).toMatchObject({ action: 'docker-image-prune', exitCode: 0 })
+  })
+
+  it('清理镜像也要写头：没写头连不上', async () => {
+    expect((await stream('/api/images/prune', false)).status).toBe(403)
+    expect(docker.calls.some((c) => c.startsWith('POST /images/prune'))).toBe(false)
+  })
+
+  it('all=1 是清所有未使用的（filters 里 dangling=false）', async () => {
+    const { code } = await stream('/api/images/prune?all=1')
+    expect(code).toBe(0)
+    const call = docker.calls.find((c) => c.startsWith('POST /images/prune'))
+    expect(decodeURIComponent(call ?? '')).toContain('"dangling":["false"]')
+  })
+
   it('最近记录只给 docker-* 的，新的在前', async () => {
     docker.addContainer('app', { project: 'app' })
     await call('POST', '/api/containers/app/restart')

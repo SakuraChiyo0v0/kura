@@ -886,7 +886,7 @@ function LogView({ streamId }: { streamId: string }) {
 
 // ---------------------------------------------------------------- 镜像
 
-function ImagesTab({ onPull }: { onPull: (image: string) => void }) {
+function ImagesTab({ onPull, onPrune, refreshKey }: { onPull: (image: string) => void; onPrune: () => void; refreshKey: number }) {
   const toast = useToast()
   const [images, setImages] = useState<ImageView[] | null>(null)
   const [pull, setPull] = useState('')
@@ -894,7 +894,9 @@ function ImagesTab({ onPull }: { onPull: (image: string) => void }) {
     void window.kura?.docker.images().then(setImages).catch((e: Error) => toast.notify({ title: '读不到镜像', description: e.message, tone: 'error' }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-  useEffect(load, [load])
+  // 清理是后台跑的，跑完得重新读一次列表，否则被清掉的镜像还挂在表里。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(load, [load, refreshKey])
 
   if (!images) return null
   const total = images.reduce((s, i) => s + i.size, 0)
@@ -958,15 +960,10 @@ function ImagesTab({ onPull }: { onPull: (image: string) => void }) {
               description={`删除 ${dangling.length} 个没有标签的镜像（通常是更新后留下的旧版本），约 ${humanBytes(dangling.reduce((s, i) => s + i.size, 0))}。正在用的不会动。`}
               confirmLabel="清理"
               disabled={dangling.length === 0}
-              onConfirm={async () => {
-                try {
-                  const reclaimed = await window.kura!.docker.pruneImages(false)
-                  toast.notify({ title: '已清理', description: `回收 ${humanBytes(reclaimed)}`, tone: 'success' })
-                  load()
-                } catch (e) {
-                  toast.notify({ title: '清理失败', description: (e as Error).message, tone: 'error', duration: 0 })
-                }
-              }}
+              // 点确认就不用守在这儿了：清理转到后台跑，进度在右下角浮窗里看。
+              // 以前这里是 await 到清理完成才返回，ConfirmDialog 要等 onConfirm 落地才关，
+              // 于是清理那几十秒里对话框一直占着前台、挡住别的操作。
+              onConfirm={onPrune}
             />
           </div>
         }
@@ -1126,6 +1123,8 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
   const [tab, setTab] = useState('projects')
   const [selected, setSelected] = useState<ContainerView | null>(null)
   const [output, setOutput] = useState<{ title: string; id: string; project?: string; failTitle: string } | null>(null)
+  /** 清理跑完（成功或失败）就 +1，让镜像表重读一次 */
+  const [prunedAt, setPrunedAt] = useState(0)
   /** 正在编辑哪个项目；'new' = 新建 */
   const [editing, setEditing] = useState<string | null>(null)
   const seq = useRef(0)
@@ -1211,6 +1210,16 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
     }
   }
 
+  const pruneImages = async () => {
+    try {
+      const id = await window.kura!.docker.openStream('prune', 'dangling')
+      setOutput({ title: '清理悬空镜像', id, failTitle: '清理悬空镜像' })
+      onStreamExit(id, () => setPrunedAt((n) => n + 1))
+    } catch (caught) {
+      toast.notify({ title: '清理失败', description: (caught as Error).message, tone: 'error', duration: 0 })
+    }
+  }
+
   if (available === null) return null
   if (!available) {
     return (
@@ -1293,7 +1302,7 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
               ),
             },
             { value: 'containers', label: `容器 ${running}/${overview.containers.length}`, icon: <Container {...icon} />, content: <ContainersTab overview={overview} onOpen={setSelected} /> },
-            { value: 'images', label: '镜像', icon: <Download {...icon} />, content: <ImagesTab onPull={(image) => void pullImage(image)} /> },
+            { value: 'images', label: '镜像', icon: <Download {...icon} />, content: <ImagesTab onPull={(image) => void pullImage(image)} onPrune={() => void pruneImages()} refreshKey={prunedAt} /> },
             { value: 'volumes', label: '卷', icon: <HardDrive {...icon} />, content: <VolumesTab /> },
             { value: 'networks', label: '网络', icon: <Network {...icon} />, content: <NetworksTab /> },
             { value: 'activity', label: '最近操作', icon: <FileText {...icon} />, content: <ActivityTab /> },

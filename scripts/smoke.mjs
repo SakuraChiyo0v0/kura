@@ -123,8 +123,21 @@ const dockerState = {
     { id: 'c-kura', name: 'kura-server', image: 'ghcr.io/sakurachiyo0v0/kura-server:latest', state: 'running', status: 'Up 1 hour', health: '', created: Date.now(), ports: [], project: 'kura-server', service: 'kura-server', protected: true },
     // 目录外的项目（真机上就是 /tmp/envtest2 那种）：已停止、有容器，能点「启动」，但 compose 起不来
     { id: 'c-broken', name: 'broken', image: 'busybox:latest', state: 'exited', status: 'Exited (0) 2 hours ago', health: '', created: Date.now(), ports: [], project: 'broken', service: 't', protected: false },
+    // 填充行：容器表要**真的比视口高**才谈得上「滚得动」。
+    // 只放 3 个容器的话页面根本不滚，「滚轮能带动页面」那条断言会永远绿（撤掉修复也不变红）。
+    // project 留空 → 在界面上显示成「（单独）」，不进任何项目卡片，不影响别的断言。
+    ...Array.from({ length: 40 }, (_, i) => ({
+      id: `c-fill-${i}`, name: `filler-${String(i).padStart(2, '0')}`, image: 'busybox:latest',
+      state: 'exited', status: 'Exited (0) 3 hours ago', health: '', created: Date.now(), ports: [],
+      project: '', service: 'filler', protected: false,
+    })),
   ],
   activity: [],
+  // 一个悬空的（没标签、没容器用），留着验证「清理悬空镜像」：清完它就该从表里消失
+  images: [
+    { id: 'sha256:aaa', tags: ['openlistteam/openlist:latest'], size: 52_000_000, created: Date.now(), usedBy: 1, dangling: false },
+    { id: 'sha256:bbb', tags: [], size: 19_400_000, created: Date.now() - 86_400_000, usedBy: 0, dangling: true },
+  ],
   // 和真服务端一个口径：Kura 自己默认开着，别的项目默认关
   auto: { projects: ['kura-server'], lastRunAt: 0, lastResult: [] },
   files: {
@@ -162,7 +175,7 @@ function handleDocker(req, res, body) {
   if (req.method !== 'GET' && req.headers['x-kura-docker'] !== '1') return json(403, { error: '写操作必须带 x-kura-docker: 1 头' })
   const m = /^\/api\/containers\/([^/]+)(?:\/(\w+))?$/.exec(url.pathname)
   if (url.pathname === '/api/overview') return json(200, { containers: dockerState.containers, projects: dockerProjects() })
-  if (url.pathname === '/api/images') return json(200, [{ id: 'sha256:aaa', tags: ['openlistteam/openlist:latest'], size: 52_000_000, created: Date.now(), usedBy: 1, dangling: false }])
+  if (url.pathname === '/api/images') return json(200, dockerState.images)
   if (url.pathname === '/api/activity') return json(200, [...dockerState.activity].reverse())
   if (url.pathname === '/api/volumes') {
     const size = url.searchParams.get('size') === '1' ? 1_234_567 : -1
@@ -239,6 +252,23 @@ function upgradeDocker(req, socket, head) {
   const logs = /^\/api\/containers\/([^/]+)\/logs$/.exec(url.pathname)
   const project = /^\/api\/projects\/([^/]+)\/(up|down|restart|pull)$/.exec(url.pathname)
   const shell = /^\/api\/containers\/([^/]+)\/shell$/.exec(url.pathname)
+  const prune = url.pathname === '/api/images/prune'
+  if (prune) {
+    if (req.headers['x-kura-docker'] !== '1') {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+      return socket.destroy()
+    }
+    return tty.handleUpgrade(req, socket, head, (ws) => {
+      ws.send('正在清理悬空镜像…\n')
+      // 慢一点，好让冒烟看清「对话框已经关了、浮窗还在跑」那一刻
+      setTimeout(() => {
+        dockerState.images = dockerState.images.filter((i) => !i.dangling)
+        ws.send('回收 18.5 MiB\n')
+        ws.send(JSON.stringify({ type: 'exit', code: 0 }))
+        ws.close()
+      }, 600)
+    })
+  }
   if (shell) {
     if (req.headers['x-kura-docker'] !== '1') {
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
