@@ -173,6 +173,9 @@ async function serve(): Promise<void> {
           service,
           file: join(state, 'autoupdate.json'),
           locks,
+          // 自更新要的信息：compose 项目目录（kura-server 自己那个，跟项目根不同）+ docker.sock。
+          // 镜像名不在这里给 —— 从运行中的容器动态拿（见 autoupdate.ts runSelf）
+          self: { dir: process.env.KURA_SELF_DIR?.trim() ?? '/volume1/docker/kura-server', socketPath: socket! },
           onResult: (r) => auditSink({ action: 'docker-auto-update', detail: `${r.project}：${r.ok ? `更新了 ${r.images.join('、')}` : r.reason}`, exitCode: r.ok ? 0 : 1 }),
           log,
         })

@@ -2,9 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { AutoUpdate } from '../src/docker/autoupdate.js'
+import { AutoUpdate, type AutoUpdateOptions } from '../src/docker/autoupdate.js'
 import type { ComposeAction, ComposeRun, ComposeTarget } from '../src/docker/compose.js'
 import { DockerEngine } from '../src/docker/engine.js'
+import { selfUpdateArgs } from '../src/docker/selfupdate.js'
 import { ProjectLocks } from '../src/docker/locks.js'
 import { DockerService } from '../src/docker/service.js'
 import { FakeDocker } from './fake-docker.js'
@@ -28,10 +29,30 @@ function fakeCompose(target: ComposeTarget, action: ComposeAction): ComposeRun {
   return { onOutput: (l) => listeners.push(l), done, kill: () => {} }
 }
 
-function make(): AutoUpdate {
+/** 从状态文件的当前内容造一个实例（不重置它）。 */
+function load(options: Partial<AutoUpdateOptions> = {}): AutoUpdate {
   const engine = new DockerEngine({ socketPath: docker.socketPath, timeoutMs: 5_000 })
   const service = new DockerService({ engine, projectRoot: root.replace(/\\/g, '/'), appstoreMounted: true })
-  return new AutoUpdate({ engine, service, file: file.replace(/\\/g, '/'), intervalMs: 0, compose: fakeCompose })
+  return new AutoUpdate({ engine, service, file: file.replace(/\\/g, '/'), intervalMs: 0, compose: fakeCompose, ...options })
+}
+
+/** 从「一个都没开」起步（写一个空状态文件），免得每轮都被默认列表里的 kura-server 带偏。 */
+function make(options: Partial<AutoUpdateOptions> = {}): AutoUpdate {
+  writeFileSync(file, JSON.stringify({ version: 1, projects: [] }))
+  return load(options)
+}
+
+/** 自更新的假执行器：记下收到的 target，返回一个可指定退出码的结果。 */
+function fakeSelfUpdate(sink: Array<{ name: string; image: string; dir: string; configFiles: string[]; socketPath: string }>, code = 0) {
+  return (target: { name: string; image: string; dir: string; configFiles: string[]; socketPath: string }) => {
+    sink.push(target)
+    const listeners: Array<(t: string) => void> = []
+    const done = Promise.resolve().then(() => {
+      if (code !== 0) for (const l of listeners) l('Cannot connect to the Docker daemon\n')
+      return code
+    })
+    return { container: 'kura-self-update-test', onOutput: (l: (t: string) => void) => listeners.push(l), done }
+  }
 }
 
 /** 镜像要有本地 digest 可读（checkUpdate 靠 inspectImage 拿本地 RepoDigests）。 */
@@ -99,22 +120,60 @@ describe('自动更新的开关', () => {
     expect(results).toEqual([])
   })
 
-  it('kura-server 自己开不了：set 直接拒绝', () => {
+  it('kura-server 自己也能开（用户要的：不再依赖 watchtower）', () => {
     const auto = make()
-    expect(() => auto.set('kura-server', true)).toThrow(/watchtower/)
-    expect(auto.status().projects).toEqual([])
+    expect(auto.set('kura-server', true).projects).toEqual(['kura-server'])
   })
 
-  it('状态文件被人手改塞进 kura-server：跑的时候也拦下来，绝不动它', async () => {
-    docker.addContainer('kura-server-app-1', { project: 'kura-server', dir: `${root.replace(/\\/g, '/')}/kura-server`, image: 'ghcr.io/x/kura-server:latest' })
-    registerImage('ghcr.io/x/kura-server:latest')
-    // 绕过 set() 的拦截，直接写状态文件（手改的情形）
-    writeFileSync(file, JSON.stringify({ version: 1, projects: ['kura-server'] }))
+  it('没状态文件时默认就开着 Kura 自己（别的项目仍然默认关）', () => {
+    rmSync(file, { force: true })
+    // 不经过 make()：它会把空状态文件写下去
+    const engine = new DockerEngine({ socketPath: docker.socketPath, timeoutMs: 5_000 })
+    const service = new DockerService({ engine, projectRoot: root.replace(/\\/g, '/'), appstoreMounted: true })
+    const auto = new AutoUpdate({ engine, service, file: file.replace(/\\/g, '/'), intervalMs: 0, compose: fakeCompose })
 
-    const results = await make().tick()
+    expect(auto.status().projects).toEqual(['kura-server'])
+  })
+
+  it('更新自己：走那条短命兄弟容器，不在本进程里跑 compose', async () => {
+    // kura-server 容器：镜像有新版
+    docker.addContainer('kura-server-app-1', { project: 'kura-server', dir: '/volume1/docker/kura-server', image: 'ghcr.io/x/kura-server:latest' })
+    registerImage('ghcr.io/x/kura-server:latest')
+    const calls: Array<{ name: string; image: string; dir: string; configFiles: string[]; socketPath: string }> = []
+    const auto = make({ self: { dir: '/volume1/docker/kura-server', socketPath: '/var/run/docker.sock' }, selfUpdate: fakeSelfUpdate(calls) })
+    auto.set('kura-server', true)
+
+    const results = await auto.tick()
+
+    // 关键：**没走本进程里的 compose**（那条会把执行它的自己停掉）
+    expect(composeCalls).toEqual([])
+    expect(calls).toEqual([expect.objectContaining({ name: 'kura-server', image: 'ghcr.io/x/kura-server:latest', dir: '/volume1/docker/kura-server' })])
+    expect(results).toEqual([expect.objectContaining({ project: 'kura-server', ok: true })])
+  })
+
+  it('更新自己时兄弟容器起不来：如实报错', async () => {
+    docker.addContainer('kura-server-app-1', { project: 'kura-server', dir: '/volume1/docker/kura-server', image: 'ghcr.io/x/kura-server:latest' })
+    registerImage('ghcr.io/x/kura-server:latest')
+    const calls: Array<{ name: string; image: string; dir: string; configFiles: string[]; socketPath: string }> = []
+    const auto = make({ self: { dir: '/volume1/docker/kura-server', socketPath: '/var/run/docker.sock' }, selfUpdate: fakeSelfUpdate(calls, 1) })
+    auto.set('kura-server', true)
+
+    const results = await auto.tick()
 
     expect(composeCalls).toEqual([])
-    expect(results).toEqual([expect.objectContaining({ project: 'kura-server', ok: false, reason: expect.stringMatching(/watchtower/) })])
+    expect(results).toEqual([expect.objectContaining({ project: 'kura-server', ok: false, reason: expect.stringMatching(/起不了更新用的容器/) })])
+  })
+
+  it('没配自更新的信息（如宿主没挂 docker.sock）：说清更新不了自己，不硬跑', async () => {
+    docker.addContainer('kura-server-app-1', { project: 'kura-server', dir: '/volume1/docker/kura-server', image: 'ghcr.io/x/kura-server:latest' })
+    registerImage('ghcr.io/x/kura-server:latest')
+    const auto = make() // 没给 self
+    auto.set('kura-server', true)
+
+    const results = await auto.tick()
+
+    expect(composeCalls).toEqual([])
+    expect(results).toEqual([expect.objectContaining({ project: 'kura-server', ok: false, reason: expect.stringMatching(/没配自更新/) })])
   })
 
   it('不在项目目录里的项目（external）：说清动不了，不硬跑', async () => {
@@ -151,8 +210,8 @@ describe('自动更新的开关', () => {
 
     expect(auto.status().projects).toEqual(['bili23-web'])
     // 新实例从同一个文件读
-    expect(make().status().projects).toEqual(['bili23-web'])
-    expect(make().isOn('bili23-web')).toBe(true)
+    expect(load().status().projects).toEqual(['bili23-web'])
+    expect(load().isOn('bili23-web')).toBe(true)
   })
 
   it('一个项目 compose 起不来，不该把同一轮里别的项目带倒', async () => {
@@ -187,9 +246,7 @@ describe('自动更新的开关', () => {
   it('用户正在手动操作这个项目：这一轮跳过它，不算失败', async () => {
     manageable('openlist')
     const locks = new ProjectLocks()
-    const engine = new DockerEngine({ socketPath: docker.socketPath, timeoutMs: 5_000 })
-    const service = new DockerService({ engine, projectRoot: root.replace(/\\/g, '/'), appstoreMounted: true })
-    const auto = new AutoUpdate({ engine, service, file: file.replace(/\\/g, '/'), intervalMs: 0, compose: fakeCompose, locks })
+    const auto = make({ locks })
     auto.set('openlist', true)
     // 模拟界面上正占着这个项目（例如用户在点「重启」）
     let release = () => {}
@@ -225,5 +282,36 @@ describe('自动更新的开关', () => {
 
     expect(composeCalls).toEqual([])
     expect(results).toEqual([])
+  })
+})
+
+describe('自更新用的 docker 命令', () => {
+  const target = {
+    name: 'kura-server',
+    dir: '/volume1/docker/kura-server',
+    configFiles: ['/volume1/docker/kura-server/docker-compose.yaml'],
+    image: 'ghcr.io/x/kura-server:latest',
+    socketPath: '/var/run/docker.sock',
+  }
+
+  it('起的是不属于这个 compose 项目的短命容器（-d + --rm + --name）', () => {
+    const args = selfUpdateArgs(target, 'kura-self-update-abc')
+    expect(args.slice(0, 2)).toEqual(['run', '--rm'])
+    // -d 必须有：它得活过 kura-server 被停的那一刻。少了这个，compose 一停自己就跟着没了
+    expect(args).toContain('-d')
+    expect(args[args.indexOf('--name') + 1]).toBe('kura-self-update-abc')
+    expect(args).toContain('--pull=never')
+    // 脚本走位置变量，正文里不拼路径 —— 拼了就成注入面
+    expect(args[args.indexOf('-c') + 1]).toBe('sleep 3; n="$1"; shift; docker compose -p "$n" "$@" pull && docker compose -p "$n" "$@" up -d')
+  })
+
+  it('docker.sock 与项目目录按原路径挂进去，项目目录只读', () => {
+    const args = selfUpdateArgs(target, 'c')
+    expect(args).toContain('/var/run/docker.sock:/var/run/docker.sock')
+    expect(args).toContain('/volume1/docker/kura-server:/volume1/docker/kura-server:ro')
+  })
+
+  it('项目名过了 compose 的校验才进 -p 参数', () => {
+    expect(() => selfUpdateArgs({ ...target, name: 'bad name!' }, 'c')).toThrow(/不合法的项目名/)
   })
 })

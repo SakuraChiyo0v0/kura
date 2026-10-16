@@ -27,6 +27,10 @@ services:
       KURA_DOCKER_SOCKET: /var/run/docker.sock
       # 容器管理：compose 项目目录（宿主原路径）。下面 volumes 里按**原路径**再挂一次。
       KURA_PROJECT_ROOT: /volume1/docker
+      # 自更新：kura-server 自己那个 compose 项目的目录。要更新自己时，Kura 用它来
+      # 起一个短命兄弟容器跑 compose（见 server/src/docker/selfupdate.ts）——
+      # 那个容器不属于 kura-server 这个 compose 项目，所以不会被一起停掉。
+      KURA_SELF_DIR: /volume1/docker/kura-server
     volumes:
       - ./state:/state
       # WebDAV 暴露宿主文件：整个宿主根挂进来（读写），rclone 在里面 serve。

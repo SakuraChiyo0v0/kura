@@ -3,6 +3,7 @@ import type { AutoUpdateRunResult, AutoUpdateStatus } from '../../../src/core/do
 import type { DockerEngine } from './engine.js'
 import { runCompose, type ComposeRun } from './compose.js'
 import { ProjectLocks } from './locks.js'
+import { runSelfUpdate, type SelfUpdateTarget } from './selfupdate.js'
 import { selfProject, type DockerService } from './service.js'
 
 /**
@@ -11,14 +12,17 @@ import { selfProject, type DockerService } from './service.js'
  * 为什么放在 kura-server 的 `serve()` 进程里，而不是单起一个容器：
  * 这个进程本来就 7×24 常驻（`restart: unless-stopped`）、本来就挂着 docker.sock 与项目目录，
  * 自动更新要的东西它全都有。单起容器要跟着发布第二个镜像、多一份配置，而隔离并没有变强
- * —— 它照样得挂 docker.sock，权限完全一样。所以「别人的项目 Kura 管，Kura 自己继续 watchtower 管」，
- * 这条线划在 `selfProject` 上。
+ * —— 它照样得挂 docker.sock，权限完全一样。
  *
  * 语义跟 watchtower 的 label 模式对齐，但开关存在 Kura 这边（`state/autoupdate.json`），
  * 不去动别人的 compose 文件：给项目打标签要改宿主的 yaml，Kura 不该去改它管的项目文件。
  *
  * **每轮先问再拉**：`checkUpdate` 只问仓库 digest、不拉镜像（和界面上「检查更新」同一个口径），
  * 只有真有变化才 `pull` + `up -d`。没变化就什么都不做，不留无谓的容器重建。
+ *
+ * **Kura 自己（`selfProject`）也归这里管，默认开**：但它不能像别的项目那样在本进程里跑 compose
+ * —— 那条命令会把执行它的自己停掉。所以它走 `selfupdate.ts` 那条路（短命兄弟容器）。
+ * 这样 watchtower 对 kura-server 就不再是必需的（用户 2026-10-16 明确要的）。
  */
 
 /** Kura 只管这些目录下的项目（跟 DockerService.kindOf 的 managed 一致）：别的项目连 compose 文件都读不到。 */
@@ -29,9 +33,12 @@ export const defaultIntervalMs = 6 * 60 * 60 * 1000
 
 interface AutoUpdateFile {
   version: 1
-  /** 开了自动更新的项目名。默认空 —— 不 opt-in 就永远不动别人的东西。 */
+  /** 开了自动更新的项目名。默认只有 Kura 自己（见 defaultProjects）。 */
   projects: string[]
 }
+
+/** 新装/没状态文件时的默认：只有 Kura 自己开着（别的项目一律要手动 opt-in）。 */
+export const defaultProjects = [selfProject]
 
 export interface AutoUpdateOptions {
   engine: DockerEngine
@@ -41,6 +48,10 @@ export interface AutoUpdateOptions {
   intervalMs?: number
   /** 测试注入 */
   compose?: typeof runCompose
+  /** 自更新的执行器（短命兄弟容器）；测试注入 */
+  selfUpdate?: typeof runSelfUpdate
+  /** 自更新要用到的信息（compose 项目目录、docker.sock）；不给 = 不能更新自己。镜像名每轮动态拿 */
+  self?: Omit<SelfUpdateTarget, 'name' | 'configFiles' | 'image'>
   /** 与界面操作共用的项目锁；不给就自己造一个（测试用） */
   locks?: ProjectLocks
   onResult?: (result: AutoUpdateRunResult) => void
@@ -49,7 +60,7 @@ export interface AutoUpdateOptions {
 
 /** 当前正在更新、不让第二轮插进来的项目。 */
 export class AutoUpdate {
-  private projects = new Set<string>()
+  private projects: Set<string>
   private lastRunAt = 0
   private lastResult: AutoUpdateRunResult[] = []
   private timer?: ReturnType<typeof setInterval>
@@ -57,6 +68,7 @@ export class AutoUpdate {
   private readonly file?: string
   private readonly intervalMs: number
   private readonly compose: typeof runCompose
+  private readonly selfUpdate: typeof runSelfUpdate
   private readonly locks: ProjectLocks
   private readonly log: (message: string, fields?: Record<string, unknown>) => void
 
@@ -64,10 +76,14 @@ export class AutoUpdate {
     this.file = options.file
     this.intervalMs = options.intervalMs ?? defaultIntervalMs
     this.compose = options.compose ?? runCompose
+    this.selfUpdate = options.selfUpdate ?? runSelfUpdate
     this.locks = options.locks ?? new ProjectLocks()
     this.log = options.log ?? (() => {})
     const doc = options.file ? readJson<AutoUpdateFile>(options.file) : undefined
-    if (Array.isArray(doc?.projects)) this.projects = new Set(doc.projects.filter((p) => typeof p === 'string'))
+    // 读到了就用文件里的（哪怕空数组 —— 用户全关了就是这个意思）；读不到才是默认（Kura 自己开着）
+    this.projects = new Set(
+      Array.isArray(doc?.projects) ? doc.projects.filter((p) => typeof p === 'string') : defaultProjects,
+    )
   }
 
   status(): AutoUpdateStatus {
@@ -83,8 +99,6 @@ export class AutoUpdate {
    * 是 store.ts 顶部记的那类最难查的不一致。
    */
   set(name: string, on: boolean): AutoUpdateStatus {
-    // 硬拦一道：kura-server 自己归 watchtower 管，开了就是两边抢着重启同一个容器
-    if (name === selfProject) throw new Error(`${selfProject} 由 NAS 上的 watchtower 更新，不能在 Kura 里开自动更新`)
     const next = new Set(this.projects)
     if (on) next.add(name)
     else next.delete(name)
@@ -149,13 +163,11 @@ export class AutoUpdate {
     } catch (error) {
       return { project: name, images: [], ok: false, reason: `找不到这个项目：${(error as Error).message}`, at }
     }
-    // 先拦自己：kindOf 对 kura-server 也返回 'self'，排在前面才能给出说得通的原因。
-    // set() 已经挡了一道，但状态文件是可以手改的，这里再挡一道。
-    if (name === selfProject || project.kind === 'self') {
-      return { project: name, images: [], ok: false, reason: `${selfProject} 由 NAS 上的 watchtower 更新，不归 Kura 管`, at }
-    }
-    // 只在能部署的项目上跑：external 的项目连 compose 文件都读不到（kindOf 的口径）
-    if (!updateableKinds.has(project.kind)) {
+    // Kura 自己：kindOf 返回 'self'，不在 updateableKinds 里，走单独的这条路。
+    // 它不能在本进程里跑 compose（那条命令会把执行它的自己停掉），交给短命兄弟容器。
+    const isSelf = name === selfProject || project.kind === 'self'
+    // 别的项目：external 的连 compose 文件都读不到（kindOf 的口径）
+    if (!isSelf && !updateableKinds.has(project.kind)) {
       return { project: name, images: [], ok: false, reason: `这个项目不在项目目录里，Kura 动不了它（${project.dir}）`, at }
     }
 
@@ -183,7 +195,7 @@ export class AutoUpdate {
     }
 
     this.log('自动更新：发现新版本', { 项目: name, 镜像: changed })
-    const output = await this.runCompose(name, project)
+    const output = isSelf ? await this.runSelf(name, project, images) : await this.runCompose(name, project)
     const result: AutoUpdateRunResult = {
       project: name,
       images: changed,
@@ -194,6 +206,36 @@ export class AutoUpdate {
     this.options.onResult?.(result)
     this.log('自动更新：完成', { 项目: name, 镜像: changed, 成功: output.ok, 原因: result.reason || undefined })
     return result
+  }
+
+  /**
+   * 更新 Kura 自己：交给一个不属于这个 compose 项目的短命兄弟容器（见 selfupdate.ts）。
+   *
+   * 注意这里**拿不到最终结果** —— `docker run -d` 一返回，兄弟容器才刚起来，几秒后它才会
+   * 把 kura-server 停掉重建，那时候本进程已经没了。所以这个返回值只表示「兄弟容器起来了没有」，
+   * 不是「更新成功了没有」。真正成不成，看下一轮 Kura 起来后的镜像 digest。
+   */
+  private async runSelf(name: string, project: { dir: string; configFiles: string[] }, images: string[]): Promise<{ ok: boolean; reason: string }> {
+    const self = this.options.self
+    if (!self) return { ok: false, reason: '没配自更新要用的信息（镜像 / docker.sock），更新不了自己' }
+    // 兄弟容器用的镜像 = kura-server 自己那个。不硬编码名字，从它容器的 image 标签拿
+    // （kura-server 与 kura-shell 是同一个镜像，去重后这里就一个）
+    const image = images[0]
+    if (!image) return { ok: false, reason: '不知道自己的镜像是什么，更新不了自己' }
+    // 本进程里那把项目锁对兄弟容器没用（不同进程），但界面操作那条路仍然该被挡着 ——
+    // 用户此刻手动「重启」kura-server 本来也被 assertMutable 拒了，这里是双保险
+    const run = this.selfUpdate({ ...self, name, configFiles: project.configFiles, image })
+    let tail = ''
+    run.onOutput((text) => {
+      tail = (tail + text).slice(-2000)
+    })
+    const code = await run.done
+    if (code !== 0) {
+      const lines = tail.split('\n').map((l) => l.trim()).filter(Boolean)
+      return { ok: false, reason: `起不了更新用的容器：${lines.at(-1) ?? `退出码 ${code}`}` }
+    }
+    this.log('自更新：兄弟容器已起', { 容器: run.container })
+    return { ok: true, reason: '' }
   }
 
   /** 项目里容器用到的镜像，去重。 */
