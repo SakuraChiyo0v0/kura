@@ -308,6 +308,13 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     const inListen = await js<number>(`[...document.querySelectorAll('.kura-service-list li')].filter(li => li.innerText.includes('监听中')).length`)
     const addrTags = await js<string>(`JSON.stringify([...document.querySelectorAll('.kura-service-list__addr')].map(a => a.tagName + (a.classList.contains('--open') ? ':' + a.title : '')))`)
     check('概览页服务地址：在监听的可点，其余是纯文本', addrButtons > 0 && addrButtons === inListen, `可点=${addrButtons} 监听中=${inListen} ${addrTags}`)
+    // 可点的那个是 button，默认 font 简写会把等宽 12px 重置成正文字体 —— 只比「哪个能点」看不出这种错，
+    // 这里直接比排版：所有地址行必须共用同一套字体 / 字号 / 行高，可点与否只差颜色。
+    const addrFonts = await js<string[]>(
+      `[...document.querySelectorAll('.kura-service-list__addr')].map(a => { const s = getComputedStyle(a); return [s.fontFamily, s.fontSize, s.lineHeight].join(' ') })`,
+    )
+    const addrFontKinds = new Set(addrFonts)
+    check('概览页服务地址：可点的与失败的是同一套排版', addrFonts.length > 0 && addrFontKinds.size === 1, `行数=${addrFonts.length} 排版种类=${addrFontKinds.size} ${JSON.stringify([...addrFontKinds])}`)
     await delay(500)
     await shot('v0.1-概览.png')
 
@@ -460,6 +467,16 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     await js(`[...document.querySelectorAll('[data-project="openlist"] button')].find(b => b.textContent.trim() === '重启')?.click()`)
     const outputDone = await waitFor(`document.querySelector('[data-testid="docker-output"]')?.dataset.state === 'ok' && document.querySelector('[data-testid="docker-output"] pre')?.textContent.includes('Started')`, 10_000)
     check('项目操作：输出实时显示并以成功结束', outputDone, await js<string>(`document.querySelector('[data-testid="docker-output"]')?.innerText.slice(0, 200) ?? '没有输出面板'`))
+    // 失败的那次：输出面板在页面顶部、又会滚，用户回头找不到失败在哪 —— 必须另外弹一条右下角提示。
+    // 先关掉上一个成功的面板，免得两条输出叠在一起看不出断言的是哪一次
+    await js(`document.querySelector('[data-testid="docker-output"] button[aria-label="关闭输出"]')?.click()`)
+    await waitFor(`document.querySelector('[data-testid="docker-output"]') === null`)
+    await js(`[...document.querySelectorAll('[data-project="broken"] button')].find(b => b.textContent.trim() === '启动')?.click()`)
+    const failToast = await waitFor(
+      `[...document.querySelectorAll('.sk-toast-root')].some(t => t.textContent.includes('失败') && t.textContent.includes('is not mounted'))`,
+      10_000,
+    )
+    check('项目操作失败：右下角弹出提示（不只是顶部输出面板）', failToast, await js<string>(`JSON.stringify([...document.querySelectorAll('.sk-toast-root')].map(t => t.textContent.slice(0, 120)))`))
     await js(`[...document.querySelectorAll('[data-project="openlist"] .kura-docker-members button')][0]?.click()`)
     const drawer = await waitFor(`document.querySelector('[data-testid="container-drawer"]')?.innerText.includes('ADMIN_PASSWORD') && document.querySelector('[data-testid="container-logs"]')?.textContent.includes('openlist started')`, 10_000)
     const masked = await js<boolean>(`document.querySelector('[data-testid="container-drawer"]')?.innerText.includes('已隐藏') ?? false`)

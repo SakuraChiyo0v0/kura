@@ -121,6 +121,8 @@ const dockerState = {
   containers: [
     { id: 'c-openlist', name: 'openlist', image: 'openlistteam/openlist:latest', state: 'running', status: 'Up 2 hours', health: '', created: Date.now(), ports: [{ private: 5244, public: 5244, type: 'tcp' }], project: 'openlist', service: 'openlist', protected: false },
     { id: 'c-kura', name: 'kura-server', image: 'ghcr.io/sakurachiyo0v0/kura-server:latest', state: 'running', status: 'Up 1 hour', health: '', created: Date.now(), ports: [], project: 'kura-server', service: 'kura-server', protected: true },
+    // 目录外的项目（真机上就是 /tmp/envtest2 那种）：已停止、有容器，能点「启动」，但 compose 起不来
+    { id: 'c-broken', name: 'broken', image: 'busybox:latest', state: 'exited', status: 'Exited (0) 2 hours ago', health: '', created: Date.now(), ports: [], project: 'broken', service: 't', protected: false },
   ],
   activity: [],
   files: {
@@ -129,8 +131,12 @@ const dockerState = {
     backups: [],
   },
 }
+// 「broken」这个项目专门用来跑失败：它模拟「项目目录没挂进 kura-server」——
+// compose 起不来，服务端回一条错误、退出码 1。界面必须把这条失败摆到右下角，
+// 而不是只把输出面板顶到页面顶部让用户自己找（真机上就是这么漏掉的）。
+const failingProject = 'broken'
 const dockerProjects = () =>
-  ['openlist', 'kura-server'].map((name) => {
+  ['openlist', failingProject, 'kura-server'].map((name) => {
     const members = dockerState.containers.filter((c) => c.project === name)
     const running = members.filter((c) => c.state === 'running').length
     return {
@@ -233,6 +239,15 @@ function upgradeDocker(req, socket, head) {
       return // 跟着：保持连接，等客户端关
     }
     const [, name, action] = project
+    if (name === failingProject) {
+      // 真的失败形状：先吐几句像 compose 的输出，再用非零退出码收尾
+      ws.send(` Container ${name}  Starting\n`)
+      ws.send(`Error response from daemon: project directory /volume1/docker/${name} is not mounted\n`)
+      dockerState.activity.push({ at: new Date().toISOString(), action: `docker-compose-${action}`, detail: name, exitCode: 1, durationMs: 300 })
+      ws.send(JSON.stringify({ type: 'exit', code: 1 }))
+      ws.close()
+      return
+    }
     ws.send(` Container ${name}  ${action === 'down' ? 'Removed' : 'Started'}\n`)
     setTimeout(() => {
       for (const c of dockerState.containers) if (c.project === name) c.state = action === 'down' ? 'exited' : 'running'
