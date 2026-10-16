@@ -504,6 +504,24 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     await js(`document.querySelector('[data-project="openlist"]')?.scrollIntoView({ block: 'center' })`)
     await shot('v0.4-检查更新.png')
 
+    // ⑦d3e 按项目的自动更新：开关 → 立即跑一轮 → 报结果。
+    // Kura 自己的项目不给开关（它由 watchtower 管），所以那一行上不该有。
+    const selfNoSwitch = await js<boolean>(`document.querySelector('[data-project="kura-server"] .kura-docker-auto') === null`)
+    const switchOn = await js<boolean>(
+      `(() => { const li = document.querySelector('[data-project="openlist"] .kura-docker-auto input'); if (!li || li.checked) return false; li.click(); return true })()`,
+    )
+    const toggled = await waitFor(`document.querySelector('[data-project="openlist"] .kura-docker-auto input')?.checked === true`, 8_000)
+    check('自动更新：项目行上能开关，Kura 自己那行没有开关', selfNoSwitch && switchOn && toggled, `selfNoSwitch=${selfNoSwitch} switchOn=${switchOn} toggled=${toggled}`)
+    await js(`document.querySelector('[data-testid="auto-run"]')?.click()`)
+    const autoToast = await waitFor(
+      `[...document.querySelectorAll('.sk-toast-root')].some(t => t.textContent.includes('更新了 1 个项目') && t.textContent.includes('openlist'))`,
+      10_000,
+    )
+    check('自动更新：立即跑一轮，结果弹提示', autoToast, await js<string>(`JSON.stringify([...document.querySelectorAll('.sk-toast-root')].map(t => t.textContent.slice(0, 120)))`))
+    // 关掉，免得影响后面的用例（活动列表里会多出自动更新的条目）
+    await js(`document.querySelector('[data-project="openlist"] .kura-docker-auto input')?.click()`)
+    await waitFor(`document.querySelector('[data-project="openlist"] .kura-docker-auto input')?.checked === false`, 8_000)
+
     // ⑦d3d 卷与网络（只读）
     await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === '卷')?.click()`)
     const volumes = await waitFor(`document.body.innerText.includes('old-cache') && document.body.innerText.includes('1 个没有容器在用')`, 8_000)

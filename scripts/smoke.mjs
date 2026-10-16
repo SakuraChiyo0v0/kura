@@ -125,6 +125,7 @@ const dockerState = {
     { id: 'c-broken', name: 'broken', image: 'busybox:latest', state: 'exited', status: 'Exited (0) 2 hours ago', health: '', created: Date.now(), ports: [], project: 'broken', service: 't', protected: false },
   ],
   activity: [],
+  auto: { projects: [], lastRunAt: 0, lastResult: [] },
   files: {
     compose: [{ path: '/volume1/docker/openlist/docker-compose.yaml', content: 'services:\n  openlist:\n    image: openlistteam/openlist:latest\n    restart: unless-stopped\n' }],
     env: { path: '/volume1/docker/openlist/.env', content: 'TZ=Asia/Shanghai\n', exists: true },
@@ -175,6 +176,29 @@ function handleDocker(req, res, body) {
   if (url.pathname === '/api/updates' && req.method === 'POST') {
     const { images = [] } = JSON.parse(body.toString() || '{}')
     return json(200, images.map((image) => ({ image, status: image.startsWith('openlistteam/') ? 'update' : 'current', local: 'sha256:old', remote: 'sha256:new', reason: '', checkedAt: Date.now() })))
+  }
+  // 按项目的自动更新（server/src/docker/autoupdate.ts）。真跑由服务端单测覆盖；
+  // 这里只保证界面能开关、能立即跑一轮。
+  if (url.pathname === '/api/auto') return json(200, dockerState.auto)
+  const autoSet = /^\/api\/auto\/([^/]+)\/(on|off)$/.exec(url.pathname)
+  if (autoSet) {
+    const name = decodeURIComponent(autoSet[1])
+    const projects = new Set(dockerState.auto.projects)
+    if (autoSet[2] === 'on') projects.add(name)
+    else projects.delete(name)
+    dockerState.auto.projects = [...projects].sort()
+    dockerState.activity.push({ at: new Date().toISOString(), action: 'docker-auto-update', detail: `${autoSet[2] === 'on' ? '开' : '关'}：${name}`, exitCode: 0 })
+    return json(200, dockerState.auto)
+  }
+  if (url.pathname === '/api/auto/run' && req.method === 'POST') {
+    // 开了开关的项目里，只有镜像名以 openlistteam/ 开头的那个有新版（跟 /api/updates 一个口径）
+    const results = dockerState.auto.projects
+      .filter((n) => dockerState.containers.some((c) => c.project === n && c.image.startsWith('openlistteam/')))
+      .map((n) => ({ project: n, images: ['openlistteam/openlist:latest'], ok: true, reason: '', at: Date.now() }))
+    dockerState.auto.lastRunAt = Date.now()
+    dockerState.auto.lastResult = results
+    for (const r of results) dockerState.activity.push({ at: new Date().toISOString(), action: 'docker-auto-update', detail: `${r.project}：更新了 ${r.images.join('、')}`, exitCode: 0 })
+    return json(200, results)
   }
   if (url.pathname === '/api/projects/openlist/files') {
     if (req.method === 'GET') return json(200, dockerState.files)
