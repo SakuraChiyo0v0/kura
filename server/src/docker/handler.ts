@@ -3,7 +3,9 @@ import type net from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { errorMessage } from '../../../src/core/errors.js'
 import type { AuditEntry } from '../shell/audit.js'
-import { runCompose, type ComposeAction, type ComposeRun, type ComposeTarget } from './compose.js'
+import { checkProjectName, runCompose, type ComposeAction, type ComposeRun, type ComposeTarget } from './compose.js'
+import type { AutoUpdate } from './autoupdate.js'
+import { ProjectLocks } from './locks.js'
 import type { ProjectFileStore } from './files.js'
 import type { UpdateCheck } from '../../../src/core/docker-types.js'
 import { DockerError, checkRef, createLogDemuxer, type DockerEngine } from './engine.js'
@@ -32,6 +34,10 @@ import type { DockerService } from './service.js'
  *   GET  /api/projects/:name/files      compose 与 .env 的内容、备份列表
  *   PUT  /api/projects/:name/files      {compose:[{path,content}], env?} —— 先校验、再备份、再原子替换
  *   POST /api/projects                  {name, compose, env?} 新建
+ * 按项目的自动更新（沿用容器管理那套开关；挂在同一个内置服务下，不新增内置服务名）：
+ *   GET  /api/auto                      开了自动更新的项目 + 上一轮结果
+ *   POST /api/auto/run                  立刻跑一轮（不开调度也能手动触发）
+ *   POST /api/auto/:项目名/{on,off}     开 / 关某个项目的自动更新
  *
  * 每个写操作都进审计；Kura 自己的容器 / 项目一律拒绝写（DockerService.assertMutable）。
  */
@@ -45,6 +51,10 @@ export interface DockerHandlerOptions {
   activity: (limit: number) => AuditEntry[]
   /** 项目文件读写（D3）；没给就没有编辑功能 */
   files?: ProjectFileStore
+  /** 按项目的自动更新；没给就没有这个功能 */
+  autoupdate?: AutoUpdate
+  /** 项目级 compose 锁；不给就自己造一个（自动更新要传同一个进来，见 locks.ts） */
+  locks?: ProjectLocks
   /** 测试注入：换掉真的 docker compose */
   compose?: (target: ComposeTarget, action: ComposeAction) => ComposeRun
   log?: (message: string, fields?: Record<string, unknown>) => void
@@ -105,8 +115,9 @@ export function createDockerHandler(options: DockerHandlerOptions): {
   const compose = options.compose ?? runCompose
   const log = options.log ?? (() => {})
   const wss = new WebSocketServer({ noServer: true })
-  /** 同一个项目同时只能有一个 compose 动作（两次 up 叠在一起结果不可预测） */
-  const busy = new Set<string>()
+  // 同一个项目同时只能有一个 compose 动作。这把锁**和自动更新共用**（见 locks.ts）：
+  // 自动更新在 pull + up 的时候，用户点「重启」必须被挡住，否则两边动同一批容器。
+  const locks = options.locks ?? new ProjectLocks()
 
   /** 能改文件、能删的项目：只有项目目录下的（managed）。 */
   const editable = async (name: string) => {
@@ -197,6 +208,22 @@ export function createDockerHandler(options: DockerHandlerOptions): {
         }
       }
 
+      // ---- 按项目的自动更新 ----
+      if (kind === 'auto' && options.autoupdate) {
+        const auto = options.autoupdate
+        if (method === 'GET' && !ref) return json(res, 200, auto.status())
+        // 开关先判：项目名可以是 `run`（checkProjectName 允许），
+        // 排在后面前者会把「开关 run 这个项目」误当成「跑一轮」
+        if (ref && (verb === 'on' || verb === 'off')) {
+          // 项目名要过一遍 compose 的规则：它会进 compose 的 -p 参数
+          checkProjectName(ref)
+          const status = auto.set(ref, verb === 'on')
+          options.audit({ action: 'docker-auto-update', detail: `${verb === 'on' ? '开' : '关'}：${ref}`, exitCode: 0, ip: ip(req) })
+          return json(res, 200, status)
+        }
+        if (method === 'POST' && ref === 'run') return json(res, 200, await auto.tick())
+      }
+
       // ---- 项目文件（D3）----
       if (kind === 'projects' && ref && verb === 'files' && options.files) {
         const project = await editable(ref)
@@ -268,15 +295,7 @@ export function createDockerHandler(options: DockerHandlerOptions): {
   }
 
   /** 同一个项目同时只跑一个 compose；出什么事都要把占位放掉 */
-  const exclusive = async <T>(name: string, work: () => Promise<T>): Promise<T> => {
-    if (busy.has(name)) throw new DockerError(409, `「${name}」正在执行别的操作，等它结束`)
-    busy.add(name)
-    try {
-      return await work()
-    } finally {
-      busy.delete(name)
-    }
-  }
+  const exclusive = <T>(name: string, work: () => Promise<T>): Promise<T> => locks.run(name, work)
 
   const runOne = async (ws: WebSocket, req: http.IncomingMessage, project: { name: string; dir: string; configFiles: string[] }, action: ComposeAction): Promise<number> => {
     const startedAt = Date.now()

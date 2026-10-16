@@ -16,6 +16,8 @@ import { DockerEngine } from './docker/engine.js'
 import { ProjectFileStore, composeValidator } from './docker/files.js'
 import { createDockerHandler, type AuditSink } from './docker/handler.js'
 import { DockerService, appstoreRoot } from './docker/service.js'
+import { AutoUpdate } from './docker/autoupdate.js'
+import { ProjectLocks } from './docker/locks.js'
 import { createDbHandler } from './db/handler.js'
 import { DatabaseRegistry } from './db/registry.js'
 import { TunnelService } from './db/tunnel.js'
@@ -155,15 +157,31 @@ async function serve(): Promise<void> {
         const files = existsSync(projectRoot) ? new ProjectFileStore(projectRoot, composeValidator()) : undefined
         let seq = 0
         const auditSink = (entry: Parameters<AuditSink>[0]) => audit.write({ ...entry, at: new Date().toISOString(), id: `d${Date.now().toString(36)}${++seq}`, user: 'kura' })
+        const service = new DockerService({
+          engine,
+          projectRoot,
+          // 绿联商店的项目要能启停，它的目录也得按原路径挂进来；没挂就只读
+          appstoreMounted: existsSync(appstoreRoot),
+        })
+        // 项目级 compose 锁：界面操作与自动更新**共用同一把**，否则自动更新在 pull + up
+        // 的时候用户点「重启」，两边会同时动同一个项目的容器（见 locks.ts）。
+        const locks = new ProjectLocks()
+        // 按项目的自动更新：跑在**这个已经常驻的进程**里，不多一个容器、不多一份配置
+        // （见 autoupdate.ts 顶部）。它只管别人的项目，kura-server 自己仍然由 watchtower 更新。
+        const autoupdate = new AutoUpdate({
+          engine,
+          service,
+          file: join(state, 'autoupdate.json'),
+          locks,
+          onResult: (r) => auditSink({ action: 'docker-auto-update', detail: `${r.project}：${r.ok ? `更新了 ${r.images.join('、')}` : r.reason}`, exitCode: r.ok ? 0 : 1 }),
+          log,
+        })
         const handler = createDockerHandler({
           engine,
-          service: new DockerService({
-            engine,
-            projectRoot,
-            // 绿联商店的项目要能启停，它的目录也得按原路径挂进来；没挂就只读
-            appstoreMounted: existsSync(appstoreRoot),
-          }),
+          service,
           files,
+          autoupdate,
+          locks,
           audit: auditSink,
           activity: (n) => audit.tail(n * 4),
           log,
@@ -176,13 +194,19 @@ async function serve(): Promise<void> {
         const tunnel = new TunnelService({ registry: dbRegistry, engine, log })
         const dbHandler = createDbHandler({ registry: dbRegistry, engine, tunnel, audit: auditSink, projectRoot, files, log })
 
+        // 调度随进程起；serve() 退出时跟着停（stop() 里调）
+        const stopAuto = autoupdate.start()
+
         return {
           request: (req: http.IncomingMessage, res: http.ServerResponse, path: string) =>
             path.startsWith('/api/db/') ? void dbHandler.handle(req, res) : void handler.handle(req, res),
           upgrade: (req: http.IncomingMessage, sock: net.Socket, head: Buffer, path: string) =>
             path.startsWith('/api/db/') ? dbHandler.upgrade(req, sock, head) : handler.upgrade(req, sock, head),
-          /** 退出时断掉所有隧道 */
-          close: () => tunnel.closeAll(),
+          /** 退出时断掉所有隧道、停掉调度 */
+          close: () => {
+            stopAuto()
+            tunnel.closeAll()
+          },
         }
       })()
     : undefined

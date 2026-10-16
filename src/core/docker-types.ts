@@ -137,6 +137,27 @@ export interface UpdateCheck {
   checkedAt: number
 }
 
+/** 按项目的自动更新：开关列表 + 上一轮结果。服务端也 import 这份（一个形状只有一处定义）。 */
+export interface AutoUpdateStatus {
+  /** 开了自动更新的项目名 */
+  projects: string[]
+  /** 这一轮什么时候跑的（毫秒）；从没跑过是 0 */
+  lastRunAt: number
+  lastResult: AutoUpdateRunResult[]
+  /** 现在有一轮正在跑。界面据此区分「跑完了没变化」和「还没跑完」 */
+  running: boolean
+}
+
+export interface AutoUpdateRunResult {
+  project: string
+  /** 换掉的那些镜像 */
+  images: string[]
+  ok: boolean
+  /** 失败原因（compose 输出的最后一行） */
+  reason: string
+  at: number
+}
+
 export interface DockerOverview {
   containers: ContainerView[]
   projects: ProjectView[]
