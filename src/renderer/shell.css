@@ -1556,3 +1556,20 @@ body {
   display: grid;
   gap: 2px;
 }
+
+/* 点库名跳到它的连接信息 */
+.kura-db-name__open {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--sk-accent-text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.kura-db-name__open:hover {
+  text-decoration: underline;
+}

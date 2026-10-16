@@ -179,6 +179,12 @@ export function DatabasesView(): React.JSX.Element {
 
   const openRemove = (db: DbView): void => setRemoving(db)
 
+  // 列表里点库名直接切到它的连接信息：先选中，再跳页
+  const openConnect = (name: string): void => {
+    setSelected(name)
+    setTab('connect')
+  }
+
   return (
     <div className="kura-db" data-testid="db-page">
       {state.error ? <Banner tone="warning" description={`刷新失败：${state.error}（显示的是上一次的状态）`} /> : null}
@@ -192,7 +198,15 @@ export function DatabasesView(): React.JSX.Element {
             value: 'list',
             label: `数据库 ${state.databases.length}`,
             icon: <Database {...icon} />,
-            content: <DatabasesTab databases={state.databases} tunnels={tunnels} onRefresh={refresh} onRemove={openRemove} />,
+            content: (
+              <DatabasesTab
+                databases={state.databases}
+                tunnels={tunnels}
+                onRefresh={refresh}
+                onRemove={openRemove}
+                onOpenConnect={openConnect}
+              />
+            ),
           },
           {
             value: 'connect',
@@ -261,11 +275,14 @@ function DatabasesTab({
   tunnels,
   onRefresh,
   onRemove,
+  onOpenConnect,
 }: {
   databases: DbView[]
   tunnels: Map<string, TunnelStatus>
   onRefresh: () => Promise<void>
   onRemove: (db: DbView) => void
+  /** 点名字直接跳到这个库的「连接信息」 */
+  onOpenConnect: (name: string) => void
 }): React.JSX.Element {
   const toast = useToast()
   const [busy, setBusy] = useState('')
@@ -303,7 +320,14 @@ function DatabasesTab({
       sortValue: (d) => d.name,
       cell: (d) => (
         <div className="kura-db-name">
-          <strong>{d.name}</strong>
+          <button
+            type="button"
+            className="kura-db-name__open"
+            title="看这个库的连接信息"
+            onClick={() => onOpenConnect(d.name)}
+          >
+            {d.name}
+          </button>
           <span className="kura-form__note">
             {engineLabel[d.engine]} · {d.user || '—'}
             {d.managed ? '' : ' · 接管的已有容器'}

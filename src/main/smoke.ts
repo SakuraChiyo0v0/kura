@@ -542,6 +542,22 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     const adopted = await js<string>(`document.querySelector('[data-testid="db-page"]')?.innerText.includes('5444') ? 'yes' : 'no'`)
     check('接管的已有数据库按容器实际端口显示', adopted === 'yes', `5444=${adopted}`)
 
+    // 点列表里的库名直接跳到它的连接信息。挑一个**当前没被选中**的（默认选中的是列表第一个 smoke-pg），
+    // 这样才算真的换了目标；断言只要求选择器里出现了目标名，不写死「名字（引擎）」的拼法
+    const nameClicked = await js<boolean>(`(() => {
+      const row = [...document.querySelectorAll('[data-testid="db-page"] tbody tr')]
+        .find(tr => tr.innerText.includes('smoke-redis'))
+      const button = row?.querySelector('.kura-db-name__open')
+      if (!button) return false
+      button.click()
+      return true
+    })()`)
+    const nameJumped = nameClicked && await waitFor(`(() => {
+      const shown = document.querySelector('[data-testid="db-picker"] .sk-select-value')?.textContent ?? ''
+      return shown.includes('smoke-redis') && document.querySelector('.kura-db-connect input[type="checkbox"]') !== null
+    })()`, 5_000)
+    check('数据库列表：点库名跳到它的连接信息', nameJumped, `点到了=${nameClicked} 选择器=${await js<string>(`document.querySelector('[data-testid="db-picker"] .sk-select-value')?.textContent ?? '无'`)}`)
+
     // 切到连接信息 → 给 sakura-pg 开隧道 → 本机端口真的在监听
     await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === '连接信息')?.click()`)
     await waitFor(`document.querySelector('[data-testid="copy-连接地址"]') !== null || document.querySelector('[data-testid="db-picker"]') !== null`, 5_000)
@@ -549,6 +565,14 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     await delay(300)
     const tunnelSwitch = await waitFor(`document.querySelector('.kura-db-connect input[type="checkbox"]') !== null`, 5_000)
     check('连接信息：能给接管的数据库开隧道', tunnelSwitch)
+    // 先用「自动挑一个空闲端口」，别用默认的 15432：本机可能正跑着一个占着它的 Kura（真实安装版
+    // 就在监听，冒烟会撞 EADDRINUSE 而误报）。挑端口本身也是界面上的正常路径。
+    await js(`(() => {
+      const button = [...document.querySelectorAll('.kura-db-portrow button')]
+        .find(b => b.textContent.trim().includes('自动挑一个空闲端口'))
+      button?.click()
+    })()`)
+    await delay(500)
     await js(`document.querySelector('.kura-db-connect input[type="checkbox"]')?.click()`)
     // 隧道开在本机回环上：地址与端口由主进程挑，界面上显示出来
     const tunnelReady = await waitFor(`document.querySelector('[data-testid="copy-连接地址"] code')?.textContent?.startsWith('127.0.0.1:') === true`, 10_000)
