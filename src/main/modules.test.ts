@@ -83,7 +83,7 @@ describe('ModuleManager', () => {
   })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-  const manager = () =>
+  const manager = (patch: Partial<ConstructorParameters<typeof ModuleManager>[0]> = {}) =>
     new ModuleManager({
       dir,
       davUrl: () => 'http://127.0.0.1:18006/',
@@ -92,6 +92,7 @@ describe('ModuleManager', () => {
         spawned.push({ exe, args, child })
         return child
       },
+      ...patch,
     })
 
   /** 放一个假的 rclone.exe 进 Kura 的模块目录（detect 只看文件在不在）。 */
@@ -171,5 +172,73 @@ describe('ModuleManager', () => {
     await m.detect()
     await m.uninstallRclone()
     expect(m.status().rclone.source).not.toBe('kura')
+  })
+
+  it('网络模式卸载：清掉网络位置历史，不报残留', async () => {
+    installFake()
+    const cleared: string[] = []
+    const m = manager({ clearNetworkHistory: async (v) => (cleared.push(v), '') })
+    await m.detect()
+    m.saveMountSettings({ ...mountDefaults, mode: 'network', volumeName: 'DXP4800GT' })
+    await m.mount()
+    await m.unmount()
+    expect(cleared).toEqual(['DXP4800GT'])
+    expect(m.status().mount).toMatchObject({ state: 'stopped', error: '' })
+  })
+
+  it('网络位置历史清不掉时：状态带出错原因，别静默放过', async () => {
+    installFake()
+    const m = manager({ clearNetworkHistory: async () => 'reg delete 失败' })
+    await m.detect()
+    m.saveMountSettings({ ...mountDefaults, mode: 'network', volumeName: 'DXP4800GT' })
+    await m.mount()
+    await m.unmount()
+    // 卸载本身是成功的（dist 已断开），但残留这事必须说出来
+    expect(m.status().mount.state).toBe('stopped')
+    expect(m.status().mount.error).toContain('DXP4800GT')
+    expect(m.status().mount.error).toContain('残留')
+  })
+
+  it('固定磁盘模式不碰网络位置历史（那是网络模式独有的）', async () => {
+    installFake()
+    const cleared: string[] = []
+    const m = manager({ clearNetworkHistory: async (v) => (cleared.push(v), '') })
+    await m.detect()
+    m.saveMountSettings({ ...mountDefaults, mode: 'disk' })
+    await m.mount()
+    await m.unmount()
+    expect(cleared).toEqual([])
+  })
+
+  it('挂载进程被外部结束：对账后不再说「已挂载」', async () => {
+    installFake()
+    const m = manager()
+    await m.detect()
+    await m.mount()
+    expect(m.status().mount.state).toBe('mounted')
+    // 模拟进程被任务管理器结束：child 没了，但 mountState 还停在 mounted
+    ;(m as unknown as { child: undefined }).child = undefined
+    await m.reconcile()
+    expect(m.status().mount).toMatchObject({ state: 'error', error: expect.stringContaining('不在运行') })
+  })
+
+  it('挂载点访问不到了：对账后不再说「已挂载」', async () => {
+    installFake()
+    const m = manager({ probeMountPoint: async () => false })
+    await m.detect()
+    m.saveMountSettings({ ...mountDefaults, drive: 'Q:' })
+    await m.mount()
+    expect(m.status().mount.state).toBe('mounted')
+    await m.reconcile()
+    expect(m.status().mount).toMatchObject({ state: 'error', error: expect.stringContaining('Q:') })
+  })
+
+  it('一切都好时对账不改状态（别把正常的挂载误判掉）', async () => {
+    installFake()
+    const m = manager({ probeMountPoint: async () => true })
+    await m.detect()
+    await m.mount()
+    await m.reconcile()
+    expect(m.status().mount.state).toBe('mounted')
   })
 })

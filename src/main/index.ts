@@ -543,12 +543,16 @@ function registerKuraIpc(): void {
   })
   router.handle(ch.dbTunnelPort, () => pickFreePort())
 
-  router.handle(ch.modulesStatus, (): ModulesStatusView => ({
-    ...modules.status(),
-    pinnedVersion: rcloneRelease.version,
-    winfspDownloadPage,
-    davRunning: localDav.view().running,
-  }))
+  router.handle(ch.modulesStatus, async (): Promise<ModulesStatusView> => {
+    // 取状态前对一次账：进程被外部结束 / 挂载掉了时，别一直说「已挂载」
+    await modules.reconcile()
+    return {
+      ...modules.status(),
+      pinnedVersion: rcloneRelease.version,
+      winfspDownloadPage,
+      davRunning: localDav.view().running,
+    }
+  })
   router.handle(ch.modulesInstallRclone, () => modules.installRclone())
   router.handle(ch.modulesUninstallRclone, () => modules.uninstallRclone())
   router.handle(ch.modulesMountSettings, () => modules.mountSettings())

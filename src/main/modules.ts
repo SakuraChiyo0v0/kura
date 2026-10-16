@@ -120,14 +120,35 @@ export function mountTarget(settings: MountSettings): string {
  * 清理 Explorer 留下的网络位置历史：`HKCU\...\MountPoints2\##server#<卷名>`。
  * 网络模式下 rclone 把卷暴露成 `\\server\<卷名>`，Explorer 每次访问都记一条，
  * 卸载后盘符没了但那一条还在，就成了「网络位置」里点不开的死图标。
- * 删不掉不算挂载失败，所以这里只返回错误信息，由调用方记日志。
+ *
+ * 卸载后 Explorer 可能还握着这条键（它刚访问过那个盘），删一次会失败。实测删不掉时
+ * 键多半还在，几秒后就好了 —— 所以重试几次，别像以前那样失败就放弃、让残留一直留着。
+ * 删不掉不算挂载失败，返回错误信息由调用方处理。
  */
-export function clearNetworkHistory(volumeName: string): string {
+export async function clearNetworkHistory(volumeName: string, attempts = 5): Promise<string> {
+  const key = `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2\\##server#${volumeName}`
+  let last = ''
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      execFileSync('reg', ['delete', key, '/f'], { stdio: 'ignore' })
+      return ''
+    } catch (error) {
+      last = errorMessage(error)
+      // 键本来就不存在不算失败（清过一次、或压根没建过）
+      if (!registryKeyExists(key)) return ''
+      if (attempt < attempts) await new Promise((r) => setTimeout(r, 600))
+    }
+  }
+  return last
+}
+
+/** 键在不在。用 reg query 而不是看 reg delete 的报错 —— 后者「不存在」与「被占用」是同一句话。 */
+function registryKeyExists(key: string): boolean {
   try {
-    execFileSync('reg', ['delete', `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2\\##server#${volumeName}`, '/f'], { stdio: 'ignore' })
-    return ''
-  } catch (error) {
-    return errorMessage(error)
+    execFileSync('reg', ['query', key], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -274,6 +295,10 @@ export interface ModuleManagerOptions {
   davUrl: () => string
   /** 测试注入：替代真的去下载与跑 rclone */
   spawnMount?: (exe: string, args: string[]) => ChildProcess
+  /** 测试注入：替代真的去读写用户注册表清理网络位置历史 */
+  clearNetworkHistory?: (volumeName: string) => Promise<string>
+  /** 测试注入：替代真的去探测挂载点（假挂载不会真的产生盘符/目录） */
+  probeMountPoint?: (mode: MountMode, target: string) => Promise<boolean>
 }
 
 export class ModuleManager {
@@ -286,12 +311,19 @@ export class ModuleManager {
   private readonly settingsFile: string
   /** 用户主动卸载时不报「意外退出」 */
   private stopping = false
+  /** 上次对账的时刻，给 reconcile 节流用 */
+  private reconciledAt = 0
 
   constructor(private readonly options: ModuleManagerOptions) {
     this.log = options.log ?? silentLogger
     this.settingsFile = join(options.dir, 'mount.json')
     this.settings = { ...mountDefaults, ...readJson<Partial<MountSettings>>(this.settingsFile) }
+    this.clearHistory = options.clearNetworkHistory ?? clearNetworkHistory
+    this.probeMountPoint = options.probeMountPoint ?? mountPointReady
   }
+
+  private readonly clearHistory: (volumeName: string) => Promise<string>
+  private readonly probeMountPoint: (mode: MountMode, target: string) => Promise<boolean>
 
   private get rcloneDir(): string {
     return join(this.options.dir, 'rclone')
@@ -326,6 +358,33 @@ export class ModuleManager {
 
   mountSettings(): MountSettings {
     return { ...this.settings }
+  }
+
+  /**
+   * 拿状态前对一次账。
+   *
+   * mountState 只在 Kura 自己 mount/unmount 时改；进程被外部结束（任务管理器结束 rclone、
+   * 系统重启后 WinFsp 掉了）时不会复位，界面就会一直说「已挂载到 X:」，而那个盘其实已经没了。
+   * 这里真的去问一次：进程还在不在、挂载点还访问得到吗。
+   *
+   * 只对 'mounted' 对账：'starting' 是 mount() 自己的等待循环在管，这里插手会误判成失败。
+   * 盘符探测要走 WinFsp → rclone → 本机 WebDAV，**不能同步做**（会卡死事件循环，见 driveExists）。
+   */
+  async reconcile(): Promise<void> {
+    if (this.mountState.state !== 'mounted') return
+    // 模块页 3 秒轮询一次，每轮都走一遍「WinFsp → rclone → 本机 WebDAV」没必要：几秒内信一次就够
+    const now = Date.now()
+    if (now - this.reconciledAt < 5_000) return
+    this.reconciledAt = now
+    // 进程没了，挂载一定也没了
+    if (!this.child) {
+      this.mountState = { ...this.mountState, state: 'error', error: '挂载进程已经不在运行了（被别的程序结束，或系统休眠后掉了），这个位置已断开。' }
+      return
+    }
+    // 进程还在，但挂载点访问不到了：WinFsp 挂载掉了
+    if (this.mountState.target && !(await this.probeMountPoint(this.settings.mode, this.mountState.target))) {
+      this.mountState = { ...this.mountState, state: 'error', error: `${this.mountState.target} 已经访问不到了（挂载掉了）。重新挂载可恢复。` }
+    }
   }
 
   saveMountSettings(next: MountSettings): MountSettings {
@@ -465,12 +524,14 @@ export class ModuleManager {
 
   async unmount(): Promise<void> {
     const child = this.child
-    if (!child) {
-      this.mountState = { ...this.mountState, state: 'stopped', error: '' }
-      return
-    }
     const mode = this.settings.mode
     const volumeName = this.settings.volumeName || mountDefaults.volumeName
+    if (!child) {
+      this.mountState = { ...this.mountState, state: 'stopped', error: '' }
+      // 进程早就没了（被外部杀掉、或上次挂载就失败）也可能留着网络位置残留，顺手清一次
+      if (mode === 'network') await this.clearLeftoverNetworkHistory(volumeName)
+      return
+    }
     this.stopping = true
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
@@ -487,11 +548,25 @@ export class ModuleManager {
     })
     this.child = undefined
     this.mountState = { ...this.mountState, state: 'stopped', error: '' }
-    // 网络模式挂一次就在 Explorer 留一条 \\server\<卷名> 历史（见 MountMode 注释），卸载时顺手清掉。
-    // 清不掉不影响卸载结果，记一行日志就好。
-    if (mode === 'network') {
-      const failed = clearNetworkHistory(volumeName)
-      if (failed) this.log.warn('清理网络位置历史失败', { 卷名: volumeName, err: failed })
+    // 网络模式挂一次就在 Explorer 留一条 \\server\<卷名> 历史（见 MountMode 注释），卸载时顺手清掉
+    if (mode === 'network') await this.clearLeftoverNetworkHistory(volumeName)
+  }
+
+  /**
+   * 清网络位置历史。清不掉不影响卸载结果，但要**说出来** —— 以前只记一行日志，
+   * 用户看到的是一个点不开的死图标，却不知道是 Kura 没清干净。
+   * 失败原因写进 mount.error：界面把它当「已卸载但有残留」显示，导览里也说一句。
+   */
+  private async clearLeftoverNetworkHistory(volumeName: string): Promise<void> {
+    const failed = await this.clearHistory(volumeName)
+    if (!failed) {
+      this.mountState = { ...this.mountState, error: '' }
+      return
+    }
+    this.log.warn('清理网络位置历史失败', { 卷名: volumeName, err: failed })
+    this.mountState = {
+      ...this.mountState,
+      error: `已卸载，但「网络位置」里那条 ${volumeName} 的残留没清掉（它会显示成点不开的图标）。重启 Kura 或重新挂载一次会再试。`,
     }
   }
 }

@@ -81,15 +81,18 @@ export function ModulesView() {
 
   /**
    * 挂载是异步的：点了按钮那一刻没有结果，失败发生在几秒之后。
-   * 卡片底部那行字太长被折叠、也不一定在视口里，所以状态落到 error 时补一条右下角提示。
+   * 卡片底部那行字太长被折叠、也不一定在视口里，所以状态出问题时补一条右下角提示。
+   *
+   * 除了「挂载失败」，还有一种要说的：卸载成功但网络位置残留没清掉（state 是 stopped 却带 error 文案）。
+   * 那是卸载之后才发现的，同样得让用户看到，否则他只会看到一个点不开的死图标。
    */
-  const mountFailed = status?.mount.state === 'error' ? status.mount.error : ''
+  const mountError = status?.mount.error ?? ''
   const notifiedMountError = useRef('')
   useEffect(() => {
-    if (!mountFailed || notifiedMountError.current === mountFailed) return
-    notifiedMountError.current = mountFailed
-    toast.notify({ title: '挂载失败', description: mountFailed, tone: 'error', duration: 0 })
-  }, [mountFailed, toast])
+    if (!mountError || notifiedMountError.current === mountError) return
+    notifiedMountError.current = mountError
+    toast.notify({ title: status?.mount.state === 'error' ? '挂载失败' : '卸载完成，但有残留', description: mountError, tone: status?.mount.state === 'error' ? 'error' : 'warning' })
+  }, [mountError, status?.mount.state, toast])
 
   const run = async (label: string, action: () => Promise<unknown>) => {
     setBusy(label)
