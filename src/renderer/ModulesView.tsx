@@ -227,57 +227,63 @@ export function ModulesView() {
         </ul>
 
         <div className="kura-module__settings">
-          <div className="kura-module__mode">
+          {/* fieldset 只借它的 disabled 语义：FluidSegmented 没有 disabled 属性，靠这个把里面的
+              radio 一并禁掉。挂载中改形态会让界面换成另一种字段、真实挂的盘却不动，要换先卸载。 */}
+          <fieldset className="kura-module__mode" disabled={mounted}>
             <FluidSegmented label="挂载形态" options={mountModes} value={settings.mode} onValueChange={(v) => saveSettings({ ...settings, mode: v as MountSettingsView['mode'] })} />
             <p className="kura-form__note">{mountModes.find((m) => m.value === settings.mode)?.description}</p>
+          </fieldset>
+
+          <div className="kura-module__fields">
+            {settings.mode === 'folder' ? (
+              <div className="kura-module__folder">
+                <TextField
+                  label="父目录"
+                  value={settings.folder}
+                  disabled={mounted}
+                  placeholder="D:\\"
+                  onChange={(e) => setSettings({ ...settings, folder: e.target.value })}
+                  onBlur={() => saveSettings(settings)}
+                />
+                <Button variant="secondary" icon={<FolderOpen {...icon} />} disabled={mounted} onClick={() => void pickFolder()}>
+                  选择…
+                </Button>
+                <p className="kura-form__note" data-testid="folder-note">
+                  {mountPoint ? `会挂到 ${mountPoint}（这个目录由 rclone 创建，不能已存在）` : `选一个文件夹，Kura 会在它下面建 ${folderLeaf} 子目录作为挂载点`}
+                </p>
+                {folderMissing && (
+                  <p className="kura-form__hint" data-testid="folder-missing">
+                    <CircleAlert {...icon} />
+                    还没选文件夹，选好才能挂载
+                  </p>
+                )}
+              </div>
+            ) : (
+              <>
+                <SelectField label="盘符" value={settings.drive} options={drives} disabled={mounted} onValueChange={(v) => saveSettings({ ...settings, drive: v })} />
+                <TextField
+                  label="卷名"
+                  value={settings.volumeName}
+                  disabled={mounted}
+                  maxLength={32}
+                  onChange={(e) => setSettings({ ...settings, volumeName: e.target.value })}
+                  onBlur={() => saveSettings(settings)}
+                />
+              </>
+            )}
+            <SelectField
+              label="缓存"
+              value={settings.cacheMode}
+              options={cacheModes}
+              disabled={mounted}
+              onValueChange={(v) => saveSettings({ ...settings, cacheMode: v as MountSettingsView['cacheMode'] })}
+            />
           </div>
 
-          {settings.mode === 'folder' ? (
-            <div className="kura-module__folder">
-              <TextField
-                label="父目录"
-                value={settings.folder}
-                disabled={mounted}
-                placeholder="D:\\"
-                onChange={(e) => setSettings({ ...settings, folder: e.target.value })}
-                onBlur={() => saveSettings(settings)}
-              />
-              <Button variant="secondary" icon={<FolderOpen {...icon} />} disabled={mounted} onClick={() => void pickFolder()}>
-                选择…
-              </Button>
-              <p className="kura-form__note" data-testid="folder-note">
-                {mountPoint ? `会挂到 ${mountPoint}（这个目录由 rclone 创建，不能已存在）` : `选一个文件夹，Kura 会在它下面建 ${folderLeaf} 子目录作为挂载点`}
-              </p>
-              {folderMissing && (
-                <p className="kura-form__hint" data-testid="folder-missing">
-                  <CircleAlert {...icon} />
-                  还没选文件夹，选好才能挂载
-                </p>
-              )}
-            </div>
-          ) : (
-            <SelectField label="盘符" value={settings.drive} options={drives} disabled={mounted} onValueChange={(v) => saveSettings({ ...settings, drive: v })} />
-          )}
-
-          {settings.mode !== 'folder' && (
-            <TextField
-              label="卷名"
-              value={settings.volumeName}
-              disabled={mounted}
-              maxLength={32}
-              onChange={(e) => setSettings({ ...settings, volumeName: e.target.value })}
-              onBlur={() => saveSettings(settings)}
-            />
-          )}
-          <SelectField
-            label="缓存"
-            value={settings.cacheMode}
-            options={cacheModes}
-            disabled={mounted}
-            onValueChange={(v) => saveSettings({ ...settings, cacheMode: v as MountSettingsView['cacheMode'] })}
-          />
-          <SwitchField label="只读挂载" checked={settings.readOnly} disabled={mounted} onCheckedChange={(v) => saveSettings({ ...settings, readOnly: v })} />
-          <SwitchField label="Kura 启动时自动挂载" checked={settings.autoMount} onCheckedChange={(v) => saveSettings({ ...settings, autoMount: v })} />
+          <div className="kura-module__switches">
+            <SwitchField label="只读挂载" checked={settings.readOnly} disabled={mounted} onCheckedChange={(v) => saveSettings({ ...settings, readOnly: v })} />
+            <SwitchField label="Kura 启动时自动挂载" checked={settings.autoMount} onCheckedChange={(v) => saveSettings({ ...settings, autoMount: v })} />
+          </div>
         </div>
 
         {mount.error && <p className="kura-card__error">{mount.error}</p>}

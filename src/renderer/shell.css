@@ -981,21 +981,54 @@ body {
 
 .kura-module__settings {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 12px 20px;
-  align-items: end;
+  gap: 16px;
 }
 
-/* 挂载形态选择器与它的说明占整行，下面的表单项再各占一格 */
-.kura-module__mode,
-.kura-module__settings > .kura-form__note,
-.kura-module__folder {
-  grid-column: 1 / -1;
-}
-
+/* 挂载形态选择器与它的说明占整行 */
 .kura-module__mode {
   display: grid;
   gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+/* 形态锁住时给个「不可用」的样子：fieldset 的 disabled 只拦住交互，视觉还得自己给 */
+.kura-module__mode:disabled {
+  opacity: 0.6;
+}
+
+/* 三个字段各占一格、限宽，别让窗口一宽就把 SelectField 拉成长条。
+   列数跟着卡片自己伸缩（窄了自动换行），单格宽度上限由 max-width 卡住。 */
+.kura-module__fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px 20px;
+  align-items: end;
+  max-width: 660px;
+}
+
+/* 只卡直接子元素那三个字段；folder 模式里「父目录」是嵌在 __folder 里的路径框，要让它宽 */
+.kura-module__fields > .sk-select-field,
+.kura-module__fields > .sk-text-field {
+  max-width: 220px;
+}
+
+/* folder 模式只有一个「父目录 + 选择」，让它整行铺开，不和上面三格的网格对齐 */
+.kura-module__fields > .kura-module__folder {
+  grid-column: 1 / -1;
+}
+
+/* 开关各占一行、整行左对齐：它们是开关，和上面的输入框不是一个东西，
+   混进同一张网格会被挤成一行最右边的小尾巴。 */
+.kura-module__switches {
+  display: grid;
+  gap: 12px;
+}
+
+.kura-module__switches .sk-switch-field {
+  justify-content: flex-start;
 }
 
 /* FluidSegmented 默认按内容宽自适应；三个中文标签要平分整行才不至于竖排折行 */
