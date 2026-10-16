@@ -8,6 +8,7 @@ import {
   SidebarNav,
   SwitchField,
   ToastProvider,
+  useToast,
 } from '@sakura-ui/react'
 import {
   SettingsPage,
@@ -75,8 +76,9 @@ function SettingsView({
   onConnectionSaved: (summary: ConnectionSummary) => void
   onConnectionCleared: () => void
 }) {
+  const toast = useToast()
   return (
-    <SettingsPage title="设置" description="改动立即生效并保存。">
+    <SettingsPage description="改动立即生效并保存。">
       <SettingsSection title="外观">
         <SettingsRow
           label="主题"
@@ -118,7 +120,11 @@ function SettingsView({
                 variant="ghost"
                 onClick={() => {
                   if (!window.confirm('清除已保存的连接与凭据？映射会立即停止，需要重新走一遍引导。')) return
-                  void window.kura?.connection.clear().then(onConnectionCleared)
+                  // 失败要说：清不掉却什么也不弹，用户会以为已经清了
+                  void window.kura
+                    ?.connection.clear()
+                    .then(onConnectionCleared)
+                    .catch((caught: Error) => toast.notify({ title: '清除失败', description: caught.message, tone: 'error', duration: 0 }))
                 }}
               >
                 清除连接与凭据
@@ -241,7 +247,7 @@ function Shell() {
         onCollapsedChange={(value) => set('sidebarCollapsed', value)}
         header={<span className="kura-brand">Kura 蔵</span>}
       />
-      <main className="kura-main" data-terminal-active={page.id === 'terminal' || undefined}>
+      <main className="kura-main" data-page={page.id} data-terminal-active={page.id === 'terminal' || undefined}>
         <PageTransition routeKey={page.id}>
           <header className="kura-page-header">
             <h1 className="kura-page-title" data-testid="page-title">

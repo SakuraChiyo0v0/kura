@@ -179,6 +179,14 @@ body {
   gap: 10px;
 }
 
+/* 设置页是窄列表单：外壳自己带 max-width:760px，但默认左贴边，右边空一大块。
+   页头由外壳渲染、在 SettingsPage 之外，只收窄卡片会让标题和表单错开两列 ——
+   所以收在面板这一层，把「页头 + 表单」整列一起居中，跟引导页、启动进度一致。 */
+.kura-main[data-page='settings'] > .sk-page-transition > .sk-page-panel {
+  max-width: 760px;
+  margin-inline: auto;
+}
+
 .kura-settings-connection {
   display: grid;
   gap: 14px;
@@ -320,15 +328,19 @@ body {
   color: var(--sk-muted);
   font-family: var(--kura-font-mono);
   font-size: 12px;
+  /* 字号比正文小，行高按正文的 1.55 算出来会偏高、与左边的服务名不平。
+     固定 18px，也让可点与不可点这两行算出来是同一个数。 */
+  line-height: 18px;
 }
 
-/* 服务在监听时地址可点，开在本机浏览器里 */
+/* 服务在监听时地址可点，开在本机浏览器里。
+   只改颜色与按钮外观：字体、字号、行高都由上面的 .kura-service-list__addr 统一给。
+   这里别写 font: inherit —— 它会把等宽 12px 重置回正文字体，跟旁边不可点的那行差出两重。 */
 .kura-service-list__addr--open {
   justify-self: start;
   padding: 0;
   border: 0;
   background: none;
-  font: inherit;
   color: var(--sk-accent-text);
   cursor: pointer;
   text-align: left;
