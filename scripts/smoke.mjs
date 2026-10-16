@@ -125,7 +125,8 @@ const dockerState = {
     { id: 'c-broken', name: 'broken', image: 'busybox:latest', state: 'exited', status: 'Exited (0) 2 hours ago', health: '', created: Date.now(), ports: [], project: 'broken', service: 't', protected: false },
   ],
   activity: [],
-  auto: { projects: [], lastRunAt: 0, lastResult: [] },
+  // 和真服务端一个口径：Kura 自己默认开着，别的项目默认关
+  auto: { projects: ['kura-server'], lastRunAt: 0, lastResult: [] },
   files: {
     compose: [{ path: '/volume1/docker/openlist/docker-compose.yaml', content: 'services:\n  openlist:\n    image: openlistteam/openlist:latest\n    restart: unless-stopped\n' }],
     env: { path: '/volume1/docker/openlist/.env', content: 'TZ=Asia/Shanghai\n', exists: true },
