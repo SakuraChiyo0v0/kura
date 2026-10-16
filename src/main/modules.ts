@@ -116,40 +116,62 @@ export function mountTarget(settings: MountSettings): string {
   return folderTarget(parent)
 }
 
+/** 注册表的三个动作，抽出来是为了能在单测里复刻「Explorer 稍后才写键」这个窗口。 */
+export interface RegistryAccess {
+  delete(key: string): void
+  exists(key: string): boolean
+  sleep(ms: number): Promise<void>
+}
+
+const realRegistry: RegistryAccess = {
+  delete: (key) => execFileSync('reg', ['delete', key, '/f'], { stdio: 'ignore' }),
+  // 用 reg query 而不是看 reg delete 的报错 —— 后者「不存在」与「被占用」是同一句话
+  exists: (key) => {
+    try {
+      execFileSync('reg', ['query', key], { stdio: 'ignore' })
+      return true
+    } catch {
+      return false
+    }
+  },
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+}
+
 /**
  * 清理 Explorer 留下的网络位置历史：`HKCU\...\MountPoints2\##server#<卷名>`。
  * 网络模式下 rclone 把卷暴露成 `\\server\<卷名>`，Explorer 每次访问都记一条，
  * 卸载后盘符没了但那一条还在，就成了「网络位置」里点不开的死图标。
  *
- * 卸载后 Explorer 可能还握着这条键（它刚访问过那个盘），删一次会失败。实测删不掉时
- * 键多半还在，几秒后就好了 —— 所以重试几次，别像以前那样失败就放弃、让残留一直留着。
+ * **这条键是 Explorer 在卸载时才写的，不是挂载时**：实测（命令行挂载）它在 rclone 退出后
+ * 0.06~0.11s 才出现，所以卸载后「立刻删一次」往往删的是个空，删完它才冒出来。
+ * 用 rc API 挂载则相反，unmount 返回时键已经在了 —— 两种方式都留残留，只是时机不同。
+ *
+ * 所以不能「删不掉且当前不存在」就当成清干净了（那正好绕过上面的窗口），
+ * 而要守着整个窗口反复删，最后**以键在不在为准**。Explorer 还握着键时删除会失败，
+ * 过一会儿自然就好了。
+ *
  * 删不掉不算挂载失败，返回错误信息由调用方处理。
  */
-export async function clearNetworkHistory(volumeName: string, attempts = 5): Promise<string> {
+export async function clearNetworkHistory(
+  volumeName: string,
+  windowMs = 2_000,
+  registry: RegistryAccess = realRegistry,
+): Promise<string> {
   const key = `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\MountPoints2\\##server#${volumeName}`
+  const deadline = Date.now() + windowMs
   let last = ''
-  for (let attempt = 1; attempt <= attempts; attempt++) {
+  do {
     try {
-      execFileSync('reg', ['delete', key, '/f'], { stdio: 'ignore' })
-      return ''
+      registry.delete(key)
+      last = ''
     } catch (error) {
-      last = errorMessage(error)
-      // 键本来就不存在不算失败（清过一次、或压根没建过）
-      if (!registryKeyExists(key)) return ''
-      if (attempt < attempts) await new Promise((r) => setTimeout(r, 600))
+      // 键不存在说明这一轮没必要删（还没被写出来，或已经删掉了），不算失败
+      last = registry.exists(key) ? errorMessage(error) : ''
     }
-  }
-  return last
-}
-
-/** 键在不在。用 reg query 而不是看 reg delete 的报错 —— 后者「不存在」与「被占用」是同一句话。 */
-function registryKeyExists(key: string): boolean {
-  try {
-    execFileSync('reg', ['query', key], { stdio: 'ignore' })
-    return true
-  } catch {
-    return false
-  }
+    await registry.sleep(250)
+  } while (Date.now() < deadline)
+  // 中途删掉过也可能被 Explorer 再写回来，以最后一眼为准
+  return registry.exists(key) ? last || '「网络位置」里的残留删不掉（Explorer 还占着）' : ''
 }
 
 /** rclone mount 的参数。remote 用连接串语法，免得写 rclone.conf。 */

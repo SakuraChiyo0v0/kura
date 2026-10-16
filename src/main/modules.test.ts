@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { ModuleManager, mountArgs, mountDefaults, mountTarget, rcloneRelease, validateDrive, validateFolder } from './modules.js'
+import { ModuleManager, clearNetworkHistory, mountArgs, mountDefaults, mountTarget, rcloneRelease, validateDrive, validateFolder } from './modules.js'
 
 describe('rclone 挂载参数', () => {
   it('连接串形态、盘符、缓存目录、只读', () => {
@@ -197,6 +197,34 @@ describe('ModuleManager', () => {
     expect(m.status().mount.state).toBe('stopped')
     expect(m.status().mount.error).toContain('DXP4800GT')
     expect(m.status().mount.error).toContain('残留')
+  })
+
+  it('Explorer 稍后才写键：守着窗口重试，别把「此刻不存在」当清干净', async () => {
+    // 实测：这条键是卸载时才由 Explorer 写的（命令行挂载在 rclone 退出后 0.06~0.11s）。
+    // 卸载后立刻删一次，删的是个空；旧逻辑查到「键不存在」就 return 成功，
+    // 恰好绕过整个窗口、残留一直留着。
+    //
+    // 关键：写键要由**独立计时器**驱动，不能挂在被测代码的 sleep 上 ——
+    // 否则旧逻辑提前 return、sleep 压根不执行，残留就永远不会出现，测试假绿。
+    let present = false
+    const writer = setTimeout(() => { present = true }, 150)
+    const registry = {
+      delete: () => {
+        if (!present) throw new Error('reg delete: 系统找不到指定的注册表项') // 键还没被写出来
+        present = false
+      },
+      exists: () => present,
+      sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+    }
+    try {
+      const failed = await clearNetworkHistory('DXP4800GT', 600, registry)
+      // 等窗口彻底过去再断言：旧逻辑此刻已经 return 了，而键会在这之后才被写出来
+      await new Promise((r) => setTimeout(r, 300))
+      expect(failed, '守满窗口后应当删掉，返回成功').toBe('')
+      expect(present, '窗口内写进来的键应当被删掉').toBe(false)
+    } finally {
+      clearTimeout(writer)
+    }
   })
 
   it('固定磁盘模式不碰网络位置历史（那是网络模式独有的）', async () => {
