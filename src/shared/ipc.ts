@@ -1,6 +1,6 @@
 /** Kura 自己的 IPC 通道与 preload 暴露的 window.kura 形状。 */
 import type { DockerActivity, ProjectAction, ProjectFilesView } from '../core/docker-client.js'
-import type { ContainerDetail, ContainerStats, DockerOverview, ImageView, NetworkView, UpdateCheck, VolumeView } from '../core/docker-types.js'
+import type { AutoUpdateRunResult, AutoUpdateStatus, ContainerDetail, ContainerStats, DockerOverview, ImageView, NetworkView, UpdateCheck, VolumeView } from '../core/docker-types.js'
 import type { DatabaseView, DbExecResult, DatabaseTemplate } from '../core/db-client.js'
 import type { DbEngine } from '../core/db-types.js'
 import type { LinkModeSetting } from '../core/link.js'
@@ -112,6 +112,9 @@ export const kuraChannels = {
   dockerVolumes: 'kura:docker:volumes',
   dockerNetworks: 'kura:docker:networks',
   dockerCheckUpdates: 'kura:docker:check-updates',
+  dockerAutoUpdate: 'kura:docker:auto-update',
+  dockerSetAutoUpdate: 'kura:docker:set-auto-update',
+  dockerRunAutoUpdate: 'kura:docker:run-auto-update',
   dockerShellOpen: 'kura:docker:shell-open',
   dockerShellInput: 'kura:docker:shell-input',
   dockerShellResize: 'kura:docker:shell-resize',
@@ -410,6 +413,12 @@ export interface KuraBridge {
     networks(): Promise<NetworkView[]>
     /** 问仓库有没有新版（不拉镜像） */
     checkUpdates(images: string[]): Promise<UpdateCheck[]>
+    /** 按项目的自动更新：开了开关的项目 + 上一轮结果 */
+    autoUpdate(): Promise<AutoUpdateStatus>
+    /** 开 / 关某个项目的自动更新；返回改完的状态 */
+    setAutoUpdate(name: string, on: boolean): Promise<AutoUpdateStatus>
+    /** 立刻跑一轮（所有开了开关的项目） */
+    runAutoUpdate(): Promise<AutoUpdateRunResult[]>
     /** 进容器 shell：返回会话 id；输出与结束走 onStream（和流同一个通道），输入 / 尺寸走下面两个 */
     openShell(container: string, cols: number, rows: number): Promise<string>
     shellInput(id: string, data: string): Promise<void>

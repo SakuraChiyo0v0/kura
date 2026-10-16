@@ -1195,6 +1195,20 @@ body {
   flex-wrap: wrap;
 }
 
+/* 项目行里的「自动更新」开关：跟按钮排在一行，不能按 SwitchField 默认那套上下堆 */
+.kura-docker-auto {
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 6px;
+  margin-right: 2px;
+}
+
+.kura-docker-auto .sk-switch-label {
+  color: var(--sk-color-text-muted, #6b7280);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .kura-docker-image {
   display: inline-block;
   margin-right: 6px;

@@ -1,6 +1,6 @@
 import http from 'node:http'
 import { WebSocket } from 'ws'
-import type { ContainerDetail, ContainerStats, DockerOverview, ImageView, NetworkView, UpdateCheck, VolumeView } from './docker-types.js'
+import type { AutoUpdateRunResult, AutoUpdateStatus, ContainerDetail, ContainerStats, DockerOverview, ImageView, NetworkView, UpdateCheck, VolumeView } from './docker-types.js'
 
 /**
  * 客户端这一侧的容器管理：连 kura-server 的内置服务 `docker`。
@@ -184,6 +184,23 @@ export class DockerClient {
   checkUpdates(images: string[]): Promise<UpdateCheck[]> {
     // 真机上问一个镜像要二三十秒（服务端 4 个并发）：十几个镜像得几分钟
     return this.send('POST', '/api/updates', { images }, 600_000)
+  }
+
+  // ---- 按项目的自动更新 ----
+
+  /** 开了自动更新的项目 + 上一轮结果。 */
+  autoUpdate(): Promise<AutoUpdateStatus> {
+    return this.json('GET', '/api/auto')
+  }
+
+  /** 开 / 关某个项目的自动更新；返回改完的状态。 */
+  setAutoUpdate(name: string, on: boolean): Promise<AutoUpdateStatus> {
+    return this.send('POST', `/api/auto/${encodeURIComponent(name)}/${on ? 'on' : 'off'}`, {})
+  }
+
+  /** 立刻跑一轮。真机上 pull 要几分钟，给宽一点。所有开了开关的项目一起跑。 */
+  runAutoUpdate(): Promise<AutoUpdateRunResult[]> {
+    return this.send('POST', '/api/auto/run', {}, 1_800_000)
   }
 
   /**

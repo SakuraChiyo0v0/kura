@@ -17,7 +17,7 @@ import {
   type DataTableColumn,
   type StatusTone,
 } from '@sakura-ui/react'
-import type { ContainerDetail, ContainerStats, ContainerView, DockerOverview, ImageView, NetworkView, ProjectView, UpdateCheck, VolumeView } from '../core/docker-types.js'
+import type { AutoUpdateStatus, ContainerDetail, ContainerStats, ContainerView, DockerOverview, ImageView, NetworkView, ProjectView, UpdateCheck, VolumeView } from '../core/docker-types.js'
 import { humanBytes } from '../core/stats.js'
 import type { DockerActivity, DockerStreamEvent, ProjectAction } from '../shared/ipc.js'
 import type { ServiceView } from '../core/mirror.js'
@@ -222,7 +222,7 @@ interface UpdatesState {
 
 /**
  * 「有没有新版」：借 Arcane 的 digest 更新提示。只在用户点了才去问仓库（NAS 要连外网、仓库有限流），
- * 结果留在这一页的内存里。只提示，不自动更新 —— 自动的那件事 NAS 上的 watchtower 在做。
+ * 结果留在这一页的内存里。这是手动那一路；按项目的自动更新见 useAutoUpdate。
  */
 function useUpdateChecks(overview: DockerOverview | null): UpdatesState {
   const toast = useToast()
@@ -248,6 +248,81 @@ function useUpdateChecks(overview: DockerOverview | null): UpdatesState {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overview])
   return { byImage, checking, checkedAt, check }
+}
+
+interface AutoUpdateState {
+  status: AutoUpdateStatus | null
+  busy: string
+  toggle: (name: string, on: boolean) => void
+  runNow: () => void
+}
+
+/**
+ * 按项目的自动更新（服务端在 kura-server 里跑，见 server/src/docker/autoupdate.ts）。
+ * 这里是它的开关与状态显示 —— 调度不依赖这个窗口开着。
+ */
+function useAutoUpdate(): AutoUpdateState {
+  const toast = useToast()
+  const [status, setStatus] = useState<AutoUpdateStatus | null>(null)
+  const [busy, setBusy] = useState('')
+
+  useEffect(() => {
+    if (!window.kura) return
+    let alive = true
+    const load = () =>
+      void window.kura!.docker
+        .autoUpdate()
+        .then((next) => {
+          if (alive) setStatus(next)
+        })
+        // 老镜像没有这个接口（404），静默即可 —— 页面照常能用，只是没有自动更新这一节
+        .catch(() => {})
+    load()
+    const timer = setInterval(() => document.visibilityState === 'visible' && load(), 10_000)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [])
+
+  const toggle = useCallback((name: string, on: boolean) => {
+    if (!window.kura) return
+    setBusy(name)
+    void window.kura.docker
+      .setAutoUpdate(name, on)
+      .then(setStatus)
+      .catch((e: Error) => toast.notify({ title: on ? `没能给 ${name} 开自动更新` : `没能给 ${name} 关自动更新`, description: e.message, tone: 'error' }))
+      .finally(() => setBusy(''))
+  }, [toast])
+
+  const runNow = useCallback(() => {
+    if (!window.kura) return
+    setBusy('*')
+    void window.kura.docker
+      .runAutoUpdate()
+      .then((results) => {
+        // 空结果有两种意思：真的一轮没变化，或者上一轮还在跑、这次被跳过了（服务端 returning []）
+        // —— 拿状态里的 running 区分，别把「没跑成」说成「都是最新的」
+        return window.kura!.docker.autoUpdate().then((next) => {
+          setStatus(next)
+          if (next.running) {
+            toast.notify({ title: '上一轮还在跑', description: '等它跑完再来（自动更新同一时间只跑一轮）', tone: 'info' })
+            return
+          }
+          const changed = results.filter((r) => r.ok)
+          const failed = results.filter((r) => !r.ok)
+          toast.notify({
+            title: changed.length ? `更新了 ${changed.length} 个项目` : '都是最新的',
+            description: failed.length ? `${failed.length} 个失败：${failed[0]!.project} · ${failed[0]!.reason}` : undefined,
+            tone: failed.length ? 'error' : 'success',
+          })
+        })
+      })
+      .catch((e: Error) => toast.notify({ title: '自动更新失败', description: e.message, tone: 'error' }))
+      .finally(() => setBusy(''))
+  }, [toast])
+
+  return { status, busy, toggle, runNow }
 }
 
 /** 删除项目：两个勾默认都不勾 —— 默认只停掉并移除容器，卷和文件都留着（借 Arcane 的 Destroy）。 */
@@ -286,6 +361,7 @@ function ProjectsTab({
   mapped,
   onOpenMirror,
   updates,
+  auto,
 }: {
   overview: DockerOverview
   onRun: (project: ProjectView, action: ProjectAction) => void
@@ -297,6 +373,7 @@ function ProjectsTab({
   mapped: ServiceView[]
   onOpenMirror?: () => void
   updates: UpdatesState
+  auto: AutoUpdateState
 }) {
   const [query, setQuery] = useState('')
   const q = query.trim().toLowerCase()
@@ -326,6 +403,19 @@ function ProjectsTab({
         <Button size="sm" variant="ghost" icon={<CircleArrowUp {...icon} />} disabled={updates.checking} onClick={updates.check} title="问镜像仓库有没有新版（不拉镜像）">
           {updates.checking ? '检查中…' : updates.checkedAt ? `检查更新（${new Date(updates.checkedAt).toLocaleTimeString('zh-CN', { hour12: false })}）` : '检查更新'}
         </Button>
+        {auto.status && auto.status.projects.length > 0 && (
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<RotateCcw {...icon} />}
+            disabled={Boolean(auto.busy)}
+            onClick={auto.runNow}
+            title={`立即对开了自动更新的 ${auto.status.projects.length} 个项目跑一轮（平时每 6 小时自己跑）`}
+            data-testid="auto-run"
+          >
+            {auto.busy === '*' ? '更新中…' : '立即跑一轮'}
+          </Button>
+        )}
         <div className="kura-toolbar__search">
           <TextField label="筛选项目" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="名字或目录" />
         </div>
@@ -361,6 +451,20 @@ function ProjectsTab({
                   <span className="kura-form__note">由 watchtower 更新，Kura 里只读</span>
                 ) : (
                   <div className="kura-docker-actions">
+                    {canStart && (
+                      <SwitchField
+                        label="自动更新"
+                        className="kura-docker-auto"
+                        checked={Boolean(auto.status?.projects.includes(p.name))}
+                        disabled={Boolean(auto.busy)}
+                        onCheckedChange={(on) => auto.toggle(p.name, on)}
+                      />
+                    )}
+                    {canStart && auto.status?.projects.includes(p.name) && (
+                      <span className="kura-form__note" title="同一个项目别在 Kura 和 NAS 上的 watchtower 两边都开">
+                        每 6 小时问一次，有新版本就拉取并重建
+                      </span>
+                    )}
                     {canStart && p.status !== 'running' && (
                       <Button size="sm" variant="secondary" icon={<Play {...icon} />} disabled={Boolean(busy)} onClick={() => onRun(p, 'up')}>
                         {running ? '执行中…' : '启动'}
@@ -979,6 +1083,7 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
   const [editing, setEditing] = useState<string | null>(null)
   const seq = useRef(0)
   const updates = useUpdateChecks(overview)
+  const auto = useAutoUpdate()
 
   useEffect(ensureStreamSubscription, [])
 
@@ -1136,6 +1241,7 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
                   mapped={mapped}
                   onOpenMirror={onOpenMirror}
                   updates={updates}
+                  auto={auto}
                 />
               ),
             },
