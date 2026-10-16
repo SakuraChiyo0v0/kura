@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { CheckCircle2, CircleAlert, Download, ExternalLink, FolderOpen, FolderTree, HardDrive, HardDriveDownload, Network, RefreshCw } from 'lucide-react'
-import { Button, ConfirmDialog, FluidSegmented, ProgressBar, SelectField, StatusBadge, SwitchField, TextField, useToast } from '@sakura-ui/react'
+import { Button, ConfirmDialog, EmptyState, FluidSegmented, ProgressBar, SelectField, StatusBadge, SwitchField, TextField, useToast } from '@sakura-ui/react'
 import { folderLeaf, folderTarget } from '../shared/mount.js'
 import type { ModulesStatusView, MountSettingsView } from '../shared/ipc.js'
 
@@ -44,18 +44,33 @@ export function ModulesView() {
   // 先发后到的旧响应要是也 set，界面就会跳回旧值（例如连点两次开关，最后停在第一次的结果）。
   const statusSeq = useRef(0)
   const saveSeq = useRef(0)
+  /** 第一次拿到状态之前失败过：整页给提示，而不是留一片空白 */
+  const [loadError, setLoadError] = useState('')
 
   const refresh = useCallback(async () => {
     if (!window.kura) return
     const seq = ++statusSeq.current
-    const next = await window.kura.modules.status()
-    if (seq === statusSeq.current) setStatus(next)
+    try {
+      const next = await window.kura.modules.status()
+      if (seq === statusSeq.current) setStatus(next)
+    } catch (caught) {
+      // 轮询挂在定时器上，抛出去就是未处理拒绝；没内容可显示时才把原因摆到页面上
+      if (seq === statusSeq.current) setLoadError((prev) => prev || (caught as Error).message)
+    }
   }, [])
 
   useEffect(() => {
     void refresh()
-    void window.kura?.modules.mountSettings().then(setSettings)
+    void window.kura?.modules
+      .mountSettings()
+      .then(setSettings)
+      .catch((caught: Error) => setLoadError((prev) => prev || caught.message))
   }, [refresh])
+
+  // 两样都拿到了才算真的好了：只清 status 那次失败的话，mountSettings 的错会被下一轮轮询抹掉、页面又变空白
+  useEffect(() => {
+    if (status && settings) setLoadError('')
+  }, [status, settings])
 
   // 安装、挂载过程中刷得勤一点
   const active = status?.rclone.state === 'installing' || status?.mount.state === 'starting'
@@ -63,6 +78,18 @@ export function ModulesView() {
     const timer = setInterval(() => void refresh(), active ? 600 : 3_000)
     return () => clearInterval(timer)
   }, [active, refresh])
+
+  /**
+   * 挂载是异步的：点了按钮那一刻没有结果，失败发生在几秒之后。
+   * 卡片底部那行字太长被折叠、也不一定在视口里，所以状态落到 error 时补一条右下角提示。
+   */
+  const mountFailed = status?.mount.state === 'error' ? status.mount.error : ''
+  const notifiedMountError = useRef('')
+  useEffect(() => {
+    if (!mountFailed || notifiedMountError.current === mountFailed) return
+    notifiedMountError.current = mountFailed
+    toast.notify({ title: '挂载失败', description: mountFailed, tone: 'error', duration: 0 })
+  }, [mountFailed, toast])
 
   const run = async (label: string, action: () => Promise<unknown>) => {
     setBusy(label)
@@ -76,7 +103,24 @@ export function ModulesView() {
     }
   }
 
-  if (!status || !settings) return null
+  if (!status || !settings) {
+    if (loadError) {
+      return (
+        <div className="kura-placeholder">
+          <EmptyState
+            title="读不到模块状态"
+            description={`${loadError}（模块状态由主进程提供；重开 Kura 还这样就是程序自身的问题）`}
+            action={
+              <Button variant="secondary" icon={<RefreshCw {...icon} />} onClick={() => void refresh().catch((caught: Error) => setLoadError(caught.message))}>
+                重试
+              </Button>
+            }
+          />
+        </div>
+      )
+    }
+    return null
+  }
   const rclone = status.rclone
   const mount = status.mount
   // 「文件夹」模式还没选父目录时不算就绪：挂载按钮灰着，并在字段下说清缺什么

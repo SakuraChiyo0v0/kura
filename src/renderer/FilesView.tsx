@@ -474,7 +474,16 @@ function LocalDavPanel() {
           <code className="kura-card__local" data-testid="dav-url">
             {status.url}
           </code>
-          <Button size="sm" variant="ghost" onClick={() => void window.kura?.copyText(status.url).then(() => toast.notify({ title: '已复制', description: status.url, tone: 'success' }))}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() =>
+              void window.kura
+                ?.copyText(status.url)
+                .then(() => toast.notify({ title: '已复制', description: status.url, tone: 'success' }))
+                .catch((caught: Error) => toast.notify({ title: '复制失败', description: caught.message, tone: 'error' }))
+            }
+          >
             复制
           </Button>
         </div>

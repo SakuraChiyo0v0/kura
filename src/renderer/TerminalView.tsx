@@ -3,7 +3,7 @@ import { Plus, RotateCcw, SquareTerminal, X } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { Banner, Button, EmptyState, StatusBadge } from '@sakura-ui/react'
+import { Banner, Button, EmptyState, StatusBadge, useToast } from '@sakura-ui/react'
 import type { TerminalEventView } from '../shared/ipc.js'
 
 const icon = { size: 16, strokeWidth: 1.7, 'aria-hidden': true } as const
@@ -118,6 +118,7 @@ function XtermPane({ tab, active }: { tab: Tab; active: boolean }) {
 }
 
 export function TerminalView() {
+  const toast = useToast()
   const [available, setAvailable] = useState<boolean | null>(null)
   const [tabs, setTabs] = useState<Tab[]>([])
   const [active, setActive] = useState('')
@@ -143,11 +144,16 @@ export function TerminalView() {
 
   const openTab = useCallback(async () => {
     if (!window.kura) return
-    const id = await window.kura.terminal.open()
-    seq.current += 1
-    setTabs((prev) => [...prev, { id, title: `终端 ${seq.current}`, status: 'connecting', message: '' }])
-    setActive(id)
-  }, [])
+    // 开不出来要吭声：调用方（新标签按钮 / 空状态按钮）都在 void 里，静默拒绝用户只会觉得点了没反应
+    try {
+      const id = await window.kura.terminal.open()
+      seq.current += 1
+      setTabs((prev) => [...prev, { id, title: `终端 ${seq.current}`, status: 'connecting', message: '' }])
+      setActive(id)
+    } catch (caught) {
+      toast.notify({ title: '打不开终端', description: (caught as Error).message, tone: 'error', duration: 0 })
+    }
+  }, [toast])
 
   const closeTab = (id: string) => {
     void window.kura?.terminal.close(id)
@@ -163,7 +169,13 @@ export function TerminalView() {
   /** 已断开的标签就地重连：关掉旧会话、在同一个位置开新会话 */
   const reconnect = async (tab: Tab) => {
     if (!window.kura) return
-    const id = await window.kura.terminal.open()
+    let id: string
+    try {
+      id = await window.kura.terminal.open()
+    } catch (caught) {
+      toast.notify({ title: '重连失败', description: (caught as Error).message, tone: 'error', duration: 0 })
+      return
+    }
     sinks.delete(tab.id)
     setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, id, status: 'connecting', message: '' } : t)))
     setActive(id)

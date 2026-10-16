@@ -123,7 +123,12 @@ function ServiceCard({ view, refresh }: { view: ServiceView; refresh: () => Prom
           variant="ghost"
           icon={<Copy size={14} aria-hidden />}
           aria-label={`复制 ${view.spec.label} 的本机地址`}
-          onClick={() => void window.kura?.copyText(view.localUrl).then(() => toast.notify({ title: '已复制', description: view.localUrl, tone: 'success' }))}
+          onClick={() =>
+            void window.kura
+              ?.copyText(view.localUrl)
+              .then(() => toast.notify({ title: '已复制', description: view.localUrl, tone: 'success' }))
+              .catch((caught: Error) => toast.notify({ title: '复制失败', description: caught.message, tone: 'error' }))
+          }
         />
       </div>
       {view.externalUrl && (
@@ -186,6 +191,19 @@ export function MirrorView({ snapshot, refresh }: { snapshot: MirrorSnapshot; re
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
   const [syncing, setSyncing] = useState(false)
+  /** 「立即同步」；两处按钮共用（空白页那处原来没接失败处理） */
+  const syncNow = async () => {
+    setSyncing(true)
+    try {
+      const added = await window.kura!.mirror.sync()
+      toast.notify({ title: '已同步服务端清单', description: added ? `新挂上 ${added} 个服务` : '没有新服务', tone: 'success' })
+    } catch (error) {
+      toast.notify({ title: '同步失败', description: (error as Error).message, tone: 'error' })
+    } finally {
+      setSyncing(false)
+      void refresh()
+    }
+  }
 
   const services = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -227,17 +245,7 @@ export function MirrorView({ snapshot, refresh }: { snapshot: MirrorSnapshot; re
           variant="secondary"
           icon={<RefreshCw size={14} aria-hidden />}
           disabled={syncing}
-          onClick={() => {
-            setSyncing(true)
-            void window
-              .kura!.mirror.sync()
-              .then((added) => toast.notify({ title: '已同步服务端清单', description: added ? `新挂上 ${added} 个服务` : '没有新服务', tone: 'success' }))
-              .catch((error: Error) => toast.notify({ title: '同步失败', description: error.message, tone: 'error' }))
-              .finally(() => {
-                setSyncing(false)
-                void refresh()
-              })
-          }}
+          onClick={() => void syncNow()}
         >
           {syncing ? '同步中…' : '立即同步'}
         </Button>
@@ -266,7 +274,7 @@ export function MirrorView({ snapshot, refresh }: { snapshot: MirrorSnapshot; re
                 ? '服务端清单里没有可映射的服务'
                 : '正在从服务端拉取服务清单；如果一直没有，检查网关端口是否正确、kura-server 是否在跑'
             }
-            action={<Button onClick={() => void window.kura?.mirror.sync().then(refresh)}>立即同步</Button>}
+            action={<Button onClick={() => void syncNow()}>立即同步</Button>}
           />
         </div>
       ) : services.length === 0 ? (

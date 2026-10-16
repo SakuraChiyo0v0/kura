@@ -11,6 +11,11 @@ import type { ProjectFilesView } from '../shared/ipc.js'
 
 const icon = { size: 16, strokeWidth: 1.7, 'aria-hidden': true } as const
 
+/** compose 的报错是多行的；toast 只放得下一句，完整内容留在编辑器下方 */
+function firstLine(text: string): string {
+  return text.split('\n').map((l) => l.trim()).filter(Boolean)[0]?.slice(0, 200) ?? text.slice(0, 200)
+}
+
 function DiffView({ before, after }: { before: string; after: string }) {
   const rows = lineDiff(before, after)
   // 只显示改动附近 2 行，长文件不至于一屏都是没变的
@@ -93,8 +98,14 @@ export function ProjectEditor({ name, onClose, onApply }: { name: string; onClos
       toast.notify({ title: '已保存', description: '旧版本留在项目目录的 .kura-bak/ 里', tone: 'success' })
       if (apply) onApply()
     } catch (e) {
-      // 校验失败的信息是多行的（compose 的报错），原样显示在编辑器下方，不塞进 toast
+      // 校验失败的信息是多行的（compose 的报错）：完整内容原样留在编辑器下方，toast 只报一声 + 首行
       setError((e as Error).message)
+      toast.notify({
+        title: '没有保存',
+        description: firstLine((e as Error).message),
+        tone: 'error',
+        duration: 0,
+      })
       setReview(false)
     } finally {
       setSaving(false)
@@ -248,6 +259,7 @@ export function NewProject({ onClose, onCreated }: { onClose: () => void; onCrea
   const [start, setStart] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const toast = useToast()
   const nameError = name && !/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name) ? '小写字母、数字、- 和 _，字母或数字开头' : ''
   return (
     <Section
@@ -279,7 +291,10 @@ export function NewProject({ onClose, onCreated }: { onClose: () => void; onCrea
             void window
               .kura!.docker.createProject({ name, compose, env: env || undefined })
               .then(() => onCreated(name, start))
-              .catch((e: Error) => setError(e.message))
+              .catch((e: Error) => {
+                setError(e.message)
+                toast.notify({ title: '没有创建成功', description: firstLine(e.message), tone: 'error', duration: 0 })
+              })
               .finally(() => setBusy(false))
           }}
         >

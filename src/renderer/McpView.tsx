@@ -48,7 +48,11 @@ export function McpSection({
         onSetting('mcpEnabled', next.enabled)
         onSetting('mcpPort', next.port)
       })
-      .catch((reason: Error) => setError(reason.message))
+      .catch((reason: Error) => {
+        // 端口被占这类失败用户是点了开关/改完端口才发生的：右下角弹一条，字段旁也留一句
+        setError(reason.message)
+        toast.notify({ title: 'MCP 设置没保存上', description: reason.message, tone: 'error', duration: 0 })
+      })
       .finally(() => setBusy(false))
   }
 
@@ -107,7 +111,10 @@ export function McpSection({
               <Button
                 variant="ghost"
                 onClick={() => {
-                  void window.kura?.copyText(command).then(() => toast.notify({ tone: 'success', title: '接入命令已复制' }))
+                  void window.kura
+                    ?.copyText(command)
+                    .then(() => toast.notify({ tone: 'success', title: '接入命令已复制' }))
+                    .catch((reason: Error) => toast.notify({ tone: 'error', title: '复制失败', description: reason.message }))
                 }}
               >
                 复制接入命令
@@ -116,10 +123,14 @@ export function McpSection({
                 variant="ghost"
                 onClick={() => {
                   if (!window.confirm('换一把新令牌？已连上的 AI 客户端会立刻断开，需要用新令牌重新配置。')) return
-                  void window.kura?.mcp.rotateToken().then((next) => {
-                    setStatus(next)
-                    setShowToken(true)
-                  })
+                  void window.kura?.mcp
+                    .rotateToken()
+                    .then((next) => {
+                      setStatus(next)
+                      setShowToken(true)
+                      toast.notify({ title: '已换新令牌', description: '已连上的客户端要拿新令牌重配', tone: 'success' })
+                    })
+                    .catch((reason: Error) => toast.notify({ title: '换令牌失败', description: reason.message, tone: 'error', duration: 0 }))
                 }}
               >
                 换一把新令牌

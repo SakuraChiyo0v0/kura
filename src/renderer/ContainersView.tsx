@@ -91,18 +91,65 @@ function ensureStreamSubscription(): void {
   })
 }
 
-/** 订阅一个流：先补发已缓存的事件，再接后续的。返回退订函数。 */
+/**
+ * 订阅一个流：先补发已缓存的事件，再接后续的。返回退订函数。
+ *
+ * 补发**不消耗**缓冲：输出面板和「失败提示」是先后挂上的（面板在子组件里、它的 effect 先跑），
+ * 谁先订阅都该看到已经吐出来的那几帧。只有补发到结束帧时才清 —— 流已终结，不会再有新事件。
+ */
 function listenStream(id: string, listener: (event: DockerStreamEvent) => void): () => void {
   ensureStreamSubscription()
-  for (const e of streamPending.get(id) ?? []) listener(e)
-  streamPending.delete(id)
+  const held = streamPending.get(id)
+  for (const e of held ?? []) listener(e)
   const set = streamListeners.get(id) ?? new Set()
   set.add(listener)
   streamListeners.set(id, set)
   return () => {
     set.delete(listener)
-    if (set.size === 0) streamListeners.delete(id)
+    if (set.size === 0) {
+      streamListeners.delete(id)
+      // 最后一个订阅者走了、流也结束了：缓冲没用了，放掉
+      if (streamPending.get(id)?.some((e) => e.type === 'exit')) streamPending.delete(id)
+    }
   }
+}
+
+/** 输出里最后一行有内容的（compose 的报错都在最后），拿来当提示的正文。 */
+function lastLine(text: string): string {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
+  return (lines.at(-1) ?? '').slice(0, 300)
+}
+
+/**
+ * 长任务（compose / 拉镜像 / 删项目）失败时另弹一条右下角提示。
+ *
+ * 输出面板在页面顶部、又是可滚动的：开头那几屏的报错很容易被顶出去，用户回头找不到失败在哪
+ * （报过一次「这种提示都做成右下角弹出」）。成功不弹 —— 面板上写着「完成」，再弹一次是刷屏。
+ */
+function useStreamFailure(title: string, id: string | undefined): void {
+  const toast = useToast()
+  // toast 每次渲染都是新对象，放进依赖会让 effect 反复重订（同上面 ContainerDrawer 那条注释）
+  const notify = useRef(toast.notify)
+  notify.current = toast.notify
+  const notified = useRef('')
+  useEffect(() => {
+    if (!id) return
+    let text = ''
+    return listenStream(id, (event) => {
+      if (event.type === 'data') {
+        text = (text + event.data).slice(-8000)
+        return
+      }
+      if (event.code === 0 || notified.current === id) return
+      notified.current = id
+      notify.current({
+        title: `${title}失败`,
+        description: lastLine(text) || (event.code === null ? '连接断了，没收到结束帧' : `退出码 ${event.code}`),
+        tone: 'error',
+        duration: 0,
+      })
+    })
+  }, [id, title])
 }
 
 /** 等某个流结束（「拉取并重建」要在 pull 成功后才 up）。 */
@@ -134,8 +181,10 @@ function useStream(id: string | undefined): { text: string; code: number | null 
   return { text, code }
 }
 
-function OutputPanel({ title, streamId, onClose, follow = true }: { title: string; streamId: string; onClose: () => void; follow?: boolean }) {
+function OutputPanel({ title, streamId, onClose, follow = true, failTitle }: { title: string; streamId: string; onClose: () => void; follow?: boolean; failTitle?: string }) {
   const { text, code } = useStream(streamId)
+  // 「失败提示」用动作名（「停止并移除失败」），不用面板标题 —— 后者是「项目名 · 动作」拼的，接上「失败」读着别扭
+  useStreamFailure(failTitle ?? title, streamId)
   const pre = useRef<HTMLPreElement>(null)
   useEffect(() => {
     if (follow && pre.current) pre.current.scrollTop = pre.current.scrollHeight
@@ -465,13 +514,16 @@ function ContainerDrawer({ container, onClose, onChanged }: { container: Contain
     let alive = true
     void window.kura?.docker.container(container.id).then((d) => alive && setDetail(d)).catch((e: Error) => toast.notify({ title: '读不到详情', description: e.message, tone: 'error' }))
     if (container.state === 'running') void window.kura?.docker.stats(container.id).then((s) => alive && setStats(s)).catch(() => {})
-    // 打开就跟着最近的日志
+    // 打开就跟着最近的日志；开不起来也要说一声，否则日志区一直停在「正在连接日志…」
     let opened: string | undefined
-    void window.kura?.docker.openStream('logs', container.id).then((id) => {
-      opened = id
-      if (alive) setLogStream(id)
-      else void window.kura?.docker.closeStream(id)
-    })
+    void window.kura?.docker
+      .openStream('logs', container.id)
+      .then((id) => {
+        opened = id
+        if (alive) setLogStream(id)
+        else void window.kura?.docker.closeStream(id)
+      })
+      .catch((e: Error) => toast.notify({ title: '连不上日志', description: e.message, tone: 'error' }))
     return () => {
       alive = false
       if (opened) void window.kura?.docker.closeStream(opened)
@@ -922,7 +974,7 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
   const [error, setError] = useState('')
   const [tab, setTab] = useState('projects')
   const [selected, setSelected] = useState<ContainerView | null>(null)
-  const [output, setOutput] = useState<{ title: string; id: string; project?: string } | null>(null)
+  const [output, setOutput] = useState<{ title: string; id: string; project?: string; failTitle: string } | null>(null)
   /** 正在编辑哪个项目；'new' = 新建 */
   const [editing, setEditing] = useState<string | null>(null)
   const seq = useRef(0)
@@ -969,15 +1021,19 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
       if (action === 'pull') {
         // 「拉取并重建」= 先 pull 再 up：两步分开跑，第二步只在第一步成功时跑
         const id = await window.kura!.docker.openStream('project', project.name, 'pull')
-        setOutput({ title: `${project.name} · 拉取最新镜像`, id, project: project.name })
+        setOutput({ title: `${project.name} · 拉取最新镜像`, id, project: project.name, failTitle: `拉取 ${project.name} 的镜像` })
         onStreamExit(id, (code) => {
           if (code !== 0) return
-          void window.kura!.docker.openStream('project', project.name, 'up').then((upId) => setOutput({ title: `${project.name} · 按新镜像重建`, id: upId, project: project.name }))
+          void window.kura!.docker
+            .openStream('project', project.name, 'up')
+            .then((upId) => setOutput({ title: `${project.name} · 按新镜像重建`, id: upId, project: project.name, failTitle: `重建 ${project.name}` }))
+            // 拉取成功了但重建这一步没能开起来：不接住就是静默失败，用户只看到一个「完成」的面板
+            .catch((caught: Error) => toast.notify({ title: `重建 ${project.name} 没起来`, description: caught.message, tone: 'error', duration: 0 }))
         })
         return
       }
       const id = await window.kura!.docker.openStream('project', project.name, action)
-      setOutput({ title: `${project.name} · ${actionLabel[action]}`, id, project: project.name })
+      setOutput({ title: `${project.name} · ${actionLabel[action]}`, id, project: project.name, failTitle: `${actionLabel[action]} ${project.name}` })
     } catch (caught) {
       toast.notify({ title: `${actionLabel[action]}失败`, description: (caught as Error).message, tone: 'error', duration: 0 })
     }
@@ -987,7 +1043,7 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
     try {
       const id = await window.kura!.docker.openStream('remove', project.name, undefined, options)
       const what = [options.volumes && '卷', options.files && '文件'].filter(Boolean).join('、')
-      setOutput({ title: `${project.name} · 删除${what ? `（含${what}）` : '（只移除容器）'}`, id, project: project.name })
+      setOutput({ title: `${project.name} · 删除${what ? `（含${what}）` : '（只移除容器）'}`, id, project: project.name, failTitle: `删除 ${project.name}` })
       if (editing === project.name) setEditing(null)
     } catch (caught) {
       toast.notify({ title: '删除失败', description: (caught as Error).message, tone: 'error', duration: 0 })
@@ -997,7 +1053,7 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
   const pullImage = async (image: string) => {
     try {
       const id = await window.kura!.docker.openStream('pull', image)
-      setOutput({ title: `拉取 ${image}`, id })
+      setOutput({ title: `拉取 ${image}`, id, failTitle: `拉取 ${image}` })
     } catch (caught) {
       toast.notify({ title: '拉取失败', description: (caught as Error).message, tone: 'error', duration: 0 })
     }
@@ -1038,7 +1094,7 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
   return (
     <div className="kura-docker" data-testid="docker-page">
       {error && <Banner tone="warning" description={`刷新失败：${error}（显示的是上一次的状态）`} />}
-      {output && <OutputPanel title={output.title} streamId={output.id} onClose={() => setOutput(null)} />}
+      {output && <OutputPanel title={output.title} streamId={output.id} failTitle={output.failTitle} onClose={() => setOutput(null)} />}
       {editing === 'new' && (
         <NewProject
           onClose={() => setEditing(null)}

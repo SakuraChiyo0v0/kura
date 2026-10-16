@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { Button, StatusBadge } from '@sakura-ui/react'
+import { Banner, Button, StatusBadge } from '@sakura-ui/react'
 import type { DockerStreamEvent } from '../shared/ipc.js'
 
 /**
@@ -14,6 +14,7 @@ export function ContainerShell({ container, subscribe }: { container: string; su
   const holder = useRef<HTMLDivElement>(null)
   const [session, setSession] = useState<string>()
   const [state, setState] = useState<'idle' | 'open' | 'closed'>('idle')
+  const [error, setError] = useState('')
 
   useEffect(() => {
     if (!session || !holder.current) return
@@ -75,14 +76,19 @@ export function ContainerShell({ container, subscribe }: { container: string; su
     return (
       <div className="kura-docker-shell__idle">
         <p className="kura-form__note">在容器里开一个交互 shell（依次尝试 bash、ash、sh）。打开和关闭都会记进审计。</p>
+        {error && <Banner tone="warning" description={`进不去 shell：${error}`} />}
         <Button
           size="sm"
           variant="secondary"
           onClick={() =>
-            void window.kura?.docker.openShell(container, 100, 28).then((id) => {
-              setState('idle')
-              setSession(id)
-            })
+            void window.kura?.docker
+              .openShell(container, 100, 28)
+              .then((id) => {
+                setState('idle')
+                setSession(id)
+              })
+              // 进不去要吭声（容器没在跑、服务端拒绝都会走到这）；错误同时打进 xterm 那块区域看不见，所以弹 toast
+              .catch((caught: Error) => setError(caught.message))
           }
         >
           连接 shell
