@@ -465,9 +465,36 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     const linked = await waitFor(`document.querySelector('[data-project="openlist"] [data-testid="project-mapped"]')?.textContent.includes('127.0.0.1:${process.env.SMOKE_PORT_A}')`, 8_000)
     check('容器页：项目链到服务映射的本机地址（映射关着时不给）', hiddenWhenOff && linked, `hiddenWhenOff=${hiddenWhenOff} linked=${linked}`)
     await js(`[...document.querySelectorAll('[data-project="openlist"] button')].find(b => b.textContent.trim() === '重启')?.click()`)
+    // 成功也要报一声（用户提的：不然发生啥都不知道）。成功的 toast 5 秒后自己消失
+    // （失败的才留到手动关），所以从点下去就盯，不能等后面几条断言跑完再回头看。
+    const okToast = await waitFor(
+      `[...document.querySelectorAll('.sk-toast-root')].some(t => t.textContent.includes('完成') && t.textContent.includes('Started'))`,
+      10_000,
+    )
     const outputDone = await waitFor(`document.querySelector('[data-testid="docker-output"]')?.dataset.state === 'ok' && document.querySelector('[data-testid="docker-output"] pre')?.textContent.includes('Started')`, 10_000)
     check('项目操作：输出实时显示并以成功结束', outputDone, await js<string>(`document.querySelector('[data-testid="docker-output"]')?.innerText.slice(0, 200) ?? '没有输出面板'`))
-    // 失败的那次：输出面板在页面顶部、又会滚，用户回头找不到失败在哪 —— 必须另外弹一条右下角提示。
+    // 输出面板是右下角浮窗（原先是页头下面撑满整行）。量真几何：必须贴右下，且不能还在页头下面。
+    const floatBox = await js<{ right: number; bottom: number; top: number; w: number } | null>(
+      `(() => { const el = document.querySelector('[data-testid="docker-output"]'); if (!el) return null
+         const r = el.getBoundingClientRect()
+         return { right: Math.round(innerWidth - r.right), bottom: Math.round(innerHeight - r.bottom), top: Math.round(r.top), w: Math.round(r.width) } })()`,
+    )
+    const floatPos = await js<string>(`getComputedStyle(document.querySelector('[data-testid="docker-output"]')).position`)
+    check(
+      '输出面板：右下角浮窗（不再占页头下面那一整行）',
+      floatPos === 'fixed' && floatBox !== null && floatBox.right <= 40 && floatBox.bottom <= 40 && floatBox.w <= 620,
+      `position=${floatPos} 距右=${floatBox?.right} 距下=${floatBox?.bottom} 宽=${floatBox?.w}`,
+    )
+    check('项目操作成功：右下角也弹出提示', okToast, await js<string>(`JSON.stringify([...document.querySelectorAll('.sk-toast-root')].map(t => t.textContent.slice(0, 120)))`))
+    // 浮窗与 toast 同在右下角：量一下有没有叠在一起（--kura-output-lift 把它顶上去）
+    const stacked = await js<{ overlap: boolean; gap: number }>(
+      `(() => { const f = document.querySelector('[data-testid="docker-output"]')?.getBoundingClientRect()
+         const t = document.querySelector('.sk-toast-viewport')?.getBoundingClientRect()
+         if (!f || !t) return { overlap: false, gap: -1 }
+         return { overlap: !(f.bottom <= t.top || f.top >= t.bottom), gap: Math.round(t.top - f.bottom) } })()`,
+    )
+    check('浮窗与 toast 不重叠', !stacked.overlap, `重叠=${stacked.overlap} 间距=${stacked.gap}px`)
+    // 失败的那次：输出面板能滚、错误会被顶出去，用户回头找不到失败在哪 —— 必须另外弹一条右下角提示。
     // 先关掉上一个成功的面板，免得两条输出叠在一起看不出断言的是哪一次
     await js(`document.querySelector('[data-testid="docker-output"] button[aria-label="关闭输出"]')?.click()`)
     await waitFor(`document.querySelector('[data-testid="docker-output"]') === null`)
@@ -476,7 +503,7 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
       `[...document.querySelectorAll('.sk-toast-root')].some(t => t.textContent.includes('失败') && t.textContent.includes('is not mounted'))`,
       10_000,
     )
-    check('项目操作失败：右下角弹出提示（不只是顶部输出面板）', failToast, await js<string>(`JSON.stringify([...document.querySelectorAll('.sk-toast-root')].map(t => t.textContent.slice(0, 120)))`))
+    check('项目操作失败：右下角弹出提示（不只是输出面板）', failToast, await js<string>(`JSON.stringify([...document.querySelectorAll('.sk-toast-root')].map(t => t.textContent.slice(0, 120)))`))
     await js(`[...document.querySelectorAll('[data-project="openlist"] .kura-docker-members button')][0]?.click()`)
     const drawer = await waitFor(`document.querySelector('[data-testid="container-drawer"]')?.innerText.includes('ADMIN_PASSWORD') && document.querySelector('[data-testid="container-logs"]')?.textContent.includes('openlist started')`, 10_000)
     const masked = await js<boolean>(`document.querySelector('[data-testid="container-drawer"]')?.innerText.includes('已隐藏') ?? false`)

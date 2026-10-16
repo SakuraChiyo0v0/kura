@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { CircleArrowUp, Boxes, CircleStop, Container, Download, Ellipsis, FileText, HardDrive, Layers, Network, Pencil, Play, Plus, RefreshCw, RotateCcw, X } from 'lucide-react'
 import {
   ActionMenu,
@@ -121,12 +122,15 @@ function lastLine(text: string): string {
 }
 
 /**
- * 长任务（compose / 拉镜像 / 删项目）失败时另弹一条右下角提示。
+ * 长任务（compose / 拉镜像 / 删项目）跑完后在右下角报一声，成败都报。
  *
- * 输出面板在页面顶部、又是可滚动的：开头那几屏的报错很容易被顶出去，用户回头找不到失败在哪
- * （报过一次「这种提示都做成右下角弹出」）。成功不弹 —— 面板上写着「完成」，再弹一次是刷屏。
+ * 成也要弹：输出的那块面板在页面顶部、又会自己滚，跑完一件事回头什么也看不到，
+ * 「发生啥都不知道」（成功本来不弹，用户提了才补上）。正文取输出的最后一行 ——
+ * compose 的「Network envtest_default Removed」正好说明刚才干了什么。
+ *
+ * 失败留到手动关（duration: 0）：报错要能反复看；成功按默认时长自己消失，不占屏幕。
  */
-function useStreamFailure(title: string, id: string | undefined): void {
+function useStreamOutcome(title: string, id: string | undefined): void {
   const toast = useToast()
   // toast 每次渲染都是新对象，放进依赖会让 effect 反复重订（同上面 ContainerDrawer 那条注释）
   const notify = useRef(toast.notify)
@@ -140,11 +144,16 @@ function useStreamFailure(title: string, id: string | undefined): void {
         text = (text + event.data).slice(-8000)
         return
       }
-      if (event.code === 0 || notified.current === id) return
+      if (notified.current === id) return
       notified.current = id
+      const tail = lastLine(text)
+      if (event.code === 0) {
+        notify.current({ title: `${title}：完成`, description: tail || undefined, tone: 'success' })
+        return
+      }
       notify.current({
         title: `${title}失败`,
-        description: lastLine(text) || (event.code === null ? '连接断了，没收到结束帧' : `退出码 ${event.code}`),
+        description: tail || (event.code === null ? '连接断了，没收到结束帧' : `退出码 ${event.code}`),
         tone: 'error',
         duration: 0,
       })
@@ -181,33 +190,58 @@ function useStream(id: string | undefined): { text: string; code: number | null 
   return { text, code }
 }
 
+/**
+ * 输出面板：右下角的浮窗。
+ *
+ * 原来它排在页头下面、撑满整行，跑完还赖在最上面，跟页头挤在一起像块补丁（用户提的「位置很奇怪」）。
+ *
+ * 用 portal 挂到 body，不走原地渲染：它嵌在 PageTransition 里，切页动画会给祖先加 transform，
+ * 而 transform 会把 `position: fixed` 的参照系从视口改成那个祖先 —— 浮窗会跟着页面飘。
+ */
 function OutputPanel({ title, streamId, onClose, follow = true, failTitle }: { title: string; streamId: string; onClose: () => void; follow?: boolean; failTitle?: string }) {
   const { text, code } = useStream(streamId)
   // 「失败提示」用动作名（「停止并移除失败」），不用面板标题 —— 后者是「项目名 · 动作」拼的，接上「失败」读着别扭
-  useStreamFailure(failTitle ?? title, streamId)
+  useStreamOutcome(failTitle ?? title, streamId)
   const pre = useRef<HTMLPreElement>(null)
+  const box = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (follow && pre.current) pre.current.scrollTop = pre.current.scrollHeight
   }, [text, follow])
+  // 右下角还有 toast（同一个角）。量一下浮窗多高，把 toast 抬到它上面去 —— 输出长短不一，
+  // 写死一个抬升量会在输出很短时留一大块空白。关掉浮窗时把变量摘掉，toast 落回原位。
+  useEffect(() => {
+    const el = box.current
+    if (!el) return
+    const root = document.documentElement
+    const push = () => root.style.setProperty('--kura-output-lift', `${Math.round(el.getBoundingClientRect().height) + 12}px`)
+    push()
+    const observer = new ResizeObserver(push)
+    observer.observe(el)
+    return () => {
+      observer.disconnect()
+      root.style.removeProperty('--kura-output-lift')
+    }
+  }, [])
   const tone: StatusTone = code === undefined ? 'accent' : code === 0 ? 'success' : 'danger'
   const label = code === undefined ? '进行中…' : code === 0 ? '完成' : code === null ? '连接断开' : `失败（退出码 ${code}）`
-  return (
-    <Section
-      className="kura-docker-output"
-      title={title}
-      data-testid="docker-output"
-      data-state={code === undefined ? 'running' : code === 0 ? 'ok' : 'error'}
-      actions={
-        <>
-          <StatusBadge tone={tone} dot size="sm">
-            {label}
-          </StatusBadge>
-          <Button size="sm" variant="ghost" icon={<X {...icon} />} aria-label="关闭输出" onClick={onClose} />
-        </>
-      }
-    >
-      <pre ref={pre} className="kura-docker-output__text">{text || (code === undefined ? '等待输出…' : '（没有输出）')}</pre>
-    </Section>
+  return createPortal(
+    <div className="kura-docker-output__float" ref={box} data-testid="docker-output" data-state={code === undefined ? 'running' : code === 0 ? 'ok' : 'error'}>
+      <Section
+        className="kura-docker-output"
+        title={title}
+        actions={
+          <>
+            <StatusBadge tone={tone} dot size="sm">
+              {label}
+            </StatusBadge>
+            <Button size="sm" variant="ghost" icon={<X {...icon} />} aria-label="关闭输出" onClick={onClose} />
+          </>
+        }
+      >
+        <pre ref={pre} className="kura-docker-output__text">{text || (code === undefined ? '等待输出…' : '（没有输出）')}</pre>
+      </Section>
+    </div>,
+    document.body,
   )
 }
 
@@ -448,7 +482,20 @@ function ProjectsTab({
                 })()}
                 <span className="kura-term__spacer" />
                 {readOnly ? (
-                  <span className="kura-form__note">由 watchtower 更新，Kura 里只读</span>
+                  // Kura 自己：不能在这里启停 / 删除（会剪断自己连着的那根线），
+                  // 但**能给自动更新开关** —— 它是 Kura 更新自己的能力，不再依赖 watchtower
+                  <div className="kura-docker-actions">
+                    <SwitchField
+                      label="自动更新"
+                      className="kura-docker-auto"
+                      checked={Boolean(auto.status?.projects.includes(p.name))}
+                      disabled={Boolean(auto.busy)}
+                      onCheckedChange={(on) => auto.toggle(p.name, on)}
+                    />
+                    <span className="kura-form__note" title="Kura 更新自己：换新镜像后自己重建，终端会话会断一下">
+                      自己更新自己 · 不能在这里启停
+                    </span>
+                  </div>
                 ) : (
                   <div className="kura-docker-actions">
                     {canStart && (

@@ -1215,6 +1215,41 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* 输出面板：右下角浮窗（原来是页头下面撑满整行，跑完还赖在最上面）。
+   和 toast 同一个角，靠 --kura-output-lift 把 toast 抬到它上面（高度由 JS 量，输出长短不一）。 */
+.kura-docker-output__float {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 140; /* 在 toast 视口（160）之下 */
+  width: min(560px, calc(100vw - 48px));
+  max-height: min(50vh, 420px);
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--sk-shadow);
+  border-radius: 17px;
+  animation: kura-float-in var(--sk-settle) var(--sk-ease);
+}
+
+.kura-docker-output__float .kura-docker-output {
+  min-height: 0;
+  overflow: auto;
+}
+
+@keyframes kura-float-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+/* 浮窗开着时，toast 让到它上面去（两个都在右下角，不然叠在一起）。
+   库里的规则带 safe-area-inset，覆盖时把它一并带上，别在有安全区的屏上贴边。
+   （shell.css 在库样式之后加载，同特异度下这条生效。） */
+.sk-toast-viewport {
+  bottom: calc(max(24px, env(safe-area-inset-bottom)) + var(--kura-output-lift, 0px));
+}
+
 .kura-docker-output__text {
   max-height: 320px;
   min-height: 80px;
@@ -1230,7 +1265,8 @@ body {
   overflow-wrap: anywhere;
 }
 
-.kura-docker-output[data-state='error'] {
+/* data-state 挂在浮窗外层（testid 也在那儿），失败时的红边要按这个层级选 */
+.kura-docker-output__float[data-state='error'] .kura-docker-output {
   border-color: var(--sk-danger);
 }
 
