@@ -418,19 +418,36 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
       handler: async () => deps.databases.client.templates(),
     },
     {
+      name: 'kura_db_versions',
+      title: '可装的镜像版本',
+      description:
+        '查某个引擎在 Docker Hub 上有哪些版本可装（已过滤掉 windows 架构、预发布、三段小版本）。装之前用它挑版本，再传给 kura_db_install 的 image。查不到时回 error 字段，那就用模板默认镜像。',
+      inputSchema: object({ engine: { type: 'string', enum: ['postgres', 'mysql', 'mariadb', 'redis'] } }, ['engine']),
+      annotations: ro,
+      handler: async (args) => {
+        const engine = str(args, 'engine')
+        if (!['postgres', 'mysql', 'mariadb', 'redis'].includes(engine)) throw new Error(`不认识的引擎：${engine}`)
+        return deps.databases.versions(engine as never)
+      },
+    },
+    {
       name: 'kura_db_install',
       title: '快捷安装一个数据库',
       description:
         '用官方镜像在 NAS 上装一个数据库（建 compose 项目、生成强口令、起容器、登记）。名字只用小写字母数字连字符。可能要一两分钟。装完用 kura_db_info 拿连接串。',
       inputSchema: object(
-        { engine: { type: 'string', enum: ['postgres', 'mysql', 'mariadb', 'redis'] }, name: { type: 'string', description: '数据库名（compose 项目名），如 my-pg' } },
+        {
+          engine: { type: 'string', enum: ['postgres', 'mysql', 'mariadb', 'redis'] },
+          name: { type: 'string', description: '数据库名（compose 项目名），如 my-pg' },
+          image: { type: 'string', description: '要装的镜像（含 tag，如 postgres:16-alpine）。不填用模板默认的。可用 kura_db_versions 查有哪些' },
+        },
         ['engine', 'name'],
       ),
       annotations: { readOnlyHint: false, idempotentHint: false },
       handler: async (args) => {
         const engine = str(args, 'engine')
         if (!['postgres', 'mysql', 'mariadb', 'redis'].includes(engine)) throw new Error(`不认识的引擎：${engine}`)
-        const result = await deps.databases.install(engine as never, str(args, 'name'))
+        const result = await deps.databases.install(engine as never, str(args, 'name'), optionalStr(args, 'image'))
         return { ok: result.ok, name: result.name, engine: result.engine, output: result.output.slice(-4000) }
       },
     },

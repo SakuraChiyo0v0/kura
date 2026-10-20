@@ -17,7 +17,7 @@ import {
   type DataTableColumn,
   type StatusTone,
 } from '@sakura-ui/react'
-import type { DatabaseTemplate, DatabaseView as DbView, DbEngine, TunnelStatus } from '../shared/ipc.js'
+import type { DatabaseTemplate, DatabaseView as DbView, DbEngine, TunnelStatus, VersionList } from '../shared/ipc.js'
 import { DatabasesRedisView } from './DatabasesRedisView.js'
 import { DatabasesRelView } from './DatabasesRelView.js'
 
@@ -102,6 +102,14 @@ function cliExample(db: DbView, host: string, port: number): string {
     default:
       return ''
   }
+}
+
+/** 字节数显示（镜像大小用）。 */
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(0)} MB`
+  return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`
 }
 
 /** 复制一行：左边标签 + 值，右边一个复制按钮。 */
@@ -626,10 +634,12 @@ function QueryTab({ databases, selected, onSelect }: { databases: DbView[]; sele
   const pre = useRef<HTMLPreElement>(null)
 
   const engine = db?.engine || ''
+  // engineCli 只按 DbEngine 索引：空串（认不出引擎）时不能直接取
+  const engineHelp = engine ? engineCli[engine] : undefined
   useEffect(() => {
-    setArgs(engine ? engineCli[engine].example : '')
+    setArgs(engineHelp ? engineHelp.example : '')
     setOutput('')
-  }, [selected, engine])
+  }, [selected, engineHelp])
 
   if (!db) {
     return (
@@ -639,7 +649,7 @@ function QueryTab({ databases, selected, onSelect }: { databases: DbView[]; sele
     )
   }
 
-  const cli = engine ? engineCli[engine].cli : ''
+  const cli = engineHelp?.cli ?? ''
 
   const run = async (): Promise<void> => {
     if (!cli) return
@@ -684,7 +694,7 @@ function QueryTab({ databases, selected, onSelect }: { databases: DbView[]; sele
             label={`${cli} 的参数`}
             value={args}
             onChange={(e) => setArgs(e.target.value)}
-            placeholder={engine ? engineCli[engine].example : ''}
+            placeholder={engineHelp?.example ?? ''}
             spellCheck={false}
           />
           <Button type="submit" variant="secondary" icon={<Play {...icon} />} disabled={busy || !cli}>
@@ -712,7 +722,40 @@ function InstallTab({ templates, onDone }: { templates: DatabaseTemplate[]; onDo
   const [installing, setInstalling] = useState(false)
   const [log, setLog] = useState('')
 
+  // 版本与变体：从 Docker Hub 拉，拉不到就回退到模板默认镜像
+  const [versions, setVersions] = useState<VersionList | null>(null)
+  const [loadingVersions, setLoadingVersions] = useState(false)
+  /** 用户选中的完整镜像名；空串 = 用模板默认 */
+  const [image, setImage] = useState('')
+
   const chosen = templates.find((t) => t.engine === engine) ?? templates[0]
+
+  // 切引擎时重新拉版本，并把选择重置回默认
+  useEffect(() => {
+    setVersions(null)
+    setImage('')
+    if (!engine) return
+    let alive = true
+    setLoadingVersions(true)
+    void window.kura!.databases
+      .versions(engine)
+      .then((list) => {
+        if (alive) setVersions(list)
+      })
+      .catch((caught: Error) => {
+        if (alive) setVersions({ engine, repository: engine, versions: [], defaultImage: chosen?.image ?? '', error: caught.message })
+      })
+      .finally(() => {
+        if (alive) setLoadingVersions(false)
+      })
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine])
+
+  /** 实际要装的镜像：用户选了就用它，没选用模板默认。 */
+  const effectiveImage = image || chosen?.image || ''
 
   const install = async (): Promise<void> => {
     const trimmed = name.trim()
@@ -723,10 +766,10 @@ function InstallTab({ templates, onDone }: { templates: DatabaseTemplate[]; onDo
     setInstalling(true)
     setLog('')
     try {
-      const result = await window.kura!.databases.install(engine, trimmed)
+      const result = await window.kura!.databases.install(engine, trimmed, effectiveImage || undefined)
       setLog(result.output)
       if (result.ok) {
-        toast.notify({ title: '装好了', description: `${trimmed} 已启动，去「连接信息」开隧道拿地址`, tone: 'success' })
+        toast.notify({ title: '装好了', description: `${trimmed}（${result.image}）已启动，去「连接信息」开隧道拿地址`, tone: 'success' })
         setName('')
         await onDone()
       } else {
@@ -748,6 +791,10 @@ function InstallTab({ templates, onDone }: { templates: DatabaseTemplate[]; onDo
     )
   }
 
+  /** 从模板默认镜像里取仓库名（`postgres:17-alpine` → `postgres`），用来把 tag 拼回完整镜像名。 */
+  const repository = (chosen?.image ?? '').split(':')[0] ?? ''
+  const imageOfTag = (tag: string): string => (repository ? `${repository}:${tag}` : tag)
+
   return (
     <Section title="快捷安装" description="用官方镜像装一个数据库：自动生成强口令、建好数据目录、接到共享网络上启动。装完去「连接信息」开本机隧道。">
       <div className="kura-db-connect">
@@ -762,9 +809,59 @@ function InstallTab({ templates, onDone }: { templates: DatabaseTemplate[]; onDo
           <TextField label="名字" value={name} onChange={(e) => setName(e.target.value)} placeholder="如 my-pg" spellCheck={false} />
         </div>
 
+        {/* 版本选择：从 Docker Hub 拉；拉不到就只显示默认镜像（离线也能装） */}
+        <div className="kura-db-portrow">
+          {versions && versions.versions.length > 0 ? (
+            <SelectField
+              label="版本"
+              data-testid="db-version-picker"
+              value={image || (chosen?.image ?? '')}
+              onValueChange={(value) => setImage(value === chosen?.image ? '' : value)}
+              options={[
+                // 默认镜像放最前：用户不选就是它
+                ...(chosen ? [{ value: chosen.image, label: `${chosen.image}（默认）` }] : []),
+                ...versions.versions.map((v) => ({
+                  value: imageOfTag(v.tag),
+                  label: `${v.tag}${v.size ? ` · ${formatBytes(v.size)}` : ''}`,
+                })),
+              ]}
+            />
+          ) : (
+            <TextField
+              label="版本"
+              value={loadingVersions ? '正在查 Docker Hub…' : '查不到可用版本'}
+              onChange={() => {}}
+              disabled
+            />
+          )}
+          <Button
+            variant="ghost"
+            icon={<RefreshCw {...icon} />}
+            onClick={() => {
+              if (!engine) return
+              setLoadingVersions(true)
+              void window.kura!.databases
+                .versions(engine)
+                .then(setVersions)
+                .catch(() => {})
+                .finally(() => setLoadingVersions(false))
+            }}
+            disabled={loadingVersions}
+          >
+            重新查
+          </Button>
+        </div>
+
+        {versions?.error ? (
+          <Banner
+            tone="neutral"
+            description={`查不到 Docker Hub 上的版本（${versions.error}），会用默认镜像 ${versions.defaultImage}。`}
+          />
+        ) : null}
+
         {chosen ? (
           <p className="kura-form__note">
-            镜像 <code className="kura-docker-image">{chosen.image}</code> · 容器内监听 <code>{chosen.port}</code>
+            要装的是 <code className="kura-docker-image">{effectiveImage}</code> · 容器内监听 <code>{chosen.port}</code>
             {chosen.username ? ` · 用户名 ${chosen.username}` : ''}
             {chosen.database ? ` · 默认库 ${chosen.database}` : ''}
           </p>

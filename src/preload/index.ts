@@ -138,8 +138,9 @@ const kura: KuraBridge = {
   databases: {
     available: () => invoke(ch.dbAvailable),
     templates: () => invoke(ch.dbTemplates),
+    versions: (engine) => invoke(ch.dbVersions, engine),
     list: () => invoke(ch.dbList),
-    install: (engine, name) => invoke(ch.dbInstall, engine, name),
+    install: (engine, name, image) => invoke(ch.dbInstall, engine, name, image),
     detail: (name) => invoke(ch.dbDetail, name),
     info: (name, includePassword) => invoke(ch.dbInfo, name, includePassword),
     action: (name, action) => invoke(ch.dbAction, name, action),

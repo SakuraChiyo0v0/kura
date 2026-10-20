@@ -21,6 +21,11 @@ export interface DbTemplate {
   engine: DbEngine
   /** 界面上的显示名 */
   label: string
+  /**
+   * 默认镜像（含 tag）。用户可以在界面上换版本 —— 换的是这一整个字符串。
+   * 注意 compose 里也必须用它，不能另写一份（这里踩过：两处各写一遍必然漂移，
+   * 界面上选了 16 装出来还是 17）。
+   */
   image: string
   /** 容器内端口 */
   port: number
@@ -28,7 +33,18 @@ export interface DbTemplate {
   database: string
   /** 默认用户名（Redis 为空） */
   username: string
-  compose: (name: string, network: string) => string
+  /**
+   * 这个引擎的官方镜像有哪些变体可选。
+   *
+   * 各引擎**不一样**，不能统一：PostgreSQL 有 alpine / bookworm / trixie，
+   * Redis 有 alpine / bookworm，MySQL 只有 debian 系（空串 = 不加后缀）。
+   */
+  variants: readonly string[]
+  /** 默认变体；空串 = 镜像名后面不加变体 */
+  defaultVariant: string
+  /** 从「版本 + 变体」拼出完整镜像名（各引擎的拼法不同） */
+  imageOf: (version: string, variant: string) => string
+  compose: (name: string, network: string, image: string) => string
   /** 生成 .env 的内容（含密码） */
   env: (database: string, username: string, password: string) => string
 }
@@ -62,10 +78,14 @@ export const templates: Record<DbEngine, DbTemplate> = {
     port: 5432,
     database: 'postgres',
     username: 'postgres',
-    compose: (name, network) => `${header(name)}
+    // 空串 = 不带后缀的完整版（`postgres:17` 是 debian bookworm）；官方镜像都有这个
+    variants: ['alpine', 'bookworm', 'trixie', ''],
+    defaultVariant: 'alpine',
+    imageOf: (version, variant) => `postgres:${version}${variant ? `-${variant}` : ''}`,
+    compose: (name, network, image) => `${header(name)}
 services:
   ${name}:
-    image: postgres:17-alpine
+    image: ${image}
     container_name: ${name}
     restart: unless-stopped
     environment:
@@ -94,10 +114,14 @@ networks:
     port: 3306,
     database: 'app',
     username: 'kura',
-    compose: (name, network) => `${header(name)}
+    // MySQL 官方没有 alpine；debian 是默认变体（不加后缀）
+    variants: [''],
+    defaultVariant: '',
+    imageOf: (version, variant) => `mysql:${version}${variant ? `-${variant}` : ''}`,
+    compose: (name, network, image) => `${header(name)}
 services:
   ${name}:
-    image: mysql:8.4
+    image: ${image}
     container_name: ${name}
     restart: unless-stopped
     command:
@@ -128,10 +152,13 @@ networks:
     port: 3306,
     database: 'app',
     username: 'kura',
-    compose: (name, network) => `${header(name)}
+    variants: ['', 'ubi'],
+    defaultVariant: '',
+    imageOf: (version, variant) => `mariadb:${version}${variant ? `-${variant}` : ''}`,
+    compose: (name, network, image) => `${header(name)}
 services:
   ${name}:
-    image: mariadb:11.4
+    image: ${image}
     container_name: ${name}
     restart: unless-stopped
     command:
@@ -162,10 +189,14 @@ networks:
     port: 6379,
     database: '',
     username: '',
-    compose: (name, network) => `${header(name)}
+    // 空串 = 不带后缀的完整版（`redis:7` 是 debian）；官方镜像都有这个
+    variants: ['alpine', 'bookworm', ''],
+    defaultVariant: 'alpine',
+    imageOf: (version, variant) => `redis:${version}${variant ? `-${variant}` : ''}`,
+    compose: (name, network, image) => `${header(name)}
 services:
   ${name}:
-    image: redis:7-alpine
+    image: ${image}
     container_name: ${name}
     restart: unless-stopped
     # 必须设 requirepass：官方镜像默认 protected-mode，没密码会拒绝来自容器网络的连接

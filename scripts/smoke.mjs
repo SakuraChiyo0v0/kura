@@ -338,10 +338,10 @@ const dbState = {
     },
   },
   templates: [
-    { engine: 'postgres', label: 'PostgreSQL', image: 'postgres:17-alpine', port: 5432, database: 'postgres', username: 'postgres' },
-    { engine: 'mysql', label: 'MySQL', image: 'mysql:8.4', port: 3306, database: 'mysql', username: 'root' },
-    { engine: 'mariadb', label: 'MariaDB', image: 'mariadb:11.4', port: 3306, database: 'mysql', username: 'root' },
-    { engine: 'redis', label: 'Redis', image: 'redis:7-alpine', port: 6379, database: '', username: '' },
+    { engine: 'postgres', label: 'PostgreSQL', image: 'postgres:17-alpine', port: 5432, database: 'postgres', username: 'postgres', variants: ['alpine', 'bookworm', ''], defaultVariant: 'alpine' },
+    { engine: 'mysql', label: 'MySQL', image: 'mysql:8.4', port: 3306, database: 'mysql', username: 'root', variants: [''], defaultVariant: '' },
+    { engine: 'mariadb', label: 'MariaDB', image: 'mariadb:11.4', port: 3306, database: 'mysql', username: 'root', variants: ['', 'ubi'], defaultVariant: '' },
+    { engine: 'redis', label: 'Redis', image: 'redis:7-alpine', port: 6379, database: '', username: '', variants: ['alpine', 'bookworm', ''], defaultVariant: 'alpine' },
   ],
 }
 // 「数据库」本身：一条 TCP echo。psql 的握手走不了，但隧道是纯字节搬运 —— echo 足以验通全链路
@@ -365,6 +365,18 @@ function handleDb(req, res, body) {
   // 数据浏览的探测点（客户端据此判断镜像带不带 M2）
   if (path === '/api/db/browse-capabilities') return json(200, { version: 1, engines: ['redis', 'mysql', 'mariadb', 'postgres'], relation: ['mysql', 'mariadb', 'postgres'], redis: true })
   if (path === '/api/db/templates') return json(200, dbState.templates)
+  // 版本查询：冒烟不联网，回一份固定的列表（形状照 server/src/db/images.ts 的 VersionList）
+  if (path === '/api/db/versions') {
+    const engine = url.searchParams.get('engine') ?? ''
+    const repo = { postgres: 'postgres', mysql: 'mysql', mariadb: 'mariadb', redis: 'redis' }[engine] ?? engine
+    const tags = { postgres: ['17-alpine', '16-alpine'], mysql: ['8.4', '8.0'], mariadb: ['11.4', '10.11'], redis: ['7-alpine', '6-alpine'] }[engine] ?? []
+    return json(200, {
+      engine,
+      repository: repo,
+      versions: tags.map((tag) => ({ tag, version: tag.split('-')[0], variant: tag.includes('-') ? tag.split('-')[1] : '', size: 120000000 })),
+      defaultImage: dbState.templates.find((t) => t.engine === engine)?.image ?? '',
+    })
+  }
   if (path === '/api/db/list') return json(200, { databases: dbState.databases, tunnelAvailable: dbState.databases.length > 0 })
   if (path === '/api/db/create' && req.method === 'POST') {
     const { engine, name } = JSON.parse(body.toString() || '{}')

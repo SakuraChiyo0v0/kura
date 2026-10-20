@@ -503,8 +503,9 @@ function registerKuraIpc(): void {
     const result = await databases.list()
     return { ...result, tunnels: await syncTunnels() }
   })
-  router.handle(ch.dbInstall, async (_event, engine: string, name: string) => {
-    const result = await databases.install(engine as DbEngine, String(name))
+  router.handle(ch.dbVersions, (_event, engine: string) => databases.versions(engine as DbEngine))
+  router.handle(ch.dbInstall, async (_event, engine: string, name: string, image?: string) => {
+    const result = await databases.install(engine as DbEngine, String(name), typeof image === 'string' && image ? image : undefined)
     // 装完立刻把隧道建好（默认不开，但要出现在界面上）
     await syncTunnels().catch(() => {})
     return result

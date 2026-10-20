@@ -50,16 +50,46 @@ export interface DatabaseView {
 export interface DatabaseTemplate {
   engine: DbEngine
   label: string
+  /** 默认镜像（含 tag）；界面上可以换成别的版本 */
   image: string
   port: number
   database: string
   username: string
+  /** 这个引擎能选的镜像变体（alpine / bookworm / '' 之类） */
+  variants: string[]
+  /** 默认变体；空串 = 镜像名后面不加变体 */
+  defaultVariant: string
+}
+
+/** Docker Hub 上查到的一个可装版本。 */
+export interface ImageVersion {
+  /** 完整 tag，如 `17-alpine` */
+  tag: string
+  /** 版本号部分，如 `17`、`8.4` */
+  version: string
+  /** 变体部分（alpine / bookworm / ''） */
+  variant: string
+  updatedAt?: string
+  size?: number
+}
+
+export interface VersionList {
+  engine: DbEngine
+  repository: string
+  /** 可选的版本，新的在前 */
+  versions: ImageVersion[]
+  /** 查不到时回退用的默认镜像 */
+  defaultImage: string
+  /** 查失败的原因；空的表示成功 */
+  error?: string
 }
 
 export interface InstallResult {
   ok: boolean
   name: string
   engine: DbEngine
+  /** 实际装的镜像 */
+  image: string
   output: string
   connection: { container: string; port: number; database: string; user: string }
 }
@@ -145,8 +175,13 @@ export class DbClient {
     return this.json<{ databases: DatabaseView[]; tunnelAvailable: boolean }>('GET', '/api/db/list')
   }
 
-  install(engine: DbEngine, name: string): Promise<InstallResult> {
-    return this.json<InstallResult>('POST', '/api/db/create', { engine, name }, 300_000)
+  install(engine: DbEngine, name: string, image?: string): Promise<InstallResult> {
+    return this.json<InstallResult>('POST', '/api/db/create', { engine, name, ...(image ? { image } : {}) }, 300_000)
+  }
+
+  /** 某个引擎在 Docker Hub 上有哪些版本可装（查不到不报错，回 error 字段）。 */
+  versions(engine: DbEngine): Promise<VersionList> {
+    return this.json<VersionList>('GET', `/api/db/versions?engine=${encodeURIComponent(engine)}`, undefined, 20_000)
   }
 
   detail(name: string): Promise<DatabaseView> {

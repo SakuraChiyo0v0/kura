@@ -492,8 +492,13 @@ export class DatabaseService {
     return this.client.list()
   }
 
-  install(engine: DbEngine, name: string) {
-    return this.client.install(engine, name)
+  install(engine: DbEngine, name: string, image?: string) {
+    return this.client.install(engine, name, image)
+  }
+
+  /** 某个引擎在 Docker Hub 上有哪些版本可装。 */
+  versions(engine: DbEngine) {
+    return this.client.versions(engine)
   }
 
   detail(name: string) {

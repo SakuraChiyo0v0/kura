@@ -12,6 +12,7 @@ import { deriveConnection, discoverDatabases, readProjectEnv, type DatabaseEntry
 import { DbConnector } from './connect.js'
 import { assertNotStreamCommand, RedisClient } from './redis.js'
 import { readValue, runUserCommand, scanKeys, typeSummary } from './redis-browse.js'
+import { assertImageName, listVersions } from './images.js'
 import { MySqlClient } from './mysql.js'
 import { describeTable as myDescribeTable, listSchemas as myListSchemas, listTables as myListTables, readRows as myReadRows, runQuery as myRunQuery } from './mysql-browse.js'
 import { PgClient } from './postgres.js'
@@ -68,6 +69,8 @@ export interface DbHandlerOptions {
    * 否则「连接参数到底拼对没有」这件事没法测（踩过：只在隧道那层注入，驱动照样去解析容器名 → ENOTFOUND）。
    */
   connect?: (host: string, port: number) => net.Socket
+  /** 测试注入：查 Docker Hub 版本用的 fetch（不注入就用全局的） */
+  fetchImpl?: typeof fetch
   log?: (message: string, fields?: Record<string, unknown>) => void
 }
 
@@ -282,8 +285,26 @@ export function createDbHandler(options: DbHandlerOptions): {
         return json(
           res,
           200,
-          Object.values(templates).map((t) => ({ engine: t.engine, label: t.label, image: t.image, port: t.port, database: t.database, username: t.username })),
+          Object.values(templates).map((t) => ({
+            engine: t.engine,
+            label: t.label,
+            image: t.image,
+            port: t.port,
+            database: t.database,
+            username: t.username,
+            /** 这个引擎能选的镜像变体（alpine / bookworm / '' 之类） */
+            variants: t.variants,
+            defaultVariant: t.defaultVariant,
+          })),
         )
+      }
+
+      // 某个引擎在 Docker Hub 上有哪些版本可装。查不到不报错（回 error 字段，
+      // 界面回退到默认镜像）—— 离线不能把安装功能一起废掉。
+      if (method === 'GET' && head === 'versions') {
+        const engineKind = url.searchParams.get('engine') ?? ''
+        if (!templates[engineKind as DbEngine]) throw new DockerError(400, `不认识的引擎：${engineKind}`)
+        return json(res, 200, await listVersions(engineKind as DbEngine, { fetchImpl: options.fetchImpl }))
       }
 
       if (method === 'GET' && head === 'list') {
@@ -303,12 +324,15 @@ export function createDbHandler(options: DbHandlerOptions): {
       }
 
       if (method === 'POST' && head === 'create') {
-        const body = parseJson<{ engine?: unknown; name?: unknown }>(await readBody(req))
+        const body = parseJson<{ engine?: unknown; name?: unknown; image?: unknown }>(await readBody(req))
         const engineKind = String(body.engine ?? '') as DbEngine
         const name = String(body.name ?? '').trim()
         const template = templates[engineKind]
         if (!template) throw new DockerError(400, `不认识的引擎：${JSON.stringify(body.engine)}`)
-        const result = await install(name, template, ipOf(req))
+        // 没指定就用模板默认的；指定了必须是这个引擎自己的官方镜像（校验见 images.ts）
+        const image = typeof body.image === 'string' && body.image.trim() ? body.image.trim() : template.image
+        assertImageName(engineKind, image)
+        const result = await install(name, template, image, ipOf(req))
         return json(res, 200, result)
       }
 
@@ -470,11 +494,12 @@ export function createDbHandler(options: DbHandlerOptions): {
   }
 
   /** 快捷安装：渲染模板 → ProjectFileStore.create（原子写 + compose 校验） → 起容器 → 登记。 */
-  const install = async (name: string, template: (typeof templates)[DbEngine], from: string): Promise<unknown> => {
+  const install = async (name: string, template: (typeof templates)[DbEngine], image: string, from: string): Promise<unknown> => {
     if (!options.files || !options.projectRoot) throw new DockerError(409, 'NAS 上的 kura-server 没有挂项目目录，不能用快捷安装')
     const password = generatePassword()
-    const created = await options.files.create(name, template.compose(name, defaultNetwork), template.env(template.database, template.username, password))
-    options.audit({ action: 'docker-db-create', detail: `${name}（${template.engine}）`, exitCode: 0, ip: from })
+    const created = await options.files.create(name, template.compose(name, defaultNetwork, image), template.env(template.database, template.username, password))
+    // 记下**实际装的镜像**（不是模板默认的）—— 审计与后续「装的是哪个版本」都靠它
+    options.audit({ action: 'docker-db-create', detail: `${name}（${template.engine} · ${image}）`, exitCode: 0, ip: from })
 
     registry.add({
       name,
@@ -496,7 +521,7 @@ export function createDbHandler(options: DbHandlerOptions): {
     const code = await run.done
     options.audit({ action: 'docker-db-up', detail: name, exitCode: code, ip: from })
     log('数据库安装结束', { 名字: name, 引擎: template.engine, 退出码: code })
-    return { ok: code === 0, name, engine: template.engine, output: output.join(''), connection: { container: name, port: template.port, database: template.database, user: template.username } }
+    return { ok: code === 0, name, engine: template.engine, image, output: output.join(''), connection: { container: name, port: template.port, database: template.database, user: template.username } }
   }
 
   /** 删除：先 down，成功了才按勾选删文件。卷与文件默认都保留。 */

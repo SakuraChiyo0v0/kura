@@ -793,6 +793,31 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     // 安装：走模板装一个，列表里应该多出来
     await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === '安装')?.click()`)
     await waitFor(`document.querySelector('[data-testid="db-engine-picker"]') !== null`, 5_000)
+
+    // 版本下拉：从（假）Docker Hub 拉到列表。
+    // 注意 Sakura UI 的 SelectField **不是原生 <select>**，是按钮 + 弹出列表（.sk-select-trigger），
+    // 所以不能查 <option> —— 用项目已有的 pickSelect 按显示文字点。
+    const versionPicker = await waitFor(`document.querySelector('[data-testid="db-version-picker"] .sk-select-trigger') !== null`, 8_000)
+    const pickerText = await js<string>(`document.querySelector('[data-testid="db-version-picker"] .sk-select-value')?.textContent?.trim() ?? ''`)
+    check('安装页：版本下拉出来了，默认选中模板的镜像', versionPicker && pickerText.includes('postgres:'), pickerText || '（没渲染）')
+
+    // 选一个非默认的版本（列表里第二项），再确认「要装的是」跟着变了
+    const beforeImage = await js<string>(`document.querySelector('.kura-db-connect code.kura-docker-image')?.textContent ?? ''`)
+    await js(`document.querySelector('[data-testid="db-version-picker"] .sk-select-trigger')?.click()`)
+    const pickedOther = await waitFor(`(() => {
+      const items = [...document.querySelectorAll('.sk-select-option, [role="option"]')]
+      const target = items.find(el => /16-alpine|8\.0|10\.11|6-alpine/.test(el.textContent ?? ''))
+      if (!target) return false
+      target.click()
+      return true
+    })()`, 5_000)
+    const afterImage = await waitFor(`(() => {
+      const shown = document.querySelector('.kura-db-connect code.kura-docker-image')?.textContent ?? ''
+      return shown !== '' && shown !== ${JSON.stringify(beforeImage)}
+    })()`, 3_000)
+    const selectedImage = await js<string>(`document.querySelector('.kura-db-connect code.kura-docker-image')?.textContent ?? ''`)
+    check('安装页：换了版本后界面显示的就是新镜像', pickedOther && afterImage, `${beforeImage} → ${selectedImage}`)
+
     await fill('名字', 'smoke-new-pg')
     // 按 data-* 找提交按钮：标签页也叫「安装」，按文字找会点到标签上（那一步已经切过去了，等于没点）
     await js(`[...document.querySelectorAll('.kura-db-connect button')].find(b => b.textContent.trim().startsWith('安装'))?.click()`)

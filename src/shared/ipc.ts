@@ -1,7 +1,7 @@
 /** Kura 自己的 IPC 通道与 preload 暴露的 window.kura 形状。 */
 import type { DockerActivity, ProjectAction, ProjectFilesView } from '../core/docker-client.js'
 import type { AutoUpdateRunResult, AutoUpdateStatus, ContainerDetail, ContainerStats, DockerOverview, ImageView, NetworkView, UpdateCheck, VolumeView } from '../core/docker-types.js'
-import type { DatabaseView, DbExecResult, DatabaseTemplate } from '../core/db-client.js'
+import type { DatabaseView, DbExecResult, DatabaseTemplate, VersionList, ImageVersion } from '../core/db-client.js'
 import type {
   DbQueryResult,
   DbRowsPage,
@@ -16,7 +16,7 @@ import type { LinkModeSetting } from '../core/link.js'
 import type { MirrorSnapshot } from '../core/mirror.js'
 import type { TunnelStatus } from '../main/db-tunnel.js'
 
-export type { DockerActivity, ProjectAction, ProjectFilesView, DatabaseView, DatabaseTemplate, DbEngine, DbExecResult, TunnelStatus }
+export type { DockerActivity, ProjectAction, ProjectFilesView, DatabaseView, DatabaseTemplate, DbEngine, DbExecResult, TunnelStatus, VersionList, ImageVersion }
 
 /** 命令执行的输出帧：stream 1 = stdout、2 = stderr。 */
 export interface DbExecEventView {
@@ -152,6 +152,8 @@ export const kuraChannels = {
   dbTunnelSetEnabled: 'kura:db:tunnel-set-enabled',
   dbTunnelSetPort: 'kura:db:tunnel-set-port',
   dbTunnelPort: 'kura:db:tunnel-port',
+  /** Docker Hub 上可装的版本 */
+  dbVersions: 'kura:db:versions',
   /** 数据浏览：服务端自己说数据库协议，拿结构化结果（与 exec 的文本输出是两条路） */
   dbBrowseAvailable: 'kura:db:browse-available',
   dbRedisKeys: 'kura:db:redis-keys',
@@ -476,9 +478,12 @@ export interface KuraBridge {
     /** 服务端有没有数据库接口（老镜像只有容器管理，会 404） */
     available(): Promise<boolean>
     templates(): Promise<DatabaseTemplate[]>
+    /** 某个引擎在 Docker Hub 上有哪些版本可装（查不到时回 error 字段，界面回退默认镜像） */
+    versions(engine: DbEngine): Promise<VersionList>
     list(): Promise<{ databases: DatabaseView[]; tunnelAvailable: boolean }>
     /** 快捷安装：建项目、起容器、登记。可能几十秒 */
-    install(engine: DbEngine, name: string): Promise<{ ok: boolean; name: string; engine: DbEngine; output: string; connection: { container: string; port: number; database: string; user: string } }>
+    /** 快捷安装。image 不填用模板默认的；填了必须是这个引擎的官方镜像。可能几十秒 */
+    install(engine: DbEngine, name: string, image?: string): Promise<{ ok: boolean; name: string; engine: DbEngine; image: string; output: string; connection: { container: string; port: number; database: string; user: string } }>
     detail(name: string): Promise<DatabaseView>
     /** 连接信息；includePassword 默认 false */
     info(name: string, includePassword?: boolean): Promise<DatabaseView & { password?: string }>

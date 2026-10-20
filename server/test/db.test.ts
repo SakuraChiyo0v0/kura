@@ -53,7 +53,7 @@ afterEach(async () => {
 describe('templates', () => {
   it('生成的 compose 能被 compose 解析器读（结构完整）', () => {
     for (const t of Object.values(templates)) {
-      const text = t.compose('mydb', 'sso-net')
+      const text = t.compose('mydb', 'sso-net', t.image)
       expect(text).toContain('services:')
       expect(text).toContain('image: ' + t.image)
       // 不发布宿主端口：隧道连容器名，发布了等于把库摊在整个局域网上
@@ -65,7 +65,7 @@ describe('templates', () => {
   })
 
   it('Redis 模板必须带 requirepass（不然容器网络进来的连接会被拒）', () => {
-    expect(templates.redis.compose('r', 'sso-net')).toContain('--requirepass')
+    expect(templates.redis.compose('r', 'sso-net', templates.redis.image)).toContain('--requirepass')
   })
 
   it('口令不含 shell 特殊字符，且每次不同', () => {
