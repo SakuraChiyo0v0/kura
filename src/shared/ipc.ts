@@ -77,6 +77,8 @@ export const kuraChannels = {
   mirrorRetry: 'kura:mirror:retry',
   openExternal: 'kura:open-external',
   copyText: 'kura:copy-text',
+  /** 读系统剪贴板（终端粘贴用）。渲染层拿不到可靠的 navigator.clipboard：页面是 file:// 加载的 */
+  pasteText: 'kura:paste-text',
   // ---- v0.2 文件 ----
   filesList: 'kura:files:list',
   filesMkdir: 'kura:files:mkdir',
@@ -411,6 +413,8 @@ export interface KuraBridge {
   }
   openExternal(url: string): Promise<void>
   copyText(text: string): Promise<void>
+  /** 读系统剪贴板里的纯文本。终端粘贴用它 —— 页面是 file:// 加载的，navigator.clipboard 不可靠 */
+  pasteText(): Promise<string>
   files: {
     list(path: string): Promise<FileListing>
     mkdir(path: string): Promise<void>

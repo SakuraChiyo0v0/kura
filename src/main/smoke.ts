@@ -180,6 +180,15 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
       return -1
     }
   }
+  /** 同上，但取字符串型计数（终端粘贴的原始字节） */
+  const smokeNasText = async (name: string): Promise<string> => {
+    const res = await httpGet(`${process.env.KURA_SMOKE_NAS}/__smoke/counters`)
+    try {
+      return String((JSON.parse(res.body) as Record<string, unknown>)[name] ?? '')
+    } catch {
+      return ''
+    }
+  }
   const clickButton = (text: string) =>
     js<boolean>(`(() => { const b = [...document.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(text)} && !b.disabled); b?.click(); return Boolean(b) })()`)
 
@@ -474,6 +483,67 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
           main: Math.round(document.querySelector('main').getBoundingClientRect().height) })`,
     )
     check('终端占满页面高度', termLayout.host >= termLayout.main - 160 && termLayout.panes > 0, JSON.stringify(termLayout))
+
+    // ⑦d2b 粘贴多行：必须用 LF 包在 bracketed 框里。
+    // 这条守的是实测过的 bug —— xterm 自带的粘贴把换行换成 CR，进了 bracketed 框就成字面字符，
+    // NAS 上表现为满屏 ^M 和 `bash: $'\r': command not found`。
+    // 假 NAS 连上就发了 \x1b[?2004h，界面据此知道该用 LF。
+    await js(`(() => {
+      const ta = document.querySelector('[data-testid="terminal-pane"] textarea')
+      ta.focus()
+      const dt = new DataTransfer()
+      dt.setData('text/plain', 'echo one\\necho two\\n')
+      ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
+    })()`)
+    // 等假 NAS 收到字节（粘贴是异步经映射层发过去的）
+    let pasted = ''
+    for (let i = 0; i < 30; i++) {
+      pasted = await smokeNasText('terminalPaste')
+      if (pasted) break
+      await delay(100)
+    }
+    check(
+      '终端粘贴：bracketed 框里是 LF（不是 ^M 的元凶 CR）',
+      pasted.includes('\x1b[200~') && pasted.includes('echo one\necho two') && !pasted.includes('\r'),
+      `收到=${JSON.stringify(pasted)}`,
+    )
+
+    // 右键菜单：复制 / 粘贴 / 全选 / 清屏。xterm 的 Ctrl+C 永远发 ^C，没有菜单就等于没法复制。
+    await js(`(() => {
+      const surface = document.querySelector('[data-testid="terminal-pane"]')
+      const r = surface.getBoundingClientRect()
+      surface.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: r.left + 20, clientY: r.top + 20 }))
+    })()`)
+    const menuShown = await waitFor(`document.querySelector('.sk-context-menu-popup') !== null`, 5_000)
+    const menuLabels = await js<string[]>(
+      `[...document.querySelectorAll('.sk-context-menu-popup [role="menuitem"]')].map(el => el.querySelector('.sk-action-menu-item-label')?.textContent ?? '')`,
+    )
+    check('终端右键菜单：复制 / 粘贴 / 全选 / 清屏', menuShown && JSON.stringify(menuLabels) === JSON.stringify(['复制', '粘贴', '全选', '清屏']), JSON.stringify(menuLabels))
+    // 没选区时「复制」必须是禁用的（否则点了什么都不会发生，用户以为坏了）
+    const copyDisabled = await js<boolean>(`(() => {
+      const item = [...document.querySelectorAll('.sk-context-menu-popup [role="menuitem"]')].find(el => el.textContent.includes('复制'))
+      return item?.getAttribute('aria-disabled') === 'true'
+    })()`)
+    check('终端右键菜单：没选中内容时「复制」禁用', copyDisabled)
+    // 全选 → 复制 → 回读系统剪贴板，证明真的写进去了（不是只在界面上点了个按钮）
+    await js(`[...document.querySelectorAll('.sk-context-menu-popup [role="menuitem"]')].find(el => el.textContent.includes('全选'))?.click()`)
+    await delay(150)
+    await js(`(() => {
+      const surface = document.querySelector('[data-testid="terminal-pane"]')
+      const r = surface.getBoundingClientRect()
+      surface.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: r.left + 20, clientY: r.top + 20 }))
+    })()`)
+    await waitFor(`document.querySelector('.sk-context-menu-popup') !== null`, 5_000)
+    await js(`[...document.querySelectorAll('.sk-context-menu-popup [role="menuitem"]')].find(el => el.textContent.trim().startsWith('复制'))?.click()`)
+    // executeJavaScript 会 await Promise，所以这里直接取回文本再判
+    let clipboard = ''
+    for (let i = 0; i < 20; i++) {
+      clipboard = await js<string>(`window.kura.pasteText()`)
+      if (clipboard.includes('smoke-nas:~#')) break
+      await delay(100)
+    }
+    check('终端右键菜单：复制真的写进了系统剪贴板', clipboard.includes('smoke-nas:~#'), JSON.stringify(clipboard.slice(0, 80)))
+    await shot('v0.10-终端右键菜单.png')
 
     // ⑦d3 容器管理：项目列表 → Kura 自己只读 → 重启项目，输出实时出现、结束后状态刷新 → 容器详情（密码遮住）与日志
     await nav('Docker')

@@ -29,7 +29,7 @@ const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 20
 const rsaToken = Buffer.from(publicKey.export({ type: 'spki', format: 'pem' }).toString().replace(/PUBLIC KEY/g, 'RSA PUBLIC KEY')).toString('base64')
 let token = 0
 // 冒烟里要断言「某个接口被打了几次」（例如保存时有没有重复查 ID）
-const counters = { lookups: 0, terminalResize: 0, terminalResizeCols: 0 }
+const counters = { lookups: 0, terminalResize: 0, terminalResizeCols: 0, terminalPaste: '' }
 let slowServicesMs = 0
 // 假 NAS 上的应用：像真网关那样按 X-Nas-Service 分流到不同的「容器」
 //   webdav      → 内存里的 WebDAV（形态照 rclone serve webdav：href 绝对路径、Destination 带 host 要匹配）
@@ -534,6 +534,9 @@ appServer.on('upgrade', (req, socket, head) => {
     return socket.destroy()
   }
   tty.handleUpgrade(req, socket, head, (ws) => {
+    // 真 bash 5.1+ 一连上就开 bracketed paste（DECSET 2004）。这里照做：界面靠它决定
+    // 粘贴时用 LF（多行可编辑）还是 CR（逐行立即执行），不模拟就看不出差别。
+    ws.send('\x1b[?2004h')
     ws.send('smoke-nas:~# ')
     ws.on('message', (data) => {
       const text = data.toString()
@@ -546,6 +549,8 @@ appServer.on('upgrade', (req, socket, head) => {
         }
         return
       }
+      // 粘贴进来的原始字节留一份：断言换行到底是 LF 还是 CR（^M 那个 bug 就在这一点上）
+      if (text.includes('\x1b[200~')) counters.terminalPaste = text
       ws.send(text === '\r' ? '\r\nsmoke-nas:~# ' : text)
     })
   })

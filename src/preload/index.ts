@@ -69,6 +69,7 @@ const kura: KuraBridge = {
   },
   openExternal: (url: string) => invoke<void>(ch.openExternal, url),
   copyText: (text: string) => invoke<void>(ch.copyText, text),
+  pasteText: () => invoke<string>(ch.pasteText),
   files: {
     list: (path) => invoke(ch.filesList, path),
     mkdir: (path) => invoke(ch.filesMkdir, path),

@@ -354,6 +354,7 @@ function registerKuraIpc(): void {
     return shell.openExternal(url)
   })
   router.handle(ch.copyText, (_event, text: string) => clipboard.writeText(String(text)))
+  router.handle(ch.pasteText, () => clipboard.readText())
 
   // ---- 文件 ----
   const ownerWindow = (event: Electron.IpcMainInvokeEvent) => BrowserWindow.fromWebContents(event.sender) ?? undefined

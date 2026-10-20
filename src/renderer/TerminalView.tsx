@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Plus, RotateCcw, SquareTerminal, X } from 'lucide-react'
+import { ClipboardCopy, ClipboardPaste, Eraser, Plus, RotateCcw, SquareTerminal, TextSelect, X } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { Banner, Button, EmptyState, StatusBadge, useToast } from '@sakura-ui/react'
+import { Banner, Button, ContextMenu, EmptyState, StatusBadge, useToast } from '@sakura-ui/react'
 import type { TerminalEventView } from '../shared/ipc.js'
+import { buildPastePayload, installTerminalClipboard, pastesMultipleCommands } from './xterm-clipboard.js'
 
 const icon = { size: 16, strokeWidth: 1.7, 'aria-hidden': true } as const
 
@@ -45,9 +46,13 @@ function terminalTheme() {
 }
 
 function XtermPane({ tab, active }: { tab: Tab; active: boolean }) {
+  const toast = useToast()
   const holder = useRef<HTMLDivElement>(null)
   const term = useRef<Terminal | null>(null)
   const fit = useRef<FitAddon | null>(null)
+  const [hasSelection, setHasSelection] = useState(false)
+  /** 多行粘贴的确认：非 bracketed 时每行都会被立即执行，先问一句再发 */
+  const [confirming, setConfirming] = useState<{ lines: number; resolve: (ok: boolean) => void } | null>(null)
 
   useEffect(() => {
     const t = new Terminal({
@@ -57,6 +62,8 @@ function XtermPane({ tab, active }: { tab: Tab; active: boolean }) {
       scrollback: 5000,
       theme: terminalTheme(),
       allowProposedApi: false,
+      // 右键要留给「复制 / 粘贴 / 全选 / 清屏」菜单，不能又拿去选中单词
+      rightClickSelectsWord: false,
     })
     const f = new FitAddon()
     t.loadAddon(f)
@@ -75,6 +82,15 @@ function XtermPane({ tab, active }: { tab: Tab; active: boolean }) {
     }
     for (const chunk of pending.get(tab.id) ?? []) t.write(chunk)
     pending.delete(tab.id)
+
+    // 复制/粘贴：「复制」按钮与菜单项是否可点，取决于有没有选区
+    const selectionWatch = t.onSelectionChange(() => setHasSelection(t.hasSelection()))
+    const dropClipboard = installTerminalClipboard(t, holder.current!, {
+      write: (data) => void window.kura?.terminal.write(tab.id, data),
+      copy: (text) => window.kura!.copyText(text),
+      read: () => window.kura!.pasteText(),
+      confirm: (lines) => new Promise<boolean>((resolve) => setConfirming({ lines, resolve })),
+    })
 
     // 尺寸变化要告诉服务端（kura-shell 是真 PTY，resize 生效；现网 nas-console 会把它当输入）
     const push = () => {
@@ -95,6 +111,8 @@ function XtermPane({ tab, active }: { tab: Tab; active: boolean }) {
     themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-sk-theme'] })
     return () => {
       input.dispose()
+      selectionWatch.dispose()
+      dropClipboard()
       resize.disconnect()
       themeWatch.disconnect()
       sinks.delete(tab.id)
@@ -114,7 +132,79 @@ function XtermPane({ tab, active }: { tab: Tab; active: boolean }) {
     })
   }, [active])
 
-  return <div className="kura-term__pane" ref={holder} hidden={!active} data-testid="terminal-pane" data-terminal={tab.id} />
+  const pasteFromClipboard = useCallback(async () => {
+    const t = term.current
+    if (!t) return
+    let text: string
+    try {
+      text = await window.kura!.pasteText()
+    } catch (caught) {
+      toast.notify({ title: '读不到剪贴板', description: (caught as Error).message, tone: 'error' })
+      return
+    }
+    if (!text) return
+    const bracketed = t.modes.bracketedPasteMode
+    if (pastesMultipleCommands(text, bracketed)) {
+      const lines = text.replace(/\r\n?/g, '\n').replace(/\n+$/, '').split('\n').length
+      const ok = await new Promise<boolean>((resolve) => setConfirming({ lines, resolve }))
+      if (!ok) return
+    }
+    void window.kura?.terminal.write(tab.id, buildPastePayload(text, bracketed))
+  }, [tab.id, toast])
+
+  const copySelection = () => {
+    const text = term.current?.getSelection() ?? ''
+    if (!text) return
+    void window.kura
+      ?.copyText(text)
+      .then(() => toast.notify({ title: '已复制', description: `${text.split('\n').length} 行`, tone: 'success' }))
+      .catch((caught: Error) => toast.notify({ title: '复制失败', description: caught.message, tone: 'error' }))
+    term.current?.clearSelection()
+  }
+
+  const settle = (ok: boolean) => {
+    confirming?.resolve(ok)
+    setConfirming(null)
+    term.current?.focus()
+  }
+
+  return (
+    <div className="kura-term__pane" hidden={!active} data-terminal={tab.id}>
+      {confirming && (
+        <Banner
+          tone="warning"
+          description={`这段内容有 ${confirming.lines} 行。当前 shell 没开 bracketed paste，粘贴会逐行立即执行 —— 确认是要粘这么多命令吗？`}
+          action={
+            <>
+              <Button size="sm" variant="ghost" onClick={() => settle(false)}>
+                取消
+              </Button>
+              <Button size="sm" variant="secondary" onClick={() => settle(true)}>
+                仍然粘贴
+              </Button>
+            </>
+          }
+        />
+      )}
+      <ContextMenu
+        label={`${tab.title} 操作`}
+        items={[
+          { id: 'copy', label: '复制', icon: <ClipboardCopy size={15} aria-hidden />, shortcut: 'Ctrl+C', disabled: !hasSelection },
+          { id: 'paste', label: '粘贴', icon: <ClipboardPaste size={15} aria-hidden />, shortcut: 'Ctrl+V' },
+          { id: 'selectAll', label: '全选', icon: <TextSelect size={15} aria-hidden />, separatorBefore: true },
+          { id: 'clear', label: '清屏', icon: <Eraser size={15} aria-hidden /> },
+        ]}
+        onAction={(id) => {
+          if (id === 'copy') copySelection()
+          if (id === 'paste') void pasteFromClipboard()
+          if (id === 'selectAll') term.current?.selectAll()
+          if (id === 'clear') term.current?.clear()
+        }}
+      >
+        <div className="kura-term__surface" ref={holder} data-testid="terminal-pane" />
+      </ContextMenu>
+    </div>
+  )
 }
 
 export function TerminalView() {

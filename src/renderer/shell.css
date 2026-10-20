@@ -946,7 +946,16 @@ body {
   flex: 1;
   min-width: 0;
   min-height: 0;
+  /* 高度要一路传到 xterm：pane → 右键菜单的触发区（display:contents，不参与布局）→ surface */
+  display: flex;
+  flex-direction: column;
   padding: 8px 4px 8px 10px;
+}
+
+/* 真正装 xterm 的那一层。右键菜单挂在它外面，所以悬停/右键的区域就是这块终端本身。 */
+.kura-term__surface {
+  flex: 1;
+  min-height: 0;
 }
 
 /* 终端页：整页不许滚动，把高度一路传到 xterm，让 fit() 拿到确定尺寸。
