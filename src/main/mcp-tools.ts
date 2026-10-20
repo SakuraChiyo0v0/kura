@@ -1,6 +1,5 @@
 import { Readable, Writable } from 'node:stream'
-import { engineCli, engineCliCandidates, type DbEngine } from '../core/db-types.js'
-import type { DatabaseView } from '../core/db-client.js'
+import { engineCli, engineCliCandidates } from '../core/db-types.js'
 import type { DockerClient, ProjectAction } from '../core/docker-client.js'
 import type { LinkModeSetting } from '../core/link.js'
 import type { Mirror } from '../core/mirror.js'
@@ -82,24 +81,17 @@ function truncate(text: string, limit = 100_000): string {
   return text.length > limit ? `${text.slice(0, limit)}\n…（结果过长已截断，加 LIMIT 或 WHERE 缩小范围）` : text
 }
 
-/**
- * 容器内的官方 CLI 怎么连自己那个实例：走容器内的 loopback / 本地 socket，不经过网络。
- * 各引擎的参数不一样，这里是唯一一处拼连接参数的地方。
+/*
+ * 连接身份（用户 / 库 / 口令）**不在客户端拼**，由 kura-server 执行时统一补
+ * （`server/src/db/templates.ts` 的 `clientEnv` / `clientArgs`）。理由：
+ *
+ * 拼在客户端就是**第二份真相**。以前这里给 postgres 补 `-U postgres`、给 mysql 补 `-u root`，
+ * 都是猜的 —— 接管来的容器（如 sakura-pg）用户名与库名根本不一定是这两个。服务端补有一个可靠来源
+ * （容器自己的环境变量），且命令台与 MCP 走同一条路，不会一处能跑一处不能。
+ *
+ * 副作用正好是想要的：用户自己在参数里写 `-U someoneelse` 时，命令行上后出现的覆盖环境变量，
+ * 他的选择自然生效。
  */
-function connectArgs(engine: DbEngine, info: Pick<DatabaseView, 'user' | 'database' | 'port'>): string[] {
-  switch (engine) {
-    case 'postgres':
-      // 容器里的 psql 默认走 unix socket（/var/run/postgresql），不用给 -h
-      return ['-U', info.user || 'postgres', ...(info.database ? ['-d', info.database] : [])]
-    case 'mysql':
-    case 'mariadb':
-      // mysql 客户端默认走 socket；给出 -u，密码靠容器内的 defaults-file / 提示
-      return ['-u', info.user || 'root', ...(info.database ? [info.database] : [])]
-    case 'redis':
-      // redis-cli 默认连 127.0.0.1:6379
-      return []
-  }
-}
 
 /**
  * 把流式操作收集成一段文本（MCP 是请求/响应，没有流）。
@@ -478,11 +470,129 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
         const allowed = engineCliCandidates[engine] ?? []
         if (!allowed.includes(cli)) throw new Error(`只能用这些命令：${allowed.join('、')}`)
         const argv = Array.isArray(args.sql) ? args.sql.map(String) : []
-        // 补上连接参数：容器内的 CLI 要用本地 socket / 环回连自己那个实例
-        const withConn = [...connectArgs(engine, info), ...argv]
-        const result = await deps.databases.exec(name, cli, withConn, undefined, clampDbTimeout(args.timeoutMs))
+        // 连接身份由服务端补（见上方注释）；这里只管把用户给的那一段原样传下去
+        const result = await deps.databases.exec(name, cli, argv, undefined, clampDbTimeout(args.timeoutMs))
         return { exitCode: result.exitCode, stdout: truncate(result.stdout), stderr: truncate(result.stderr), ...(result.error ? { error: result.error } : {}) }
       },
+    },
+    {
+      name: 'kura_db_schemas',
+      title: '数据库的库/schema 列表',
+      description:
+        '列出关系库（PostgreSQL / MySQL / MariaDB）里的 schema。PG 的 schema 是第一层（public 之类）；MySQL 的「库」就是这一层。要浏览某张表前先调这个。',
+      inputSchema: object({ name: { type: 'string', description: '数据库名（kura_db_list 里的 name）' } }, ['name']),
+      annotations: ro,
+      handler: async (args) => deps.databases.schemas(str(args, 'name'), {}),
+    },
+    {
+      name: 'kura_db_tables',
+      title: '一个库里的表',
+      description: '列出一个 schema 里的表与视图，含每张表的估计行数（PG/MySQL 的统计都是估计值，不是精确数）。',
+      inputSchema: object(
+        { name: { type: 'string' }, schema: { type: 'string', description: 'schema 名（kura_db_schemas 里的 name）' } },
+        ['name', 'schema'],
+      ),
+      annotations: ro,
+      handler: async (args) => deps.databases.tables(str(args, 'name'), str(args, 'schema'), {}),
+    },
+    {
+      name: 'kura_db_describe',
+      title: '一张表的结构',
+      description: '列出表的列（名字、类型、可空、默认值）与主键。要写查询前先看这个，别猜列名。',
+      inputSchema: object(
+        { name: { type: 'string' }, schema: { type: 'string' }, table: { type: 'string' } },
+        ['name', 'schema', 'table'],
+      ),
+      annotations: ro,
+      handler: async (args) => deps.databases.table(str(args, 'name'), str(args, 'schema'), str(args, 'table'), {}),
+    },
+    {
+      name: 'kura_db_rows',
+      title: '看一页表数据',
+      description:
+        '读一张表的一页数据，返回**结构化的行**（不是文本）。每个单元格已经定好怎么显示：NULL 是 kind=null、二进制是 kind=binary（十六进制）、JSON 是 kind=json。分页读，别一次拉大表。',
+      inputSchema: object(
+        {
+          name: { type: 'string' },
+          schema: { type: 'string' },
+          table: { type: 'string' },
+          offset: { type: 'number', description: '跳过多少行，默认 0' },
+          limit: { type: 'number', description: '这一页多少行，默认 100、最多 500' },
+          orderBy: { type: 'string', description: '按哪个列排序（可选）' },
+        },
+        ['name', 'schema', 'table'],
+      ),
+      annotations: ro,
+      handler: async (args) => {
+        const page = await deps.databases.rows(str(args, 'name'), {
+          schema: str(args, 'schema'),
+          table: str(args, 'table'),
+          offset: typeof args.offset === 'number' ? args.offset : 0,
+          limit: typeof args.limit === 'number' ? args.limit : undefined,
+          orderBy: optionalStr(args, 'orderBy'),
+        })
+        // MCP 的返回值是进模型上下文的：把行数裁到上限，别让一张大表把上下文冲掉
+        const rows = page.rows.slice(0, 200)
+        return { ...page, rows, count: rows.length, ...(page.rows.length > rows.length ? { note: `只返回了前 ${rows.length} 行` } : {}) }
+      },
+    },
+    {
+      name: 'kura_db_sql',
+      title: '跑一条 SQL（结构化结果）',
+      description:
+        '在关系库里跑一条 SQL，返回**结构化的结果集**（列 + 行），比 kura_db_query 的文本输出更适合分析。' +
+        'kura_db_query 走容器里的官方 CLI、拿的是文本；这个直接说数据库协议、拿的是数据。' +
+        '写操作（INSERT/UPDATE/DELETE/DDL）也会真的执行 —— 需要用户确认的场合自己先问。',
+      inputSchema: object(
+        {
+          name: { type: 'string' },
+          sql: { type: 'string', description: '一条 SQL（扩展查询，一次一条语句）' },
+          database: { type: 'string', description: 'PG 的库名；不填用登记的那个' },
+          timeoutMs: { type: 'number', description: '超时毫秒，默认 15000，最大 60000' },
+        },
+        ['name', 'sql'],
+      ),
+      annotations: { readOnlyHint: false, idempotentHint: false },
+      handler: async (args) => {
+        const result = await deps.databases.query(str(args, 'name'), str(args, 'sql'), {
+          database: optionalStr(args, 'database'),
+          timeoutMs: clampDbTimeout(args.timeoutMs),
+        })
+        // 结果集裁到 500 行：MCP 的返回值进模型上下文
+        if (result.kind === 'rows' && result.rows.length > 500) {
+          return { ...result, rows: result.rows.slice(0, 500), truncated: true, note: `只返回了前 500 行（共 ${result.rows.length} 行）` }
+        }
+        return result
+      },
+    },
+    {
+      name: 'kura_db_redis_keys',
+      title: 'Redis：扫 key',
+      description: '按 SCAN 分页扫 Redis 的 key（不是 KEYS —— 后者在大实例上会阻塞）。可用 match 做前缀过滤。',
+      inputSchema: object(
+        {
+          name: { type: 'string' },
+          match: { type: 'string', description: 'glob 过滤，如 user:*' },
+          cursor: { type: 'string', description: '分页游标；上一页返回的 cursor，0 表示从头/结束' },
+          count: { type: 'number', description: '一次大概扫多少，默认 200' },
+        },
+        ['name'],
+      ),
+      annotations: ro,
+      handler: async (args) =>
+        deps.databases.redisKeys(str(args, 'name'), {
+          match: optionalStr(args, 'match') ?? '',
+          cursor: optionalStr(args, 'cursor') ?? '0',
+          count: typeof args.count === 'number' ? args.count : undefined,
+        }),
+    },
+    {
+      name: 'kura_db_redis_value',
+      title: 'Redis：读一个 key 的值',
+      description: '按 key 的类型读它的值（string / list / set / zset / hash / stream）。二进制值会被标出来，不会当文本给你。',
+      inputSchema: object({ name: { type: 'string' }, key: { type: 'string' } }, ['name', 'key']),
+      annotations: ro,
+      handler: async (args) => deps.databases.redisValue(str(args, 'name'), str(args, 'key'), {}),
     },
     {
       name: 'kura_db_action',

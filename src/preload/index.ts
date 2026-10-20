@@ -150,6 +150,15 @@ const kura: KuraBridge = {
       ipcRenderer.on(ch.dbExecEvent, handler)
       return () => ipcRenderer.off(ch.dbExecEvent, handler)
     },
+    browseAvailable: () => invoke(ch.dbBrowseAvailable),
+    redisKeys: (name, options) => invoke(ch.dbRedisKeys, name, options),
+    redisValue: (name, key, options) => invoke(ch.dbRedisValue, name, key, options),
+    redisCommand: (name, args, options) => invoke(ch.dbRedisCommand, name, args, options),
+    schemas: (name, options) => invoke(ch.dbSchemas, name, options),
+    tables: (name, schema, options) => invoke(ch.dbTables, name, schema, options),
+    table: (name, schema, table, options) => invoke(ch.dbTable, name, schema, table, options),
+    rows: (name, options) => invoke(ch.dbRows, name, options),
+    query: (name, sql, options) => invoke(ch.dbQuery, name, sql, options),
     tunnels: () => invoke(ch.dbTunnels),
     tunnelSetEnabled: (name, enabled) => invoke(ch.dbTunnelSetEnabled, name, enabled),
     tunnelSetPort: (name, port) => invoke(ch.dbTunnelSetPort, name, port),

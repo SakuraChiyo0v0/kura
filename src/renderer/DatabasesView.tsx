@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CircleStop, Copy, Database, Ellipsis, Play, Plus, RefreshCw, RotateCcw, Server, Trash2 } from 'lucide-react'
+import { CircleStop, Copy, Database, Ellipsis, KeyRound, Play, Plus, RefreshCw, RotateCcw, Server, Table2, Trash2 } from 'lucide-react'
 import {
   ActionMenu,
   Banner,
@@ -18,6 +18,8 @@ import {
   type StatusTone,
 } from '@sakura-ui/react'
 import type { DatabaseTemplate, DatabaseView as DbView, DbEngine, TunnelStatus } from '../shared/ipc.js'
+import { DatabasesRedisView } from './DatabasesRedisView.js'
+import { DatabasesRelView } from './DatabasesRelView.js'
 
 /**
  * 「数据库」页：NAS 上 Docker 里的 PostgreSQL / MySQL / MariaDB / Redis。
@@ -224,6 +226,14 @@ export function DatabasesView(): React.JSX.Element {
             ),
           },
           {
+            value: 'data',
+            label: '数据',
+            icon: <KeyRound {...icon} />,
+            // 两套界面按引擎分派：关系库是「库→表→列 + 表数据 + SQL」，Redis 是「key 列表 + 值」。
+            // 硬合成一套两边都别扭（设计文档 §十一）。
+            content: <DataTab databases={state.databases} />,
+          },
+          {
             value: 'query',
             label: '命令台',
             icon: <Play {...icon} />,
@@ -266,6 +276,50 @@ export function DatabasesView(): React.JSX.Element {
       </div>
     </div>
   )
+}
+
+// ---------------------------------------------------------------- 数据（按引擎分派）
+
+/**
+ * 「数据」页：按引擎分派到两套界面。
+ *
+ * 关系库（MySQL / MariaDB）与 Redis 的数据形状完全不同 —— 一个是 库→表→列 + 行，
+ * 一个是扁平的 key→value。硬塞进同一套组件会让两边都不顺手，所以分成两个组件，
+ * 这里只做「有没有这类库」的判断。
+ */
+function DataTab({ databases }: { databases: DbView[] }): React.JSX.Element {
+  const relation = databases.filter((d) => d.engine === 'mysql' || d.engine === 'mariadb' || d.engine === 'postgres')
+  const redis = databases.filter((d) => d.engine === 'redis')
+  const [kind, setKind] = useState('relation')
+
+  if (relation.length === 0 && redis.length === 0) {
+    return (
+      <div className="kura-placeholder">
+        <EmptyState
+          icon={<KeyRound size={22} aria-hidden />}
+          title="还没有能浏览数据的数据库"
+          description="数据浏览支持 PostgreSQL、MySQL、MariaDB 与 Redis。去「安装」装一个，或先启动已有的那个。"
+        />
+      </div>
+    )
+  }
+
+  // 两种都有时给一排切换；只有一种就直出那一套
+  if (relation.length > 0 && redis.length > 0) {
+    return (
+      <MotionTabs
+        label="数据类型"
+        value={kind}
+        onValueChange={setKind}
+        items={[
+          { value: 'relation', label: '表数据', icon: <Table2 {...icon} />, content: <DatabasesRelView databases={databases} /> },
+          { value: 'redis', label: 'Redis', icon: <KeyRound {...icon} />, content: <DatabasesRedisView databases={databases} /> },
+        ]}
+      />
+    )
+  }
+
+  return relation.length > 0 ? <DatabasesRelView databases={databases} /> : <DatabasesRedisView databases={databases} />
 }
 
 // ---------------------------------------------------------------- 列表
@@ -609,7 +663,7 @@ function QueryTab({ databases, selected, onSelect }: { databases: DbView[]; sele
   return (
     <Section
       title="命令台"
-      description={`直接在这个数据库里跑命令（用容器自带的 ${cli || 'CLI'}）。输出是文本；结构化的活建议交给 AI —— Kura 的 MCP 工具更全。`}
+      description={`直接在这个数据库里跑命令（用容器自带的 ${cli || 'CLI'}，账号与口令自动带上，不用自己写 -U / -u）。输出是文本；结构化的活建议交给 AI —— Kura 的 MCP 工具更全。`}
     >
       <div className="kura-db-connect">
         <SelectField

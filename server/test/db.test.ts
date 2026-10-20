@@ -13,7 +13,7 @@ import { ProjectFileStore, type FileValidator } from '../src/docker/files.js'
 import { createDbHandler } from '../src/db/handler.js'
 import { DatabaseRegistry, discoverDatabases, readProjectEnv } from '../src/db/registry.js'
 import { TunnelService } from '../src/db/tunnel.js'
-import { generatePassword, passwordEnvKey, readEnv, templates } from '../src/db/templates.js'
+import { clientArgs, clientEnv, generatePassword, passwordEnvKey, readEnv, templates } from '../src/db/templates.js'
 import { FakeDocker } from './fake-docker.js'
 
 let docker: FakeDocker
@@ -417,6 +417,146 @@ describe('createDbHandler：隧道 upgrade', () => {
     localTunnel.closeAll()
     await new Promise<void>((r) => server.close(() => r()))
     await new Promise<void>((r) => echo.close(() => r()))
+  })
+})
+
+describe('clientEnv / clientArgs', () => {
+  it('空值一个都不传（PGUSER= 会把容器自己的默认值覆盖成空，比不传更糟）', () => {
+    expect(clientEnv('postgres', { user: '', database: '', password: '' })).toEqual([])
+    expect(clientArgs('postgres', { user: '', database: '' })).toEqual([])
+    // 只有部分字段有值时就只传那几个
+    expect(clientEnv('postgres', { user: 'app', database: '', password: 'pw' })).toEqual(['PGUSER=app', 'PGPASSWORD=pw'])
+  })
+
+  it('口令一律走环境变量，不进命令行（命令行的 Cmd 能在 docker inspect 里看到）', () => {
+    for (const engine of ['postgres', 'mysql', 'mariadb', 'redis'] as const) {
+      const args = clientArgs(engine, { user: 'u', database: 'd' })
+      expect(args.some((a) => a.includes('pw-should-not-be-here'))).toBe(false)
+      const env = clientEnv(engine, { user: 'u', database: 'd', password: 'pw-should-not-be-here' })
+      expect(env.some((line) => line === 'PGPASSWORD=pw-should-not-be-here' || line === 'MYSQL_PWD=pw-should-not-be-here' || line === 'REDISCLI_AUTH=pw-should-not-be-here')).toBe(true)
+    }
+  })
+
+  it('Redis 不给用户/库参数（redis-cli 没有这两个概念）', () => {
+    expect(clientArgs('redis', { user: 'u', database: 'd' })).toEqual([])
+  })
+})
+
+describe('命令执行：连接身份由服务端补（psql 不再是 root）', () => {
+  /**
+   * 复现真机那个 bug 的形状：容器里 `POSTGRES_USER=app`，命令台只发 `-c "SELECT version()"`。
+   *
+   * 这两条断言是这次修复的核心 —— 修之前 psql 没有 `PGUSER`、于是按 OS 用户 root 登录，
+   * 报 `FATAL: role "root" does not exist`（psql 只认 PGUSER，不认镜像的 POSTGRES_USER）。
+   */
+  it('PostgreSQL：补 PGUSER / PGDATABASE，容器里没有 .env 时口令从容器环境变量取', async () => {
+    // 接管的容器（不在登记表里）：user / database 只能是空串，全靠容器 Env 推出来
+    docker.addContainer('sakura-pg', {
+      image: 'postgres:17-alpine',
+      ports: [{ PrivatePort: 5432, Type: 'tcp' }],
+      env: ['POSTGRES_USER=app', 'POSTGRES_DB=appdb', 'POSTGRES_PASSWORD=s3cret-pw'],
+    })
+    // 登记表非空才能用命令执行（tunnel.targetOf 里那道闸门）—— 另一条 Kura 装的库把它撑起来
+    registry.add({ name: 'other', engine: 'postgres', container: 'other', port: 5432, user: 'postgres', database: 'postgres', dir: '', managed: true, createdAt: '' })
+    docker.addContainer('other', { image: 'postgres:17-alpine', ports: [{ PrivatePort: 5432, Type: 'tcp' }] })
+
+    const handler = createDbHandler({ registry, engine, tunnel, audit: () => {}, projectRoot: root })
+    const server = http.createServer((req, res) => void handler.handle(req, res))
+    server.on('upgrade', (req, socket, head) => handler.upgrade(req, socket as Socket, head))
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+    const port = (server.address() as AddressInfo).port
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/db/sakura-pg/exec`, { headers: { 'x-kura-docker': '1' } })
+    await new Promise<void>((resolve, reject) => {
+      ws.on('open', () => resolve())
+      ws.on('error', reject)
+    })
+    await new Promise<void>((resolve) => {
+      ws.on('message', (data: Buffer) => {
+        if ((JSON.parse(data.toString('utf8')) as { type: string }).type === 'exit') resolve()
+      })
+      ws.send(JSON.stringify({ cli: 'psql', args: ['-c', 'SELECT version()'] }))
+    })
+
+    const exec = [...docker.execs.values()][0]!
+    expect(exec.cmd[0]).toBe('psql')
+    // 用户给的参数原样保留、且在后面（出现在后面的会覆盖环境变量）
+    expect(exec.cmd.slice(1)).toEqual(['-c', 'SELECT version()'])
+    // 身份走环境变量：psql 只认 PGUSER / PGDATABASE / PGPASSWORD
+    expect(exec.env).toEqual(expect.arrayContaining(['PGUSER=app', 'PGDATABASE=appdb', 'PGPASSWORD=s3cret-pw']))
+    // 不带镜像那套变量名（POSTGRES_USER 对客户端无效，带了反而误导）
+    expect(exec.env!.some((line) => line.startsWith('POSTGRES_'))).toBe(false)
+
+    await new Promise<void>((r) => server.close(() => r()))
+  })
+
+  it('MySQL：用户名与库走参数，口令走 MYSQL_PWD', async () => {
+    docker.addContainer('my', {
+      image: 'mysql:8.4',
+      ports: [{ PrivatePort: 3306, Type: 'tcp' }],
+      env: ['MYSQL_USER=kura', 'MYSQL_DATABASE=app', 'MYSQL_PASSWORD=pw-mysql'],
+    })
+    registry.add({ name: 'seed', engine: 'postgres', container: 'seed', port: 5432, user: 'postgres', database: 'postgres', dir: '', managed: true, createdAt: '' })
+    docker.addContainer('seed', { image: 'postgres:17-alpine', ports: [{ PrivatePort: 5432, Type: 'tcp' }] })
+
+    const handler = createDbHandler({ registry, engine, tunnel, audit: () => {}, projectRoot: root })
+    const server = http.createServer((req, res) => void handler.handle(req, res))
+    server.on('upgrade', (req, socket, head) => handler.upgrade(req, socket as Socket, head))
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+    const port = (server.address() as AddressInfo).port
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/db/my/exec`, { headers: { 'x-kura-docker': '1' } })
+    await new Promise<void>((resolve, reject) => {
+      ws.on('open', () => resolve())
+      ws.on('error', reject)
+    })
+    await new Promise<void>((resolve) => {
+      ws.on('message', (data: Buffer) => {
+        if ((JSON.parse(data.toString('utf8')) as { type: string }).type === 'exit') resolve()
+      })
+      ws.send(JSON.stringify({ cli: 'mysql', args: ['-e', 'SELECT version()'] }))
+    })
+
+    const exec = [...docker.execs.values()][0]!
+    // mysql 客户端不认环境变量指定用户/库，只能走参数；口令走 MYSQL_PWD（不进命令行）
+    expect(exec.cmd).toEqual(['mysql', '-u', 'kura', 'app', '-e', 'SELECT version()'])
+    expect(exec.env).toContain('MYSQL_PWD=pw-mysql')
+
+    await new Promise<void>((r) => server.close(() => r()))
+  })
+
+  it('Redis：口令走 REDISCLI_AUTH（redis-cli 不认 REDIS_PASSWORD）', async () => {
+    docker.addContainer('rd', {
+      image: 'redis:7-alpine',
+      ports: [{ PrivatePort: 6379, Type: 'tcp' }],
+      env: ['REDIS_PASSWORD=pw-redis'],
+    })
+    registry.add({ name: 'seed', engine: 'postgres', container: 'seed', port: 5432, user: 'postgres', database: 'postgres', dir: '', managed: true, createdAt: '' })
+    docker.addContainer('seed', { image: 'postgres:17-alpine', ports: [{ PrivatePort: 5432, Type: 'tcp' }] })
+
+    const handler = createDbHandler({ registry, engine, tunnel, audit: () => {}, projectRoot: root })
+    const server = http.createServer((req, res) => void handler.handle(req, res))
+    server.on('upgrade', (req, socket, head) => handler.upgrade(req, socket as Socket, head))
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+    const port = (server.address() as AddressInfo).port
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/db/rd/exec`, { headers: { 'x-kura-docker': '1' } })
+    await new Promise<void>((resolve, reject) => {
+      ws.on('open', () => resolve())
+      ws.on('error', reject)
+    })
+    await new Promise<void>((resolve) => {
+      ws.on('message', (data: Buffer) => {
+        if ((JSON.parse(data.toString('utf8')) as { type: string }).type === 'exit') resolve()
+      })
+      ws.send(JSON.stringify({ cli: 'redis-cli', args: ['PING'] }))
+    })
+
+    const exec = [...docker.execs.values()][0]!
+    expect(exec.cmd).toEqual(['redis-cli', 'PING'])
+    expect(exec.env).toContain('REDISCLI_AUTH=pw-redis')
+
+    await new Promise<void>((r) => server.close(() => r()))
   })
 })
 

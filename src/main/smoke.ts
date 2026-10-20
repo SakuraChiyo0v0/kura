@@ -360,6 +360,29 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
       !root.body.includes('/home/') && v1.body.includes('/volume1/docs/') && !v1.body.includes('private') && hidden.status === 404 && allowed.body === 'hello from smoke nas',
       `root含home=${root.body.includes('/home/')} v1含private=${v1.body.includes('private')} secret=${hidden.status} readme=${allowed.status}`,
     )
+    // 目录选择器：范围已经收成 /volume1/docs，但放行目录**之外**的 /home 照样得能点出来 ——
+    // 这是它存在的理由（文件页里的 WebDAV 视图看不见没放行的目录）。
+    await js(`document.querySelector('[data-testid="scope-include"] [data-testid="picker-open"]')?.click()`)
+    const pickerRoot = await waitFor(`document.querySelector('[data-testid="picker-list"]')?.textContent.includes('volume1') === true`)
+    const pickerNames = await js<string>(`[...document.querySelectorAll('[data-testid="picker-list"] .kura-picker__row span')].map(s => s.textContent).join(',')`)
+    check('目录选择器列得出根目录（含范围外的 /home）', pickerRoot && pickerNames.split(',').includes('home'), pickerNames)
+    // 进一层：根 → volume1，当前目录要跟着走
+    await js(`[...document.querySelectorAll('[data-testid="picker-list"] .kura-picker__row')].find(b => b.textContent.trim() === 'volume1')?.click()`)
+    const pickerInVolume = await waitFor(`document.querySelector('[data-testid="picker-current"]')?.textContent.includes('/volume1') === true`)
+    const subNames = await js<string>(`[...document.querySelectorAll('[data-testid="picker-list"] .kura-picker__row span')].map(s => s.textContent).join(',')`)
+    check('目录选择器能进子目录', pickerInVolume && subNames.split(',').includes('docs'), `${pickerInVolume} ${subNames}`)
+    // 「选择 /volume1」：当前就在这一层，点那个按钮把它加进放行列表。
+    // 必须按**整条**比（列表里已经有 /volume1/docs，前缀匹配会永远为真、测不出东西）。
+    await js(`document.querySelector('[data-testid="picker-current"]')?.click()`)
+    const picked = await waitFor(
+      `[...document.querySelectorAll('[data-testid="scope-include"] li code')].some(c => c.textContent === '/volume1')`,
+      3_000,
+    )
+    // 关掉是受控状态 + 退场动画：节点要等动画跑完才移除，所以等一会儿而不是立刻查
+    const dialogClosed = await waitFor(`document.querySelector('[data-testid="dir-picker"]') === null`, 3_000)
+    check('选中的目录进了放行列表、对话框自己关掉', picked && dialogClosed, `picked=${picked} closed=${dialogClosed}`)
+    await shot('v0.8.7-目录选择器.png')
+
     await fill('NAS 路径', '/volume1/private')
     await js(`[...document.querySelectorAll('.kura-dav .kura-rules__add button')].find(b => b.textContent.trim() === '检查')?.click()`)
     check('可见性自检', await waitFor(`document.querySelector('[data-testid="scope-probe"]')?.dataset.visibility === 'hidden'`))
@@ -723,6 +746,49 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     const cmdOut = await waitFor(`document.querySelector('[data-testid="db-output"]')?.textContent.includes('PostgreSQL 17.0') === true`, 10_000)
     const cmdExit = await js<string>(`document.querySelector('[data-testid="db-output"]')?.textContent.includes('退出码 0') ? 'ok' : 'bad'`)
     check('命令台：在数据库容器里跑官方 CLI，拿到输出与退出码', cmdOut && cmdExit === 'ok', await js<string>(`document.querySelector('[data-testid="db-output"]')?.textContent.slice(0, 200) ?? '没有输出'`))
+
+    // ---- 数据浏览（M2）----
+    // 关系库那一套：左边 库→表，右边表数据 + 结构
+    await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === '数据')?.click()`)
+    await waitFor(`document.querySelector('[data-testid="rel-tree"]') !== null`, 8_000)
+    // 自动展开 public（只有一个 schema 时会自动展开）
+    const tableShown = await waitFor(`[...document.querySelectorAll('.kura-rel-tree__table')].some(b => b.textContent.includes('users'))`, 8_000)
+    check('数据页：关系库的库→表树出来了', tableShown, await js<string>(`[...document.querySelectorAll('.kura-rel-tree__table')].map(b => b.textContent.trim()).join(' | ') || '没有表'`))
+
+    if (tableShown) {
+      await js(`[...document.querySelectorAll('.kura-rel-tree__table')].find(b => b.textContent.includes('users'))?.click()`)
+      // 数据表渲染出来：有表头、有行
+      const rowsShown = await waitFor(`(() => {
+        const wrap = document.querySelector('.kura-rel-tablewrap .kura-rel-table')
+        return wrap !== null && wrap.querySelectorAll('tbody tr').length > 0
+      })()`, 8_000)
+      check('数据页：点表能看数据（表格有行）', rowsShown, await js<string>(`(() => {
+        const wrap = document.querySelector('.kura-rel-tablewrap .kura-rel-table')
+        return wrap ? wrap.querySelectorAll('tbody tr').length + ' 行' : '没有表格'
+      })()`))
+
+      // NULL 与空串必须区分开 —— 这是这一页最容易做错的地方（灰色斜体 vs 空白）
+      const nullShown = await js<boolean>(`document.querySelector('.kura-rel-cell--null')?.textContent.trim() === 'NULL'`)
+      check('数据页：NULL 单独标出来（不和空串混）', nullShown)
+
+      // 结构页：列名与主键
+      await js(`[...document.querySelectorAll('.kura-rel__tab')].find(b => b.textContent.trim() === '结构')?.click()`)
+      const structureShown = await waitFor(`document.querySelector('.kura-rel-table--cols') !== null`, 5_000)
+      const hasPk = structureShown && await js<boolean>(`document.querySelector('.kura-rel-col__pk') !== null`)
+      check('数据页：表结构有列与主键标记', structureShown && hasPk)
+      await shot('v0.9-数据库-表数据.png')
+    }
+
+    // Redis 那一套：左边 key 列表，右边值
+    await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === 'Redis')?.click()`)
+    const redisKeys = await waitFor(`[...document.querySelectorAll('.kura-redis-list__key')].some(k => k.textContent.includes('greeting'))`, 8_000)
+    check('数据页：Redis 的 key 列表出来了', redisKeys, await js<string>(`[...document.querySelectorAll('.kura-redis-list__key')].map(k => k.textContent).join(' | ') || '没有 key'`))
+    if (redisKeys) {
+      await js(`[...document.querySelectorAll('.kura-redis-list__item')].find(b => b.textContent.includes('greeting'))?.click()`)
+      const valueShown = await waitFor(`document.querySelector('[data-testid="redis-value"]')?.textContent.includes('hello') === true`, 8_000)
+      check('数据页：点 key 能看到值', valueShown, await js<string>(`document.querySelector('[data-testid="redis-value"]')?.textContent.slice(0, 120) ?? '没有值'`))
+      await shot('v0.9-数据库-Redis.png')
+    }
 
     // 安装：走模板装一个，列表里应该多出来
     await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === '安装')?.click()`)

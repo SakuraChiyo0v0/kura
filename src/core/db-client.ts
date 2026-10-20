@@ -1,6 +1,15 @@
 import http from 'node:http'
 import { WebSocket } from 'ws'
 import type { DbEngine } from './db-types.js'
+import type {
+  DbQueryResult,
+  DbRowsPage,
+  DbSchemaNode,
+  DbTableDetail,
+  DbTableNode,
+  RedisKeyPage,
+  RedisValue,
+} from './db-browse.js'
 import type { DockerActivity } from './docker-client.js'
 
 /**
@@ -180,6 +189,88 @@ export class DbClient {
       ws.once('error', reject)
     })
     return ws
+  }
+
+  // ---------------------------------------------------------------- 数据浏览
+  // 这几个走 HTTP（不是 exec 那条 WS）：浏览是「一问一答」，不值得为每条请求开一条 WS，
+  // 而且结构化结果本来就该用 JSON 传，不该塞进文本流再由客户端解析回来。
+
+  /** Redis：扫一页 key。 */
+  redisKeys(name: string, options: { cursor?: string; match?: string; count?: number; password?: string } = {}): Promise<RedisKeyPage> {
+    const query = new URLSearchParams()
+    if (options.cursor) query.set('cursor', options.cursor)
+    if (options.match) query.set('match', options.match)
+    if (options.count) query.set('count', String(options.count))
+    if (options.password) query.set('password', options.password)
+    return this.json<RedisKeyPage>('GET', `/api/db/${encodeURIComponent(name)}/keys?${query}`)
+  }
+
+  /** Redis：读一个 key 的值。 */
+  redisValue(name: string, key: string, options: { password?: string } = {}): Promise<RedisValue> {
+    const query = new URLSearchParams({ key })
+    if (options.password) query.set('password', options.password)
+    return this.json<RedisValue>('GET', `/api/db/${encodeURIComponent(name)}/value?${query}`)
+  }
+
+  /** Redis：跑一条用户命令。 */
+  redisCommand(name: string, args: string[], options: { password?: string; timeoutMs?: number } = {}): Promise<{ text: string; binary: boolean; ms: number }> {
+    return this.json<{ text: string; binary: boolean; ms: number }>('POST', `/api/db/${encodeURIComponent(name)}/command`, {
+      args,
+      ...(options.password ? { password: options.password } : {}),
+      ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+    })
+  }
+
+  /** 服务端认不认浏览接口（老镜像只有 M1，会 404）。 */
+  async browseAvailable(): Promise<boolean> {
+    try {
+      await this.json('GET', '/api/db/browse-capabilities')
+      return true
+    } catch (error) {
+      if (error instanceof DbApiError && error.status === 404) return false
+      throw error
+    }
+  }
+
+  // 关系库（MySQL / MariaDB）：schema → tables → table → rows，加一条跑 SQL 的
+  mySqlSchemas(name: string, options: { password?: string } = {}): Promise<DbSchemaNode[]> {
+    const query = new URLSearchParams()
+    if (options.password) query.set('password', options.password)
+    return this.json<DbSchemaNode[]>('GET', `/api/db/${encodeURIComponent(name)}/schemas?${query}`)
+  }
+
+  mySqlTables(name: string, schema: string, options: { password?: string } = {}): Promise<DbTableNode[]> {
+    const query = new URLSearchParams({ schema })
+    if (options.password) query.set('password', options.password)
+    return this.json<DbTableNode[]>('GET', `/api/db/${encodeURIComponent(name)}/tables?${query}`)
+  }
+
+  mySqlTable(name: string, schema: string, table: string, options: { password?: string } = {}): Promise<DbTableDetail> {
+    const query = new URLSearchParams({ schema, table })
+    if (options.password) query.set('password', options.password)
+    return this.json<DbTableDetail>('GET', `/api/db/${encodeURIComponent(name)}/table?${query}`)
+  }
+
+  mySqlRows(
+    name: string,
+    options: { schema: string; table: string; offset?: number; limit?: number; orderBy?: string; password?: string },
+  ): Promise<DbRowsPage> {
+    const query = new URLSearchParams({ schema: options.schema, table: options.table })
+    if (options.offset) query.set('offset', String(options.offset))
+    if (options.limit) query.set('limit', String(options.limit))
+    if (options.orderBy) query.set('orderBy', options.orderBy)
+    if (options.password) query.set('password', options.password)
+    return this.json<DbRowsPage>('GET', `/api/db/${encodeURIComponent(name)}/rows?${query}`)
+  }
+
+  /** 跑一条 SQL。写操作（INSERT / UPDATE / DDL）也走这条 —— 调用方自己负责确认。 */
+  mySqlQuery(name: string, sql: string, options: { database?: string; password?: string; timeoutMs?: number } = {}): Promise<DbQueryResult> {
+    return this.json<DbQueryResult>('POST', `/api/db/${encodeURIComponent(name)}/query`, {
+      sql,
+      ...(options.database ? { database: options.database } : {}),
+      ...(options.password ? { password: options.password } : {}),
+      ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+    }, 120_000)
   }
 
   /** 开一条命令执行会话（一条 WS 上连续跑多条）。 */

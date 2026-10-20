@@ -1,7 +1,7 @@
 {
   "name": "kura",
   "productName": "Kura",
-  "version": "0.8.6",
+  "version": "0.9.0",
   "private": true,
   "description": "Kura 蔵 —— 绿联 NAS 的 Windows 桌面客户端",
   "author": "SakuraChiyo0v0",

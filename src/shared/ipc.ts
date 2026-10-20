@@ -2,6 +2,15 @@
 import type { DockerActivity, ProjectAction, ProjectFilesView } from '../core/docker-client.js'
 import type { AutoUpdateRunResult, AutoUpdateStatus, ContainerDetail, ContainerStats, DockerOverview, ImageView, NetworkView, UpdateCheck, VolumeView } from '../core/docker-types.js'
 import type { DatabaseView, DbExecResult, DatabaseTemplate } from '../core/db-client.js'
+import type {
+  DbQueryResult,
+  DbRowsPage,
+  DbSchemaNode,
+  DbTableDetail,
+  DbTableNode,
+  RedisKeyPage,
+  RedisValue,
+} from '../core/db-browse.js'
 import type { DbEngine } from '../core/db-types.js'
 import type { LinkModeSetting } from '../core/link.js'
 import type { MirrorSnapshot } from '../core/mirror.js'
@@ -143,6 +152,17 @@ export const kuraChannels = {
   dbTunnelSetEnabled: 'kura:db:tunnel-set-enabled',
   dbTunnelSetPort: 'kura:db:tunnel-set-port',
   dbTunnelPort: 'kura:db:tunnel-port',
+  /** 数据浏览：服务端自己说数据库协议，拿结构化结果（与 exec 的文本输出是两条路） */
+  dbBrowseAvailable: 'kura:db:browse-available',
+  dbRedisKeys: 'kura:db:redis-keys',
+  dbRedisValue: 'kura:db:redis-value',
+  dbRedisCommand: 'kura:db:redis-command',
+  /** 关系库（MySQL / MariaDB / PostgreSQL）：schema → tables → table → rows */
+  dbSchemas: 'kura:db:schemas',
+  dbTables: 'kura:db:tables',
+  dbTable: 'kura:db:table',
+  dbRows: 'kura:db:rows',
+  dbQuery: 'kura:db:query',
   // ---- MCP（给 AI 客户端连的服务器）----
   mcpStatus: 'kura:mcp:status',
   mcpSave: 'kura:mcp:save',
@@ -467,6 +487,24 @@ export interface KuraBridge {
     /** 跑一条命令（docker exec 进官方镜像跑官方 CLI）；输出按 onExec 推，返回汇总结果 */
     exec(name: string, cli: string, args: string[], timeoutMs?: number): Promise<DbExecView>
     onExec(listener: (event: DbExecEventView) => void): () => void
+    /** 服务端带不带数据浏览接口（老镜像只有 M1） */
+    browseAvailable(): Promise<boolean>
+    /** Redis：扫一页 key */
+    redisKeys(name: string, options?: { cursor?: string; match?: string; count?: number; password?: string }): Promise<RedisKeyPage>
+    /** Redis：读一个 key 的值 */
+    redisValue(name: string, key: string, options?: { password?: string }): Promise<RedisValue>
+    /** Redis：跑一条用户命令 */
+    redisCommand(name: string, args: string[], options?: { password?: string; timeoutMs?: number }): Promise<{ text: string; binary: boolean; ms: number }>
+    /** 关系库：列出库（schema） */
+    schemas(name: string, options?: { password?: string }): Promise<DbSchemaNode[]>
+    /** 关系库：列一个库里的表 */
+    tables(name: string, schema: string, options?: { password?: string }): Promise<DbTableNode[]>
+    /** 关系库：一张表的结构 */
+    table(name: string, schema: string, table: string, options?: { password?: string }): Promise<DbTableDetail>
+    /** 关系库：读一页表数据 */
+    rows(name: string, options: { schema: string; table: string; offset?: number; limit?: number; orderBy?: string; password?: string }): Promise<DbRowsPage>
+    /** 关系库：跑一条 SQL */
+    query(name: string, sql: string, options?: { database?: string; password?: string; timeoutMs?: number }): Promise<DbQueryResult>
     /** 本机隧道的状态（哪个数据库开在哪台端口） */
     tunnels(): Promise<TunnelStatus[]>
     tunnelSetEnabled(name: string, enabled: boolean): Promise<TunnelStatus[]>

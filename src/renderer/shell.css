@@ -812,6 +812,70 @@ body {
   color: var(--sk-muted);
 }
 
+/* 目录选择器（放行 / 排除目录、可见性自检共用一个） */
+.kura-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* 对话框本身不滚：目录再长也不能把它撑出屏幕，列表自己滚 */
+  min-width: min(560px, 70vw);
+}
+
+.kura-picker__bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.kura-picker__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: min(46vh, 380px);
+  overflow-y: auto;
+  border: 1px solid var(--sk-line);
+  border-radius: 10px;
+  background: var(--sk-surface-sunken);
+}
+
+.kura-picker__list li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 2px;
+}
+
+.kura-picker__list li + li {
+  border-top: 1px solid var(--sk-line);
+}
+
+.kura-picker__row {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.kura-picker__row:hover {
+  background: var(--sk-surface-raised);
+}
+
+.kura-picker__row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---------------- 终端 ---------------- */
 
 .kura-term {
@@ -1678,4 +1742,603 @@ body {
 
 .kura-db-name__open:hover {
   text-decoration: underline;
+}
+
+/* ---------------------------------------------------------------- Redis 数据浏览 */
+
+.kura-redis {
+  display: grid;
+  gap: 14px;
+}
+
+/* 顶部：选库 + 过滤 + 刷新 */
+.kura-redis__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.kura-redis__bar > .sk-select-field {
+  min-width: 180px;
+  max-width: 260px;
+}
+
+.kura-redis__search {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.kura-redis__search > .sk-text-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 左列表 + 右值 */
+.kura-redis__body {
+  display: grid;
+  grid-template-columns: minmax(240px, 340px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .kura-redis__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.kura-redis__keys {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.kura-redis-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  /* 长列表自己滚，别把整页撑高 */
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.kura-redis-list li {
+  min-width: 0;
+}
+
+.kura-redis-list__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: var(--sk-radius-control);
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.kura-redis-list__item:hover {
+  background: var(--sk-surface-hover);
+}
+
+.kura-redis-list__item.is-active {
+  background: var(--sk-accent-surface);
+}
+
+.kura-redis-list__chevron {
+  flex: 0 0 auto;
+  opacity: 0.4;
+}
+
+.kura-redis-list__key {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--kura-font-mono);
+  font-size: 12px;
+}
+
+.kura-redis-list__meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--sk-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 预览行：缩进到 key 名的位置，小一号、淡一点 */
+.kura-redis-list__preview {
+  margin: 0 0 2px 30px;
+  font-size: 11px;
+  color: var(--sk-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kura-redis__more {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
+/* 值的容器 */
+.kura-redis__value {
+  min-width: 0;
+}
+
+.kura-redis-value {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.kura-redis-value__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.kura-redis-value__key {
+  font-family: var(--kura-font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/* 类型标签：不同类型不同色，扫一眼能看出这个库的形状 */
+.kura-redis-type {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: var(--sk-surface-sunken);
+  color: var(--sk-text-muted);
+}
+
+.kura-redis-type--string { background: color-mix(in srgb, #4c9aff 18%, transparent); color: #4c9aff; }
+.kura-redis-type--list   { background: color-mix(in srgb, #22c55e 18%, transparent); color: #22c55e; }
+.kura-redis-type--set    { background: color-mix(in srgb, #a855f7 18%, transparent); color: #a855f7; }
+.kura-redis-type--zset   { background: color-mix(in srgb, #f59e0b 18%, transparent); color: #f59e0b; }
+.kura-redis-type--hash   { background: color-mix(in srgb, #ec4899 18%, transparent); color: #ec4899; }
+.kura-redis-type--stream { background: color-mix(in srgb, #14b8a6 18%, transparent); color: #14b8a6; }
+
+/* 列表 / 集合的元素 */
+.kura-redis-elements {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.kura-redis-elements li {
+  display: flex;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: var(--sk-radius-control);
+}
+
+.kura-redis-elements li:nth-child(odd) {
+  background: var(--sk-surface-sunken);
+}
+
+.kura-redis-elements__index {
+  flex: 0 0 auto;
+  min-width: 2.5em;
+  text-align: right;
+  font-size: 11px;
+  color: var(--sk-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.kura-redis-elements code {
+  font-family: var(--kura-font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* hash / zset 的小表格 */
+.kura-redis-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.kura-redis-table th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--sk-text-muted);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--sk-line);
+  position: sticky;
+  top: 0;
+  background: var(--sk-surface);
+}
+
+.kura-redis-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--sk-line);
+  overflow-wrap: anywhere;
+}
+
+.kura-redis-table td code {
+  font-family: var(--kura-font-mono);
+  font-size: 12px;
+}
+
+.kura-redis-table .is-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* stream：每条一个卡片 */
+.kura-redis-stream {
+  display: grid;
+  gap: 10px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.kura-redis-stream__entry {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--sk-line);
+  border-radius: var(--sk-radius-control);
+}
+
+.kura-redis-stream__id {
+  font-family: var(--kura-font-mono);
+  font-size: 11px;
+  color: var(--sk-text-muted);
+}
+
+/* 口令输入框 */
+.kura-redis-password {
+  display: grid;
+  gap: 10px;
+}
+
+.kura-redis-password p {
+  margin: 0;
+}
+
+.kura-redis-password__form {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.kura-redis-password__form > .sk-text-field {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+/* 命令台 */
+.kura-redis__command {
+  display: grid;
+  gap: 8px;
+}
+
+/* ---------------------------------------------------------------- 关系库数据浏览 */
+
+.kura-rel {
+  display: grid;
+  gap: 14px;
+}
+
+.kura-rel__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.kura-rel__bar > .sk-select-field {
+  min-width: 160px;
+  max-width: 260px;
+}
+
+/* 左树 + 右内容 */
+.kura-rel__body {
+  display: grid;
+  grid-template-columns: minmax(200px, 300px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .kura-rel__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.kura-rel__tree {
+  min-width: 0;
+  max-height: 560px;
+  overflow-y: auto;
+}
+
+.kura-rel-tree,
+.kura-rel-tree__tables {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kura-rel-tree__tables {
+  /* 表缩进到库名下面 */
+  padding-left: 14px;
+}
+
+.kura-rel-tree__schema,
+.kura-rel-tree__table {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--sk-radius-control);
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.kura-rel-tree__schema {
+  font-weight: 600;
+}
+
+.kura-rel-tree__schema:hover,
+.kura-rel-tree__table:hover {
+  background: var(--sk-surface-hover);
+}
+
+.kura-rel-tree__table.is-active {
+  background: var(--sk-accent-surface);
+}
+
+.kura-rel-tree__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kura-rel-tree__table .kura-rel-tree__name {
+  font-family: var(--kura-font-mono);
+  font-size: 12px;
+}
+
+.kura-rel-tree__count {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--sk-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.kura-rel-tree__loading {
+  margin: 2px 0 4px 22px;
+}
+
+/* 右侧主区 */
+.kura-rel__main {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.kura-rel__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.kura-rel__title {
+  font-family: var(--kura-font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+/* 数据 / 结构 的小切换 */
+.kura-rel__tabs {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  padding: 2px;
+  border-radius: var(--sk-radius-control);
+  background: var(--sk-surface-sunken);
+}
+
+.kura-rel__tab {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: var(--sk-radius-control);
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--sk-text-muted);
+  cursor: pointer;
+}
+
+.kura-rel__tab.is-active {
+  background: var(--sk-surface);
+  color: var(--sk-text);
+  font-weight: 600;
+}
+
+/* 结果表：横向可滚，表头吸顶 */
+.kura-rel-tablewrap {
+  border: 1px solid var(--sk-line);
+  border-radius: var(--sk-radius-control);
+  overflow: auto;
+  max-height: 460px;
+}
+
+.kura-rel-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.kura-rel-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--sk-line);
+  background: var(--sk-surface-sunken);
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.kura-rel-table__name {
+  display: block;
+  font-weight: 600;
+}
+
+.kura-rel-table__type {
+  display: block;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--sk-text-muted);
+  font-family: var(--kura-font-mono);
+}
+
+.kura-rel-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--sk-line);
+  font-family: var(--kura-font-mono);
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.kura-rel-table tbody tr:hover td {
+  background: var(--sk-surface-hover);
+}
+
+/* 行号列：不参与滚动内容，窄、淡 */
+.kura-rel-table__gutter {
+  width: 1%;
+  text-align: right;
+  color: var(--sk-text-muted);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+/* 单元格种类 */
+.kura-rel-cell.is-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* NULL：灰斜体，和空串（什么都没有）明确区分 */
+.kura-rel-cell--null {
+  color: var(--sk-text-muted);
+  font-style: italic;
+}
+
+.kura-rel-cell--binary {
+  color: var(--sk-text-muted);
+}
+
+.kura-rel-cell--json {
+  color: var(--sk-accent-text);
+}
+
+.kura-rel-cell.is-truncated::after {
+  content: '…';
+  color: var(--sk-text-muted);
+}
+
+/* 列结构表 */
+.kura-rel-table--cols {
+  border: 1px solid var(--sk-line);
+  border-radius: var(--sk-radius-control);
+}
+
+.kura-rel-table--cols td {
+  white-space: normal;
+}
+
+.kura-rel-col {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.kura-rel-col__pk {
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  background: color-mix(in srgb, #f59e0b 22%, transparent);
+  color: #b45309;
+}
+
+.kura-rel-null {
+  color: var(--sk-text-muted);
+  font-style: italic;
+}
+
+/* 翻页 */
+.kura-rel__pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* SQL 区 */
+.kura-rel__sql {
+  display: grid;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--sk-line);
+}
+
+.kura-rel__sqlfield > textarea,
+.kura-rel__sql input {
+  font-family: var(--kura-font-mono);
+  font-size: 12px;
+}
+
+.kura-rel__executed {
+  font-family: var(--kura-font-mono);
+  font-size: 11px;
+  opacity: 0.7;
+  overflow-wrap: anywhere;
 }

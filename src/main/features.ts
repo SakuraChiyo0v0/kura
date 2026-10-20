@@ -517,6 +517,47 @@ export class DatabaseService {
     return this.client.tunnel(name)
   }
 
+  // ---- 数据浏览 ----
+  // 这几个只是透传：应用知识（哪个引擎、怎么分页）在服务端的 db 模块里，
+  // 主进程这层不掺和 —— 否则同一套判断要在两侧各写一遍，必然漂移。
+
+  browseAvailable(): Promise<boolean> {
+    return this.client.browseAvailable()
+  }
+
+  redisKeys(name: string, options: { cursor?: string; match?: string; count?: number; password?: string }) {
+    return this.client.redisKeys(name, options)
+  }
+
+  redisValue(name: string, key: string, options: { password?: string }) {
+    return this.client.redisValue(name, key, options)
+  }
+
+  redisCommand(name: string, args: string[], options: { password?: string; timeoutMs?: number }) {
+    return this.client.redisCommand(name, args, options)
+  }
+
+  // 关系库（MySQL / MariaDB / PostgreSQL）—— 同样是透传
+  schemas(name: string, options: { password?: string }) {
+    return this.client.mySqlSchemas(name, options)
+  }
+
+  tables(name: string, schema: string, options: { password?: string }) {
+    return this.client.mySqlTables(name, schema, options)
+  }
+
+  table(name: string, schema: string, table: string, options: { password?: string }) {
+    return this.client.mySqlTable(name, schema, table, options)
+  }
+
+  rows(name: string, options: { schema: string; table: string; offset?: number; limit?: number; orderBy?: string; password?: string }) {
+    return this.client.mySqlRows(name, options)
+  }
+
+  query(name: string, sql: string, options: { database?: string; password?: string; timeoutMs?: number }) {
+    return this.client.mySqlQuery(name, sql, options)
+  }
+
   /**
    * 跑一条命令。每次调用开一条新连接（MCP 是请求/响应，没有会话可复用），跑完关掉。
    *

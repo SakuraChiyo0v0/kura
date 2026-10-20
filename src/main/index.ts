@@ -533,6 +533,33 @@ function registerKuraIpc(): void {
     windows.broadcast(ch.dbExecEvent, { id, type: 'exit', code: result.exitCode, ...(result.error ? { error: result.error } : {}) })
     return result
   })
+  // ---- 数据浏览 ----
+  // 口令可以由界面传一次（接管的容器拿不到 .env 时）。**它在主进程里只是过路参数**：
+  // 不落盘、不进日志、不进 IPC 事件广播 —— 用完就随这次请求结束（设计文档 §八：不在客户端存口令）。
+  router.handle(ch.dbBrowseAvailable, () => databases.browseAvailable())
+  router.handle(ch.dbRedisKeys, (_event, name: string, options?: { cursor?: string; match?: string; count?: number; password?: string }) =>
+    databases.redisKeys(String(name), options ?? {}),
+  )
+  router.handle(ch.dbRedisValue, (_event, name: string, key: string, options?: { password?: string }) =>
+    databases.redisValue(String(name), String(key), options ?? {}),
+  )
+  router.handle(ch.dbRedisCommand, (_event, name: string, args: unknown, options?: { password?: string; timeoutMs?: number }) =>
+    databases.redisCommand(String(name), Array.isArray(args) ? args.map(String) : [], options ?? {}),
+  )
+  router.handle(ch.dbSchemas, (_event, name: string, options?: { password?: string }) => databases.schemas(String(name), options ?? {}))
+  router.handle(ch.dbTables, (_event, name: string, schema: string, options?: { password?: string }) =>
+    databases.tables(String(name), String(schema), options ?? {}),
+  )
+  router.handle(ch.dbTable, (_event, name: string, schema: string, table: string, options?: { password?: string }) =>
+    databases.table(String(name), String(schema), String(table), options ?? {}),
+  )
+  router.handle(ch.dbRows, (_event, name: string, options: { schema: string; table: string; offset?: number; limit?: number; orderBy?: string; password?: string }) =>
+    databases.rows(String(name), options),
+  )
+  router.handle(ch.dbQuery, (_event, name: string, sql: string, options?: { database?: string; password?: string; timeoutMs?: number }) =>
+    databases.query(String(name), String(sql), options ?? {}),
+  )
+
   router.handle(ch.dbTunnels, () => syncTunnels())
   router.handle(ch.dbTunnelSetEnabled, async (_event, name: string, enabled: boolean) => {
     await dbTunnels.setEnabled(String(name), enabled === true)

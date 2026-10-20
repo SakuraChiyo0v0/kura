@@ -323,6 +323,20 @@ const dbState = {
     { name: 'sakura-pg', engine: 'postgres', container: 'sakura-pg', state: 'running', status: 'Up 5 hours', health: '', port: 5444, hostPort: 0, database: 'postgres', username: 'postgres', managed: false, networked: true, dir: '' },
     { name: 'smoke-redis', engine: 'redis', container: 'smoke-redis', state: 'running', status: 'Up 4 minutes', health: '', port: 6379, hostPort: 0, database: '', username: '', managed: true, networked: true, dir: '/volume1/docker/smoke-redis' },
   ],
+  // 数据浏览（M2）：形状照 src/core/db-browse.ts。冒烟只验「界面能渲染出这些」，
+  // 协议本身由 server/test/db-* 覆盖（那边用真 TCP 假服务器）。
+  browse: {
+    'smoke-pg': {
+      schemas: [{ name: 'public', tableCount: 2 }],
+      tables: { public: [{ schema: 'public', name: 'users', kind: 'table', rowEstimate: 2 }] },
+      detail: { schema: 'public', name: 'users', kind: 'table', columns: [{ name: 'id', type: 'int4', nullable: false, defaultValue: null, primaryKey: true }, { name: 'nick', type: 'text', nullable: true, defaultValue: null, primaryKey: false }], primaryKey: ['id'], rowEstimate: 2 },
+      rows: { schema: 'public', table: 'users', columns: [{ name: 'id', type: 'int4' }, { name: 'nick', type: 'text' }], rows: [[{ text: '1', kind: 'number' }, { text: 'alice', kind: 'text' }], [{ text: '2', kind: 'number' }, { text: 'NULL', kind: 'null' }]], count: 2, offset: 0, hasMore: false, rowEstimate: 2, ms: 3, sql: 'SELECT * FROM "public"."users" LIMIT 101 OFFSET 0' },
+    },
+    'smoke-redis': {
+      keys: { keys: [{ key: 'greeting', type: 'string', size: 5, ttl: -1, preview: 'hello', binary: false }], cursor: '0', scanned: 1 },
+      value: { key: 'greeting', type: 'string', ttl: -1, size: 5, value: { kind: 'string', text: 'hello', binary: false, bytes: 5 }, truncated: false },
+    },
+  },
   templates: [
     { engine: 'postgres', label: 'PostgreSQL', image: 'postgres:17-alpine', port: 5432, database: 'postgres', username: 'postgres' },
     { engine: 'mysql', label: 'MySQL', image: 'mysql:8.4', port: 3306, database: 'mysql', username: 'root' },
@@ -348,6 +362,8 @@ function handleDb(req, res, body) {
   }
   if (req.method !== 'GET' && req.headers['x-kura-docker'] !== '1') return json(403, { error: '写操作必须带 x-kura-docker: 1 头' })
   const path = url.pathname
+  // 数据浏览的探测点（客户端据此判断镜像带不带 M2）
+  if (path === '/api/db/browse-capabilities') return json(200, { version: 1, engines: ['redis', 'mysql', 'mariadb', 'postgres'], relation: ['mysql', 'mariadb', 'postgres'], redis: true })
   if (path === '/api/db/templates') return json(200, dbState.templates)
   if (path === '/api/db/list') return json(200, { databases: dbState.databases, tunnelAvailable: dbState.databases.length > 0 })
   if (path === '/api/db/create' && req.method === 'POST') {
@@ -364,6 +380,18 @@ function handleDb(req, res, body) {
     const db = dbState.databases.find((d) => d.name === name)
     if (!db) return json(404, { error: '没有这个数据库' })
     if (req.method === 'GET' && !m[2]) return json(200, db)
+    // ---- 数据浏览 ----
+    const browsing = dbState.browse[name]
+    if (m[2] === 'schemas') return json(200, browsing?.schemas ?? [])
+    if (m[2] === 'tables') return json(200, browsing?.tables?.[url.searchParams.get('schema') ?? ''] ?? [])
+    if (m[2] === 'table') return json(200, browsing?.detail ?? { error: '没有结构' })
+    if (m[2] === 'rows') return json(200, browsing?.rows ?? { error: '没有数据' })
+    if (m[2] === 'keys') return json(200, browsing?.keys ?? { keys: [], cursor: '0', scanned: 0 })
+    if (m[2] === 'value') return json(200, browsing?.value ?? { error: '没有这个 key' })
+    if (m[2] === 'query' && req.method === 'POST') {
+      return json(200, { kind: 'rows', columns: [{ name: 'n', type: 'int4' }], rows: [[{ text: '42', kind: 'number' }]], affected: -1, command: '', truncated: false, ms: 2, sql: 'SELECT 42 AS n' })
+    }
+    if (m[2] === 'command' && req.method === 'POST') return json(200, { text: 'PONG', binary: false, ms: 1 })
     if (m[2] === 'info' && req.method === 'POST') {
       const { includePassword } = JSON.parse(body.toString() || '{}')
       // 口令只在显式要的时候给，且只给 Kura 装的（接管的读 .env 读不到）
@@ -519,6 +547,24 @@ const nas = http.createServer(async (req, res) => {
     case '/api/firstfactor':
       // 旧客户端会先登录；kura-server 不做认证，照 Authelia 的形状回 200
       return json({ status: 'OK' })
+    case '/_kura/api/browse': {
+      // 目录选择器（server/src/browse.ts 的形状）：只回子目录，不回文件。
+      // 假 NAS 的目录树就是 davFiles 里那些 null 值。
+      const p = url.searchParams.get('path') ?? '/'
+      if (p.includes('..')) {
+        res.statusCode = 400
+        return json({ error: '路径里不能有 . 或 ..' })
+      }
+      if (!davFiles.has(p) || davFiles.get(p) !== null) {
+        res.statusCode = 400
+        return json({ error: `NAS 上没有这个目录：${p}` })
+      }
+      const entries = [...davFiles.keys()]
+        .filter((k) => k !== p && davFiles.get(k) === null && davParent(k) === p)
+        .map((k) => ({ name: k.slice(k.lastIndexOf('/') + 1), path: k }))
+        .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true }))
+      return json({ path: p, entries, truncated: false })
+    }
     case '/_kura/api/scope': {
       // 客户端「文件」页读写 NAS 上的暴露范围；契约见 server/src/admin.ts（整体替换）
       if (req.method === 'GET') {
