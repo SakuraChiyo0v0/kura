@@ -1334,14 +1334,45 @@ body {
   max-height: min(50vh, 420px);
   display: flex;
   flex-direction: column;
+  /* 浮窗自己拿背景和边框，不再依赖内层 Section —— 内层是方角的，
+     靠外层画圆角的话四个角会被它的底色顶出来（实测过：圆角处露出直角白块） */
+  background: var(--sk-surface);
+  border: 1px solid var(--sk-line);
   box-shadow: var(--sk-shadow);
   border-radius: 17px;
+  /* 圆角要真的裁切：里面的 pre 是 8px 圆角 + 灰底，贴到底边时会溢出外层圆角 */
+  overflow: hidden;
   animation: kura-float-in var(--sk-settle) var(--sk-ease);
 }
 
+/* 内层 Section 去掉自己的边框/圆角/底色 —— 由外层浮窗统一负责，
+   否则两层圆角对不齐（外层 17px、内层 --sk-radius），边角会露出双线 */
 .kura-docker-output__float .kura-docker-output {
   min-height: 0;
   overflow: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* 标题与状态标签挤在一起时标题会被压没（浮窗宽度有限）。
+   给标题一个下限，状态标签不允许压缩。 */
+.kura-docker-output__float .sk-section-title {
+  min-width: 4em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kura-docker-output__float .sk-section-actions {
+  flex: 0 0 auto;
+}
+
+/* 内边距：外层现在有边框了，Section 自己的 padding 保持不变，但要保证
+   底部 pre 不会顶到圆角上 */
+.kura-docker-output__float .kura-docker-output__text {
+  margin-bottom: 0;
 }
 
 @keyframes kura-float-in {

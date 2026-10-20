@@ -505,9 +505,33 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     const floatPos = await js<string>(`getComputedStyle(document.querySelector('[data-testid="docker-output"]')).position`)
     check(
       '输出面板：右下角浮窗（不再占页头下面那一整行）',
-      floatPos === 'fixed' && floatBox !== null && floatBox.right <= 40 && floatBox.bottom <= 40 && floatBox.w <= 620,
+      // bottom 必须是「贴着下边但不出界」：负数说明面板溢出到窗口外了（原来 <=40 会把负数也放过）
+      floatPos === 'fixed' && floatBox !== null && floatBox.right >= 0 && floatBox.right <= 40 && floatBox.bottom >= 0 && floatBox.bottom <= 40 && floatBox.w <= 620,
       `position=${floatPos} 距右=${floatBox?.right} 距下=${floatBox?.bottom} 宽=${floatBox?.w}`,
     )
+    // 圆角必须真的裁切：里面 pre 是 8px 圆角 + 灰底，贴到底边时会溢出外层圆角，
+    // 表现为四个角露出直角白块（截图确认过）。这里量的是「外层有没有 overflow:hidden」。
+    const floatClip = await js<string>(`getComputedStyle(document.querySelector('[data-testid="docker-output"]')).overflow`)
+    // 内层 Section 不该再有自己的边框/底色，否则两层圆角对不齐、边角露双线
+    const innerPlain = await js<boolean>(`(() => {
+      const el = document.querySelector('[data-testid="docker-output"]')?.firstElementChild
+      if (!el) return false
+      const c = getComputedStyle(el)
+      const transparent = (v) => v === 'rgba(0, 0, 0, 0)' || v === 'transparent'
+      return transparent(c.backgroundColor) && (c.borderTopWidth === '0px' || c.borderTopStyle === 'none')
+    })()`)
+    check(
+      '输出面板：圆角真的裁切（里面不会溢出成直角白块）',
+      floatClip === 'hidden' && innerPlain,
+      `float overflow=${floatClip} 内层无自己的底色=${innerPlain}`,
+    )
+    // 标题不该被状态标签挤没（浮窗宽度有限，长标题会被压到 0）
+    const titleRoom = await js<number>(`(() => {
+      const t = document.querySelector('[data-testid="docker-output"] .sk-section-title')
+      return t ? Math.round(t.getBoundingClientRect().width) : -1
+    })()`)
+    check('输出面板：标题有地方显示（不被状态标签挤没）', titleRoom >= 40, `标题宽=${titleRoom}px`)
+    await shot('v0.9-输出浮窗.png')
     check('项目操作成功：右下角也弹出提示', okToast, await js<string>(`JSON.stringify([...document.querySelectorAll('.sk-toast-root')].map(t => t.textContent.slice(0, 120)))`))
     // 浮窗与 toast 同在右下角：量一下有没有叠在一起（--kura-output-lift 把它顶上去）
     const stacked = await js<{ overlap: boolean; gap: number }>(
