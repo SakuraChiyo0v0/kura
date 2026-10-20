@@ -182,3 +182,25 @@ export function projectStatus(running: number, total: number): ProjectStatus {
   if (running > 0) return 'partial'
   return 'stopped'
 }
+
+/** Docker 守护进程的系统信息（配置页用）。全部只读。 */
+export interface DockerInfo {
+  version: string
+  apiVersion: string
+  os: string
+  architecture: string
+  kernel: string
+  /** 镜像与容器的存放目录；磁盘满了先看这里 */
+  rootDir: string
+  storageDriver: string
+  containers: number
+  containersRunning: number
+  containersStopped: number
+  images: number
+  /** NAS 上 daemon.json 配的镜像加速器；没配是空数组 */
+  registryMirrors: string[]
+  loggingDriver: string
+  cgroupVersion: string
+  memoryTotal: number
+  cpus: number
+}

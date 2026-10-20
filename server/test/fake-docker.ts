@@ -25,12 +25,16 @@ export class FakeDocker {
   pullLines: string[] = []
 
   volumes: RawVolume[] = []
+  /** `/info` 里报的镜像加速器（测「页面能显示 NAS 上真实配置」） */
+  registryMirrors: string[] = []
   networks: RawNetworkDetail[] = []
   /** 镜像标签 → 本地 RepoDigests */
   repoDigests = new Map<string, string[]>()
   /** 镜像标签 → 仓库里现在的 digest（没有就模拟仓库要认证） */
   remoteDigests = new Map<string, string>()
   execs = new Map<string, { container: string; cmd: string[]; resized: string[]; tty: boolean; exitCode: number; env?: string[] }>()
+  /** `/images/prune` 回报的回收字节数。测试要验「什么都没清到」时改成 0。 */
+  pruneReclaims = 1234
   /** 非 TTY exec 启动时要吐出的分帧输出（数据库命令执行用）。键是 exec id。 */
   execOutput = new Map<string, Buffer>()
   /** 测试注入：非 TTY exec 起来后自己接管（用于「不结束，等超时」这类用例）。 */
@@ -137,6 +141,27 @@ export class FakeDocker {
     const m = /^\/containers\/([^/]+)(?:\/(\w+))?$/.exec(path)
 
     if (req.method === 'GET' && path === '/containers/json') return send(200, this.containers.map(({ env: _env, running: _r, ...c }) => c))
+    // 守护进程系统信息（配置页用）。形状照真实的 /info，只给用得到的字段。
+    if (req.method === 'GET' && path === '/info') {
+      return send(200, {
+        ServerVersion: '27.3.1',
+        ApiVersion: '1.47',
+        OperatingSystem: 'UGOS Pro',
+        Architecture: 'x86_64',
+        KernelVersion: '5.15.0-ugnas',
+        DockerRootDir: '/volume1/@docker',
+        Driver: 'overlay2',
+        Containers: this.containers.length,
+        ContainersRunning: this.containers.filter((c) => c.State === 'running').length,
+        ContainersStopped: this.containers.filter((c) => c.State !== 'running').length,
+        Images: this.images.length,
+        RegistryConfig: { Mirrors: this.registryMirrors },
+        LoggingDriver: 'json-file',
+        CgroupVersion: '2',
+        MemTotal: 16 * 1024 ** 3,
+        NCPU: 4,
+      })
+    }
     if (req.method === 'GET' && path === '/images/json') return send(200, this.images)
     if (m) {
       const c = this.find(decodeURIComponent(m[1]!))
@@ -185,7 +210,7 @@ export class FakeDocker {
       this.images = this.images.filter((i) => i !== image)
       return send(200, [{ Deleted: image.Id }])
     }
-    if (req.method === 'POST' && path === '/images/prune') return send(200, { SpaceReclaimed: 1234 })
+    if (req.method === 'POST' && path === '/images/prune') return send(200, { SpaceReclaimed: this.pruneReclaims })
     if (req.method === 'GET' && path === '/volumes') return send(200, { Volumes: this.volumes })
     if (req.method === 'GET' && path === '/system/df') return send(200, { Volumes: this.volumes.map((v) => ({ Name: v.Name, UsageData: { Size: 4096, RefCount: 1 } })) })
     if (req.method === 'GET' && path === '/networks') return send(200, this.networks)

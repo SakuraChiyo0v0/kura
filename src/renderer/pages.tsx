@@ -46,9 +46,9 @@ export const pages: readonly PageDef[] = [
   },
   {
     id: 'containers',
-    label: '容器',
+    label: 'Docker',
     icon: <Boxes {...iconProps} />,
-    summary: 'NAS 上的 Docker：按 compose 项目启停、重建，看容器日志与镜像；每个改动都留审计',
+    summary: 'NAS 上的 Docker：compose 项目、容器、镜像、卷、网络，以及镜像站点之类的配置',
     plannedIn: 'v0.4',
   },
   {

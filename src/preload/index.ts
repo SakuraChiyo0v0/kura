@@ -106,6 +106,7 @@ const kura: KuraBridge = {
   docker: {
     available: () => invoke(ch.dockerAvailable),
     overview: () => invoke(ch.dockerOverview),
+    info: () => invoke(ch.dockerInfo),
     container: (id) => invoke(ch.dockerContainer, id),
     stats: (id) => invoke(ch.dockerStats, id),
     images: () => invoke(ch.dockerImages),

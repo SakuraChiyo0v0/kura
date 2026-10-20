@@ -439,6 +439,7 @@ function registerKuraIpc(): void {
   const dockerId = (id: unknown) => String(id)
   router.handle(ch.dockerAvailable, () => containers.available())
   router.handle(ch.dockerOverview, () => containers.client.overview())
+  router.handle(ch.dockerInfo, () => containers.client.info())
   router.handle(ch.dockerContainer, (_event, id: string) => containers.client.container(dockerId(id)))
   router.handle(ch.dockerStats, (_event, id: string) => containers.client.stats(dockerId(id)))
   router.handle(ch.dockerImages, () => containers.client.images())

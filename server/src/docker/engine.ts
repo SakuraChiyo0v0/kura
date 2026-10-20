@@ -112,6 +112,48 @@ export interface RawStats {
   memory_stats: { usage?: number; limit?: number; stats?: { inactive_file?: number; cache?: number } }
 }
 
+/** `/info` 的原始形状（只挑用得到的字段）。 */
+interface RawDockerInfo {
+  ServerVersion?: string
+  ApiVersion?: string
+  OperatingSystem?: string
+  Architecture?: string
+  KernelVersion?: string
+  DockerRootDir?: string
+  Driver?: string
+  Containers?: number
+  ContainersRunning?: number
+  ContainersStopped?: number
+  Images?: number
+  RegistryConfig?: { Mirrors?: string[] }
+  LoggingDriver?: string
+  CgroupVersion?: string
+  MemTotal?: number
+  NCPU?: number
+}
+
+/** 给界面用的 Docker 系统信息。 */
+export interface DockerInfo {
+  version: string
+  apiVersion: string
+  os: string
+  architecture: string
+  kernel: string
+  /** 镜像与容器的存放目录（NAS 上通常是个大卷，磁盘满了先看这里） */
+  rootDir: string
+  storageDriver: string
+  containers: number
+  containersRunning: number
+  containersStopped: number
+  images: number
+  /** daemon.json 里配的镜像加速器；没配是空数组 */
+  registryMirrors: string[]
+  loggingDriver: string
+  cgroupVersion: string
+  memoryTotal: number
+  cpus: number
+}
+
 export class DockerEngine {
   constructor(private readonly options: EngineOptions) {}
 
@@ -119,6 +161,36 @@ export class DockerEngine {
 
   listContainers(): Promise<RawContainer[]> {
     return this.json('GET', '/containers/json?all=1')
+  }
+
+  /**
+   * Docker 守护进程的系统信息（`/info`）。
+   *
+   * 给「Docker → 配置」页用：版本、根目录、存储驱动、镜像加速器（`RegistryConfig.Mirrors`）。
+   * **只读** —— Kura 不改 NAS 的 daemon.json（改它要重启 dockerd，会停掉 NAS 上所有容器）。
+   */
+  async info(): Promise<DockerInfo> {
+    const raw = await this.json<RawDockerInfo>('GET', '/info')
+    return {
+      version: raw.ServerVersion ?? '',
+      apiVersion: raw.ApiVersion ?? '',
+      os: raw.OperatingSystem ?? '',
+      architecture: raw.Architecture ?? '',
+      kernel: raw.KernelVersion ?? '',
+      rootDir: raw.DockerRootDir ?? '',
+      storageDriver: raw.Driver ?? '',
+      containers: raw.Containers ?? 0,
+      containersRunning: raw.ContainersRunning ?? 0,
+      containersStopped: raw.ContainersStopped ?? 0,
+      images: raw.Images ?? 0,
+      /** daemon.json 里配的镜像加速器（`registry-mirrors`）；没配是空数组 */
+      registryMirrors: raw.RegistryConfig?.Mirrors ?? [],
+      /** 日志驱动：容器日志的去向（排「日志去哪了」这类问题要知道） */
+      loggingDriver: raw.LoggingDriver ?? '',
+      cgroupVersion: raw.CgroupVersion ?? '',
+      memoryTotal: raw.MemTotal ?? 0,
+      cpus: raw.NCPU ?? 0,
+    }
   }
 
   inspectContainer(ref: string): Promise<RawInspect> {

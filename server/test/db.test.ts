@@ -631,3 +631,37 @@ describe('命令执行：exec 分流与白名单', () => {
     await new Promise<void>((r) => server.close(() => r()))
   })
 })
+
+/**
+ * Docker 守护进程系统信息（「Docker → 配置」页的数据来源）。
+ *
+ * 这一条的重点是**只读**：Kura 不该代用户改 daemon.json —— 那要重启 dockerd，
+ * 会停掉 NAS 上所有容器。所以这里断言只发了 GET。
+ */
+describe('DockerEngine.info', () => {
+  it('读出系统信息，含 daemon.json 里的镜像加速器', async () => {
+    docker.addContainer('a', { state: 'running' })
+    docker.addContainer('b', { state: 'exited' })
+    docker.registryMirrors = ['https://docker.1ms.run']
+
+    const info = await engine.info()
+    expect(info.version).toBe('27.3.1')
+    expect(info.rootDir).toBe('/volume1/@docker')
+    expect(info.storageDriver).toBe('overlay2')
+    expect(info.registryMirrors).toEqual(['https://docker.1ms.run'])
+    expect(info.containersRunning).toBe(1)
+    expect(info.containersStopped).toBe(1)
+  })
+
+  it('没配加速器时是空数组（不是 undefined —— 界面直接 map）', async () => {
+    docker.registryMirrors = []
+    const info = await engine.info()
+    expect(info.registryMirrors).toEqual([])
+  })
+
+  it('只发了 GET，没有任何写操作（改 daemon.json 要重启 docker，不能代劳）', async () => {
+    await engine.info()
+    const writes = docker.calls.filter((call) => !call.startsWith('GET '))
+    expect(writes).toEqual([])
+  })
+})

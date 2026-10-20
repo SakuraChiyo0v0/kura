@@ -144,6 +144,7 @@ export function createDockerHandler(options: DockerHandlerOptions): {
       }
 
       if (method === 'GET' && kind === 'overview') return json(res, 200, await service.overview())
+      if (method === 'GET' && kind === 'info') return json(res, 200, await service.info())
       if (method === 'GET' && kind === 'images' && !ref) return json(res, 200, await service.images())
       if (method === 'GET' && kind === 'volumes') return json(res, 200, await service.volumes(url.searchParams.get('size') === '1'))
       if (method === 'GET' && kind === 'networks') return json(res, 200, await service.networks())
@@ -382,7 +383,22 @@ export function createDockerHandler(options: DockerHandlerOptions): {
     if (ws.readyState === ws.OPEN) ws.send(`正在清理${what}…\n`)
     const startedAt = Date.now()
     const reclaimed = await engine.pruneImages(all)
-    if (ws.readyState === ws.OPEN) ws.send(`回收 ${humanBytes(reclaimed)}\n`)
+    /**
+     * 结果如实说，尤其是**什么都没清掉**那种。
+     *
+     * 以前不管清没清到都写「回收 X」，于是 0 的时候也是绿油油的「完成」——
+     * 用户看到的是「清理成功」，可磁盘一点没变，接着就会怀疑是把界面做了个假动作。
+     * 0 本身完全正常：`dangling` 这一档只认没有标签的镜像，而更新留下的旧版本通常**有标签**，
+     * 得走「清理未使用」那档才清得掉（客户端界面对此有说明）。
+     */
+    // 「正在清理…」那行会留在面板里（输出是累积的），所以完成这行要自带结果，
+    // 读起来才不矛盾 —— 光秃秃写「回收 0 B」配着上面那句「正在清理」很像卡住了。
+    const text =
+      reclaimed > 0
+        ? `清理完成，回收 ${humanBytes(reclaimed)}\n`
+        : `清理完成，没有可清理的${what}，磁盘占用没有变化。\n` +
+          (all ? '' : '（「悬空」只包括连标签都没有的镜像；更新留下的旧版本一般还有标签，用「清理未使用镜像」。）\n')
+    if (ws.readyState === ws.OPEN) ws.send(text)
     options.audit({ action: 'docker-image-prune', detail: `${all ? '所有未使用' : '悬空'}，回收 ${reclaimed} 字节`, exitCode: 0, durationMs: Date.now() - startedAt, ip: ip(req) })
     finish(ws, 0)
   }

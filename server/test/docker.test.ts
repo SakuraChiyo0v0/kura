@@ -377,6 +377,32 @@ describe('docker 内置服务：写', () => {
     expect(decodeURIComponent(call ?? '')).toContain('"dangling":["false"]')
   })
 
+  /**
+   * 真机看到的那一幕：点「清理悬空镜像」跑完，绿色的「完成」配着「回收 0 B」，
+   * 用户以为清出了空间，去看磁盘一点没变。
+   *
+   * 0 本身是正常的（悬空镜像只算没有标签的），但**不能把它说成成功**——
+   * 得明说「没有可清理」，并指到真正能清旧版本的那一档。
+   */
+  it('一个都没清到：明说没有可清理，不写「回收 0 B」', async () => {
+    docker.pruneReclaims = 0
+    const { text, code } = await stream('/api/images/prune')
+    expect(code).toBe(0)
+    expect(text).toContain('没有可清理的悬空镜像')
+    expect(text).toContain('磁盘占用没有变化')
+    // 指路：旧版本有标签，`dangling` 这档清不到
+    expect(text).toContain('清理未使用镜像')
+    // 别再出现「回收 0 B」这种既像成功又没信息量的说法
+    expect(text).not.toContain('回收 0 B')
+  })
+
+  it('真清到了：输出里写回收了多少', async () => {
+    const { text, code } = await stream('/api/images/prune')
+    expect(code).toBe(0)
+    expect(text).toContain('清理完成，回收')
+    expect(text).not.toContain('没有可清理')
+  })
+
   it('最近记录只给 docker-* 的，新的在前', async () => {
     docker.addContainer('app', { project: 'app' })
     await call('POST', '/api/containers/app/restart')

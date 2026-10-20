@@ -134,21 +134,6 @@ function SettingsView({
           )}
         </div>
       </SettingsSection>
-      <SettingsSection title="数据库">
-        <SettingsRow
-          label="镜像站点"
-          description="装了 Docker 加速器时填它的域名（如 docker.1ms.run）。只用来查可装的版本列表，不改变 docker 拉镜像的行为。留空走 Docker Hub 官方，都连不上时用内置的常用版本。"
-          control={
-            <TextField
-              label="镜像站点"
-              value={settings.dbRegistryMirror}
-              onChange={(e) => set('dbRegistryMirror', e.target.value)}
-              placeholder="如 docker.1ms.run（留空走官方）"
-              spellCheck={false}
-            />
-          }
-        />
-      </SettingsSection>
       <UpdatesSection autoCheck={settings.autoCheckUpdates} onAutoCheckChange={(value) => set('autoCheckUpdates', value)} />
       <McpSection enabled={settings.mcpEnabled} port={settings.mcpPort} onSetting={set} />
     </SettingsPage>

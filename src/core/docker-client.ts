@@ -1,6 +1,6 @@
 import http from 'node:http'
 import { WebSocket } from 'ws'
-import type { AutoUpdateRunResult, AutoUpdateStatus, ContainerDetail, ContainerStats, DockerOverview, ImageView, NetworkView, UpdateCheck, VolumeView } from './docker-types.js'
+import type { AutoUpdateRunResult, AutoUpdateStatus, ContainerDetail, ContainerStats, DockerInfo, DockerOverview, ImageView, NetworkView, UpdateCheck, VolumeView } from './docker-types.js'
 
 /**
  * 客户端这一侧的容器管理：连 kura-server 的内置服务 `docker`。
@@ -71,6 +71,11 @@ export class DockerClient {
     }
     if (status >= 400) throw new DockerApiError(status, (parsed as { error?: string }).error ?? `HTTP ${status}`)
     return parsed as T
+  }
+
+  /** Docker 守护进程的系统信息（只读，配置页用）。 */
+  info(): Promise<DockerInfo> {
+    return this.json<DockerInfo>('GET', '/api/info')
   }
 
   overview(): Promise<DockerOverview> {

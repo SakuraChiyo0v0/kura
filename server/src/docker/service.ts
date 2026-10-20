@@ -210,6 +210,11 @@ export class DockerService {
     }
   }
 
+  /** Docker 守护进程的系统信息（只读）。配置页用它显示版本、根目录、镜像加速器。 */
+  info() {
+    return this.options.engine.info()
+  }
+
   async images(): Promise<ImageView[]> {
     const [images, containers] = await Promise.all([this.options.engine.listImages(), this.options.engine.listContainers()])
     const used = new Map<string, number>()

@@ -133,10 +133,14 @@ const dockerState = {
     })),
   ],
   activity: [],
-  // 一个悬空的（没标签、没容器用），留着验证「清理悬空镜像」：清完它就该从表里消失
+  // 三条覆盖两个清理档位：
+  //   aaa 在用（两档都不该动它）
+  //   bbb 没标签、没人用 → 悬空，`dangling` 档清它
+  //   ccc 有标签、没人用 → 悬空档清不掉，只有 `all` 档清（真机上更新留下的旧版本就是这一类）
   images: [
     { id: 'sha256:aaa', tags: ['openlistteam/openlist:latest'], size: 52_000_000, created: Date.now(), usedBy: 1, dangling: false },
     { id: 'sha256:bbb', tags: [], size: 19_400_000, created: Date.now() - 86_400_000, usedBy: 0, dangling: true },
+    { id: 'sha256:ccc', tags: ['busybox:latest'], size: 4_200_000, created: Date.now() - 172_800_000, usedBy: 0, dangling: false },
   ],
   // 和真服务端一个口径：Kura 自己默认开着，别的项目默认关
   auto: { projects: ['kura-server'], lastRunAt: 0, lastResult: [] },
@@ -175,6 +179,26 @@ function handleDocker(req, res, body) {
   if (req.method !== 'GET' && req.headers['x-kura-docker'] !== '1') return json(403, { error: '写操作必须带 x-kura-docker: 1 头' })
   const m = /^\/api\/containers\/([^/]+)(?:\/(\w+))?$/.exec(url.pathname)
   if (url.pathname === '/api/overview') return json(200, { containers: dockerState.containers, projects: dockerProjects() })
+  if (url.pathname === '/api/info') {
+    return json(200, {
+      version: '27.3.1',
+      apiVersion: '1.47',
+      os: 'UGOS Pro',
+      architecture: 'x86_64',
+      kernel: '5.15.0-ugnas',
+      rootDir: '/volume1/@docker',
+      storageDriver: 'overlay2',
+      containers: 20,
+      containersRunning: 18,
+      containersStopped: 2,
+      images: 34,
+      registryMirrors: ['https://docker.1ms.run'],
+      loggingDriver: 'json-file',
+      cgroupVersion: '2',
+      memoryTotal: 16 * 1024 ** 3,
+      cpus: 4,
+    })
+  }
   if (url.pathname === '/api/images') return json(200, dockerState.images)
   if (url.pathname === '/api/activity') return json(200, [...dockerState.activity].reverse())
   if (url.pathname === '/api/volumes') {
@@ -258,12 +282,21 @@ function upgradeDocker(req, socket, head) {
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
       return socket.destroy()
     }
+    // 两档和真服务端一个口径：`all=1` 清掉所有没人用的（含悬空），否则只清悬空。
+    // 文案也照真服务端那份写（「清理完成，回收 …」），否则冒烟验的还是旧说法。
+    const all = url.searchParams.get('all') === '1'
     return tty.handleUpgrade(req, socket, head, (ws) => {
-      ws.send('正在清理悬空镜像…\n')
+      ws.send(`正在清理${all ? '没有被用到的镜像' : '悬空镜像'}…\n`)
       // 慢一点，好让冒烟看清「对话框已经关了、浮窗还在跑」那一刻
       setTimeout(() => {
-        dockerState.images = dockerState.images.filter((i) => !i.dangling)
-        ws.send('回收 18.5 MiB\n')
+        const doomed = dockerState.images.filter((i) => (all ? i.usedBy === 0 : i.dangling))
+        dockerState.images = dockerState.images.filter((i) => !doomed.includes(i))
+        const bytes = doomed.reduce((s, i) => s + i.size, 0)
+        ws.send(
+          bytes > 0
+            ? `清理完成，回收 ${(bytes / 1_048_576).toFixed(1)} MiB\n`
+            : `清理完成，没有可清理的${all ? '没有被用到的镜像' : '悬空镜像'}，磁盘占用没有变化。\n`,
+        )
         ws.send(JSON.stringify({ type: 'exit', code: 0 }))
         ws.close()
       }, 600)

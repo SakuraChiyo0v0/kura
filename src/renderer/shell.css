@@ -2342,3 +2342,75 @@ body {
   opacity: 0.7;
   overflow-wrap: anywhere;
 }
+
+/* ---------------- Docker 配置页 ---------------- */
+
+.kura-docker-config {
+  display: grid;
+  gap: 16px;
+}
+
+.kura-docker-config__form {
+  display: grid;
+  gap: 6px;
+  max-width: 520px;
+}
+
+/* 只读信息：两列网格，标签右对齐、值等宽 */
+.kura-docker-config__grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--sk-line);
+  border-radius: var(--sk-radius-control);
+  background: var(--sk-surface-sunken);
+}
+
+.kura-docker-config__row {
+  display: contents;
+}
+
+.kura-docker-config__label {
+  font-size: 12px;
+  color: var(--sk-text-muted);
+  white-space: nowrap;
+}
+
+.kura-docker-config__value {
+  font-size: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.kura-docker-config__value.is-mono {
+  font-family: var(--kura-font-mono);
+}
+
+/* 镜像加速器那一块 */
+.kura-docker-config__mirrors {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--sk-line);
+  border-radius: var(--sk-radius-control);
+}
+
+.kura-docker-config__mirrors-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.kura-docker-config__mirrorlist {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kura-docker-config__mirrorlist code {
+  font-family: var(--kura-font-mono);
+  font-size: 12px;
+}

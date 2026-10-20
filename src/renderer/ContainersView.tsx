@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { CircleArrowUp, Boxes, CircleStop, Container, Download, Ellipsis, FileText, HardDrive, Layers, Network, Pencil, Play, Plus, RefreshCw, RotateCcw, X } from 'lucide-react'
+import { CircleArrowUp, Boxes, CircleStop, Container, Download, Ellipsis, FileText, HardDrive, Layers, Network, Pencil, Play, Plus, RefreshCw, RotateCcw, Settings2, X } from 'lucide-react'
 import {
   ActionMenu,
   Button,
@@ -20,9 +20,10 @@ import {
 } from '@sakura-ui/react'
 import type { AutoUpdateStatus, ContainerDetail, ContainerStats, ContainerView, DockerOverview, ImageView, NetworkView, ProjectView, UpdateCheck, VolumeView } from '../core/docker-types.js'
 import { humanBytes } from '../core/stats.js'
-import type { DockerActivity, DockerStreamEvent, ProjectAction } from '../shared/ipc.js'
+import type { DockerActivity, DockerStreamEvent, PruneScope, ProjectAction } from '../shared/ipc.js'
 import type { ServiceView } from '../core/mirror.js'
 import { ContainerShell } from './ContainerShell.js'
+import { DockerConfigTab } from './DockerConfigTab.js'
 import { NewProject, ProjectEditor } from './ProjectEditor.js'
 
 /**
@@ -198,7 +199,22 @@ function useStream(id: string | undefined): { text: string; code: number | null 
  * 用 portal 挂到 body，不走原地渲染：它嵌在 PageTransition 里，切页动画会给祖先加 transform，
  * 而 transform 会把 `position: fixed` 的参照系从视口改成那个祖先 —— 浮窗会跟着页面飘。
  */
-function OutputPanel({ title, streamId, onClose, follow = true, failTitle }: { title: string; streamId: string; onClose: () => void; follow?: boolean; failTitle?: string }) {
+function OutputPanel({
+  title,
+  streamId,
+  onClose,
+  follow = true,
+  failTitle,
+  wasPrune = false,
+}: {
+  title: string
+  streamId: string
+  onClose: () => void
+  follow?: boolean
+  failTitle?: string
+  /** 这是清理镜像的流：收 0 字节时把「完成」换成中性的「无可清理」（见下面的注释） */
+  wasPrune?: boolean
+}) {
   const { text, code } = useStream(streamId)
   // 「失败提示」用动作名（「停止并移除失败」），不用面板标题 —— 后者是「项目名 · 动作」拼的，接上「失败」读着别扭
   useStreamOutcome(failTitle ?? title, streamId)
@@ -222,8 +238,20 @@ function OutputPanel({ title, streamId, onClose, follow = true, failTitle }: { t
       root.style.removeProperty('--kura-output-lift')
     }
   }, [])
-  const tone: StatusTone = code === undefined ? 'accent' : code === 0 ? 'success' : 'danger'
-  const label = code === undefined ? '进行中…' : code === 0 ? '完成' : code === null ? '连接断开' : `失败（退出码 ${code}）`
+  /**
+   * 「跑完了但什么都没发生」要说成中性，不能说成成功。
+   *
+   * 清理镜像最容易撞上：`dangling` 那档只认没有标签的镜像，很多时候本来就是 0 个，
+   * 于是执行完是绿的「完成」+「回收 0 B」—— 用户会以为清出了空间，去看磁盘却没变。
+   * 服务端会输出「没有可清理…」这句，这里据此换成灰色的「无可清理」。
+   *
+   * `wasPrune` 由调用方显式给出，不靠匹配文本去猜：日志流的内容是 NAS 上任意程序打出来的，
+   * 里面完全可能出现同样几个字，那样就会把一条正常的日志显示成「无可清理」。
+   */
+  const nothingDone = wasPrune && code === 0 && text.includes('没有可清理')
+  const tone: StatusTone = code === undefined ? 'accent' : code !== 0 ? 'danger' : nothingDone ? 'neutral' : 'success'
+  const label =
+    code === undefined ? '进行中…' : code === null ? '连接断开' : code !== 0 ? `失败（退出码 ${code}）` : nothingDone ? '无可清理' : '完成'
   return createPortal(
     <div className="kura-docker-output__float" ref={box} data-testid="docker-output" data-state={code === undefined ? 'running' : code === 0 ? 'ok' : 'error'}>
       <Section
@@ -886,7 +914,7 @@ function LogView({ streamId }: { streamId: string }) {
 
 // ---------------------------------------------------------------- 镜像
 
-function ImagesTab({ onPull, onPrune, refreshKey }: { onPull: (image: string) => void; onPrune: () => void; refreshKey: number }) {
+function ImagesTab({ onPull, onPrune, refreshKey }: { onPull: (image: string) => void; onPrune: (scope: PruneScope) => void; refreshKey: number }) {
   const toast = useToast()
   const [images, setImages] = useState<ImageView[] | null>(null)
   const [pull, setPull] = useState('')
@@ -901,6 +929,14 @@ function ImagesTab({ onPull, onPrune, refreshKey }: { onPull: (image: string) =>
   if (!images) return null
   const total = images.reduce((s, i) => s + i.size, 0)
   const dangling = images.filter((i) => i.dangling)
+  /**
+   * 有标签、但没有任何容器在用 —— Docker 不把它算作「悬空」，`dangling=true` 一个也清不掉。
+   * 更新留下的旧版本标签正是这一类，所以单独给一个入口。
+   *
+   * **要把悬空的也算进来**：`prune?all=1` 清的是「所有没被用到的」，其中包含悬空的。
+   * 只按 `!dangling` 算会少报，用户点下去清掉的比看到的说明多 —— 那是最不该发生的一种。
+   */
+  const unused = images.filter((i) => i.usedBy === 0)
   const columns: DataTableColumn<ImageView>[] = [
     { id: 'tag', header: '标签', cell: (i) => (i.tags.length ? i.tags.map((t) => <code key={t} className="kura-docker-image">{t}</code>) : <span className="kura-form__note">（悬空）</span>), sortValue: (i) => i.tags[0] ?? '' },
     { id: 'size', header: '大小', cell: (i) => humanBytes(i.size), sortValue: (i) => i.size, align: 'end' },
@@ -954,16 +990,34 @@ function ImagesTab({ onPull, onPrune, refreshKey }: { onPull: (image: string) =>
             <span className="kura-form__note">
               共 {images.length} 个 · {humanBytes(total)}
             </span>
+            {/* 「悬空」= 连标签都没有（`<none>`），Docker 的 dangling 就是这个定义。
+                它清不掉「有标签但没人用」的旧版本 —— 那是更常见的一类，所以下面还有一个入口。 */}
             <ConfirmDialog
               triggerLabel={`清理悬空镜像（${dangling.length}）`}
               title="清理悬空镜像？"
-              description={`删除 ${dangling.length} 个没有标签的镜像（通常是更新后留下的旧版本），约 ${humanBytes(dangling.reduce((s, i) => s + i.size, 0))}。正在用的不会动。`}
+              description={`删除 ${dangling.length} 个没有标签的镜像，约 ${humanBytes(dangling.reduce((s, i) => s + i.size, 0))}。正在用的不会动。`}
               confirmLabel="清理"
               disabled={dangling.length === 0}
               // 点确认就不用守在这儿了：清理转到后台跑，进度在右下角浮窗里看。
               // 以前这里是 await 到清理完成才返回，ConfirmDialog 要等 onConfirm 落地才关，
               // 于是清理那几十秒里对话框一直占着前台、挡住别的操作。
-              onConfirm={onPrune}
+              onConfirm={() => onPrune('dangling')}
+            />
+            {/*
+              有标签、没容器在用的镜像。**这是危险的一档**：它会把「拉了留着以后用」的基础镜像
+              （截图里的 busybox 那种）一并清掉，所以除了红色按钮还要用户手打一句确认。
+              数字用 unused（含悬空），与服务端 `prune?all=1` 真正会清的范围对齐 ——
+              只按 `!dangling` 算会少报，点下去删掉的比说好的多。
+            */}
+            <ConfirmDialog
+              triggerLabel={`清理未使用镜像（${unused.length}）`}
+              title="清理未使用的镜像？"
+              description={`删除 ${unused.length} 个没有任何容器在用的镜像（含 ${dangling.length} 个悬空），约 ${humanBytes(unused.reduce((s, i) => s + i.size, 0))}。更新留下的旧版本在这一档里；但你手动拉来备用、暂时没跑的镜像也会一起没。正在用的不会动。`}
+              confirmLabel="清理"
+              tone="danger"
+              confirmationText="清理未使用"
+              disabled={unused.length === 0}
+              onConfirm={() => onPrune('all')}
             />
           </div>
         }
@@ -1122,7 +1176,7 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
   const [error, setError] = useState('')
   const [tab, setTab] = useState('projects')
   const [selected, setSelected] = useState<ContainerView | null>(null)
-  const [output, setOutput] = useState<{ title: string; id: string; project?: string; failTitle: string } | null>(null)
+  const [output, setOutput] = useState<{ title: string; id: string; project?: string; failTitle: string; wasPrune?: boolean } | null>(null)
   /** 清理跑完（成功或失败）就 +1，让镜像表重读一次 */
   const [prunedAt, setPrunedAt] = useState(0)
   /** 正在编辑哪个项目；'new' = 新建 */
@@ -1210,13 +1264,14 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
     }
   }
 
-  const pruneImages = async () => {
+  const pruneImages = async (scope: PruneScope) => {
+    const what = scope === 'all' ? '未使用镜像' : '悬空镜像'
     try {
-      const id = await window.kura!.docker.openStream('prune', 'dangling')
-      setOutput({ title: '清理悬空镜像', id, failTitle: '清理悬空镜像' })
+      const id = await window.kura!.docker.openStream('prune', scope)
+      setOutput({ title: `清理${what}`, id, failTitle: `清理${what}`, wasPrune: true })
       onStreamExit(id, () => setPrunedAt((n) => n + 1))
     } catch (caught) {
-      toast.notify({ title: '清理失败', description: (caught as Error).message, tone: 'error', duration: 0 })
+      toast.notify({ title: `清理${what}失败`, description: (caught as Error).message, tone: 'error', duration: 0 })
     }
   }
 
@@ -1255,7 +1310,7 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
   return (
     <div className="kura-docker" data-testid="docker-page">
       {error && <Banner tone="warning" description={`刷新失败：${error}（显示的是上一次的状态）`} />}
-      {output && <OutputPanel title={output.title} streamId={output.id} failTitle={output.failTitle} onClose={() => setOutput(null)} />}
+      {output && <OutputPanel title={output.title} streamId={output.id} failTitle={output.failTitle} wasPrune={output.wasPrune} onClose={() => setOutput(null)} />}
       {editing === 'new' && (
         <NewProject
           onClose={() => setEditing(null)}
@@ -1302,10 +1357,11 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
               ),
             },
             { value: 'containers', label: `容器 ${running}/${overview.containers.length}`, icon: <Container {...icon} />, content: <ContainersTab overview={overview} onOpen={setSelected} /> },
-            { value: 'images', label: '镜像', icon: <Download {...icon} />, content: <ImagesTab onPull={(image) => void pullImage(image)} onPrune={() => void pruneImages()} refreshKey={prunedAt} /> },
+            { value: 'images', label: '镜像', icon: <Download {...icon} />, content: <ImagesTab onPull={(image) => void pullImage(image)} onPrune={(scope) => void pruneImages(scope)} refreshKey={prunedAt} /> },
             { value: 'volumes', label: '卷', icon: <HardDrive {...icon} />, content: <VolumesTab /> },
             { value: 'networks', label: '网络', icon: <Network {...icon} />, content: <NetworksTab /> },
             { value: 'activity', label: '最近操作', icon: <FileText {...icon} />, content: <ActivityTab /> },
+            { value: 'config', label: '配置', icon: <Settings2 {...icon} />, content: <DockerConfigTab /> },
           ]}
         />
         {current && <ContainerDrawer key={current.id} container={current} onClose={() => setSelected(null)} onChanged={() => void refresh()} />}

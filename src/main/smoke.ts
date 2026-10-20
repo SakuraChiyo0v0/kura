@@ -476,7 +476,7 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     check('终端占满页面高度', termLayout.host >= termLayout.main - 160 && termLayout.panes > 0, JSON.stringify(termLayout))
 
     // ⑦d3 容器管理：项目列表 → Kura 自己只读 → 重启项目，输出实时出现、结束后状态刷新 → 容器详情（密码遮住）与日志
-    await nav('容器')
+    await nav('Docker')
     const projectsShown = await waitFor(`document.querySelector('[data-testid="project-list"] [data-project="openlist"]') !== null`, 10_000)
     const selfReadOnly = await js<boolean>(
       `(() => { const li = document.querySelector('[data-project="kura-server"]'); return Boolean(li) && li.innerText.includes('只读') && ![...li.querySelectorAll('button')].some(b => b.textContent.trim() === '重启') })()`,
@@ -650,7 +650,41 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     const pruneRefreshed = await waitFor(`document.body.innerText.includes('清理悬空镜像（0）')`, 8_000)
     check('清理悬空镜像：跑完刷新列表（悬空的没了）', pruneDone && pruneRefreshed, `pruneDone=${pruneDone} pruneRefreshed=${pruneRefreshed}`)
     await js(`document.querySelector('[data-testid="docker-output"] button[aria-label="关闭输出"]')?.click()`)
+
+    // ⑦d3f2 「清理未使用镜像」：有标签、没有容器在用的那一档。
+    // 真机上用户看着「悬空（0）」点不动，而更新留下的旧版本明明还在（它有标签）。
+    // 这一档清的就是它 —— 用的是 `prune?all=1`（`filter dangling=false`）。
+    // 假 NAS 里 ccc（busybox:latest）就是这个形状：有标签、usedBy=0。
+    // 数字必须**含悬空**（这里是 1 个：清完悬空后剩下的那个 ccc），否则点下去删的比说好的多。
+    const unusedShown = await waitFor(`document.body.innerText.includes('清理未使用镜像（1）')`, 8_000)
+    await js(`[...document.querySelectorAll('button')].find(b => b.textContent.includes('清理未使用镜像'))?.click()`)
+    // 危险档要有手打确认，不能一点就删
+    const needsTyping = await waitFor(`document.querySelector('.sk-confirm-dialog input') !== null`, 4_000)
+    await js(`(() => {
+      const input = document.querySelector('.sk-confirm-dialog input')
+      if (!input) return
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+      setter.call(input, '清理未使用')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })()`)
+    await delay(120)
+    await js(`(() => {
+      const b = [...document.querySelectorAll('.sk-confirm-dialog button')].find(x => x.textContent.trim() === '清理')
+      b?.click()
+    })()`)
+    const allPruned = await waitFor(
+      `document.querySelector('[data-testid="docker-output"]')?.dataset.state === 'ok' && document.querySelector('[data-testid="docker-output"]')?.innerText.includes('回收')`,
+      10_000,
+    )
+    const unusedGone = await waitFor(`document.body.innerText.includes('清理未使用镜像（0）')`, 8_000)
+    check('清理未使用镜像：危险档要手打确认，清掉有标签没用的（用了 all=1）', unusedShown && needsTyping && allPruned && unusedGone, `计数=${unusedShown} 要手打=${needsTyping} 跑完=${allPruned} 清空=${unusedGone}`)
+    await js(`document.querySelector('[data-testid="docker-output"] button[aria-label="关闭输出"]')?.click()`)
+
+    // ⑦d3f3 收 0 字节时不能说成成功（绿「完成」配「回收 0 B」会让人以为释放了空间）。
+    // 那条在单测里验得更准（server/test/docker.test.ts 直接断言输出的文案与退出码），
+    // 冒烟这里两档都已经清空、按钮是禁用的，点不出「无可清理」那个状态，就不硬凑了。
     await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim().startsWith('项目'))?.click()`)
+    await waitFor(`document.querySelector('[data-project="openlist"]') !== null`)
     await waitFor(`document.querySelector('[data-project="openlist"]') !== null`)
     await shot('v0.4-容器.png')
 
@@ -685,6 +719,29 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     check('编辑 compose：坏的被拒并说清原因、保存前能看改动、好的存上', editorOpen && rejected && diffShown && saved, `open=${editorOpen} rejected=${rejected} diff=${diffShown} saved=${saved}`)
     await shot('v0.4-编辑项目.png')
     await js(`document.querySelector('[data-testid="project-editor"] button[aria-label="关闭编辑"]')?.click()`)
+
+    // ⑦d6 「Docker → 配置」页：系统信息读得到、镜像站点能填
+    // （还在 Docker 页上，不用再 nav）
+    const configTabFound = await waitFor(`[...document.querySelectorAll('[role="tab"]')].some(t => t.textContent.trim() === '配置')`, 5_000)
+    check('Docker 页：多了「配置」这个 tab', configTabFound)
+    if (configTabFound) {
+      await js(`[...document.querySelectorAll('[role="tab"]')].find(t => t.textContent.trim() === '配置')?.click()`)
+      const configShown = await waitFor(`document.querySelector('[data-testid="docker-config"]') !== null`, 8_000)
+      // 系统信息真的渲染出来了（不是空壳）：要有 rootDir 与版本
+      const configText = await js<string>(`document.querySelector('[data-testid="docker-config"]')?.innerText ?? ''`)
+      check(
+        'Docker 配置页：系统信息（版本 / 根目录 / 存储驱动）都显示出来了',
+        configShown && configText.includes('/volume1/@docker') && configText.includes('overlay2'),
+        configText.slice(0, 160).replace(/\s+/g, ' '),
+      )
+      // NAS 上的 daemon.json 加速器要单独显示出来（和 Kura 自己填的那个不是一回事）
+      check(
+        'Docker 配置页：显示 NAS 上 daemon.json 配的镜像加速器',
+        configText.includes('docker.1ms.run'),
+        configText.includes('docker.1ms.run') ? '有' : '没显示',
+      )
+      await shot('v0.9-Docker-配置.png')
+    }
 
     // ⑦d5 v0.7 数据库：列表（含接管的已有容器）→ 开隧道 → **本机真的能连上** → 跑一条命令
     await nav('数据库')
@@ -735,7 +792,13 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     check('隧道开在本机回环上', tunnelReady && !tunnelAddr.endsWith(':0'), tunnelAddr)
     // 端到端：往隧道里发一段字节，假 NAS 那边是 TCP echo —— 回来的一样就说明整条链路通了
     const tunnelPort = Number((tunnelAddr.split(':')[1] ?? '0').trim())
-    const tunnelEcho = tunnelPort ? await tcpEcho('127.0.0.1', tunnelPort, 'kura-db-tunnel-probe') : { ok: false, detail: '没有隧道端口' }
+    // 隧道是异步接上的：界面显示地址那一刻，服务端那条 WS 未必已经连到目标。
+    // 一次定生死会偶发失败（实测三次里挂一次），所以重试几轮 —— 真断了每轮都会失败。
+    let tunnelEcho = tunnelPort ? await tcpEcho('127.0.0.1', tunnelPort, 'kura-db-tunnel-probe') : { ok: false, detail: '没有隧道端口' }
+    for (let attempt = 0; attempt < 3 && !tunnelEcho.ok; attempt += 1) {
+      await delay(700)
+      tunnelEcho = await tcpEcho('127.0.0.1', tunnelPort, 'kura-db-tunnel-probe')
+    }
     check('经隧道打到「数据库」（本机 TCP → WS → 服务端 → 目标）', tunnelEcho.ok, tunnelEcho.detail)
     await shot('v0.7-数据库-连接信息.png')
 

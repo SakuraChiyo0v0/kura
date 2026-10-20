@@ -1,6 +1,6 @@
 /** Kura 自己的 IPC 通道与 preload 暴露的 window.kura 形状。 */
 import type { DockerActivity, ProjectAction, ProjectFilesView } from '../core/docker-client.js'
-import type { AutoUpdateRunResult, AutoUpdateStatus, ContainerDetail, ContainerStats, DockerOverview, ImageView, NetworkView, UpdateCheck, VolumeView } from '../core/docker-types.js'
+import type { AutoUpdateRunResult, AutoUpdateStatus, ContainerDetail, ContainerStats, DockerInfo, DockerOverview, ImageView, NetworkView, UpdateCheck, VolumeView } from '../core/docker-types.js'
 import type { DatabaseView, DbExecResult, DatabaseTemplate, VersionList, ImageVersion } from '../core/db-client.js'
 import type {
   DbQueryResult,
@@ -39,6 +39,15 @@ export interface DbExecView {
 
 /** 容器管理的流式操作：实时日志 / 项目 compose 动作 / 删除项目 / 拉镜像 / 清理镜像 */
 export type DockerStreamKind = 'logs' | 'project' | 'remove' | 'pull' | 'prune'
+
+/**
+ * 清理镜像的两档范围。用 `openStream('prune', scope)` 的 target 传下去，
+ * `DatabaseService.open()` 里按 `target === 'all'` 决定要不要带 `all=1`。
+ *
+ * - `dangling`：只清没有标签的（`<none>`），Docker 的 `dangling=true`
+ * - `all`：清所有没有任何容器在用的，**包含**悬空的（`dangling=false`，即 Docker 的 `prune -a`）
+ */
+export type PruneScope = 'dangling' | 'all'
 
 export type DockerStreamEvent =
   | { id: string; type: 'data'; data: string }
@@ -109,6 +118,7 @@ export const kuraChannels = {
   // ---- 容器管理 ----
   dockerAvailable: 'kura:docker:available',
   dockerOverview: 'kura:docker:overview',
+  dockerInfo: 'kura:docker:info',
   dockerContainer: 'kura:docker:container',
   dockerStats: 'kura:docker:stats',
   dockerImages: 'kura:docker:images',
@@ -440,6 +450,8 @@ export interface KuraBridge {
     /** 服务端清单里有没有 docker（kura-server 挂了 docker.sock 才有） */
     available(): Promise<boolean>
     overview(): Promise<DockerOverview>
+    /** Docker 守护进程的系统信息（只读）：版本、根目录、镜像加速器 */
+    info(): Promise<DockerInfo>
     container(id: string): Promise<ContainerDetail>
     stats(id: string): Promise<ContainerStats>
     images(): Promise<ImageView[]>
