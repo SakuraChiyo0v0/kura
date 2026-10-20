@@ -161,6 +161,13 @@ export interface AutoUpdateRunResult {
 export interface DockerOverview {
   containers: ContainerView[]
   projects: ProjectView[]
+  /**
+   * 项目目录没按原路径挂进来时的一句话（可达时是空串）。
+   *
+   * 依据是**目录真实可达性**（`server/src/docker/mounts.ts` 比 inode），不是字符串匹配：
+   * 没挂对时项目照样列得出来，但都不能部署 —— 让它从「点下去才报错」变成提前说清楚。
+   */
+  projectRootHint?: string
 }
 
 /** 名字里像是放密码的环境变量：值默认遮住。 */

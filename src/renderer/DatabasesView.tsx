@@ -135,6 +135,12 @@ interface DatabasesState {
   tunnels: TunnelStatus[]
   /** 服务端认不认隧道（没登记任何数据库时为 false） */
   tunnelAvailable: boolean
+  /**
+   * 服务端的项目目录是不是真的按原路径挂进来了 —— 快捷安装要往那儿写 compose 与 .env。
+   * 没挂对时写进去的是**容器自己的**文件系统，NAS 上看不到、容器一重建就没了。
+   * true = 老镜像没这个字段（按可用处理，点了会有明确报错）。
+   */
+  installAvailable: boolean
   /** 服务端有没有数据库接口（老镜像没有） */
   supported: boolean
   error: string
@@ -143,7 +149,7 @@ interface DatabasesState {
 export function DatabasesView(): React.JSX.Element {
   const toast = useToast()
   const [tab, setTab] = useState('list')
-  const [state, setState] = useState<DatabasesState>({ databases: [], templates: [], tunnels: [], tunnelAvailable: false, supported: true, error: '' })
+  const [state, setState] = useState<DatabasesState>({ databases: [], templates: [], tunnels: [], tunnelAvailable: false, installAvailable: true, supported: true, error: '' })
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState('')
   const [removing, setRemoving] = useState<DbView | null>(null)
@@ -153,11 +159,20 @@ export function DatabasesView(): React.JSX.Element {
     try {
       const supported = await window.kura.databases.available()
       if (!supported) {
-        setState({ databases: [], templates: [], tunnels: [], tunnelAvailable: false, supported: false, error: '' })
+        setState({ databases: [], templates: [], tunnels: [], tunnelAvailable: false, installAvailable: false, supported: false, error: '' })
         return
       }
       const [list, templates, tunnels] = await Promise.all([window.kura.databases.list(), window.kura.databases.templates(), window.kura.databases.tunnels()])
-      setState({ databases: list.databases, templates, tunnels, tunnelAvailable: list.tunnelAvailable, supported: true, error: '' })
+      setState({
+        databases: list.databases,
+        templates,
+        tunnels,
+        tunnelAvailable: list.tunnelAvailable,
+        // 老镜像没有这个字段：按可用处理，保持旧行为（点了会回一条明确的 409）
+        installAvailable: list.installAvailable !== false,
+        supported: true,
+        error: '',
+      })
       setSelected((prev) => (prev && list.databases.some((d) => d.name === prev) ? prev : (list.databases[0]?.name ?? '')))
     } catch (caught) {
       setState((prev) => ({ ...prev, error: (caught as Error).message }))
@@ -253,7 +268,7 @@ export function DatabasesView(): React.JSX.Element {
             value: 'install',
             label: '安装',
             icon: <Plus {...icon} />,
-            content: <InstallTab templates={state.templates} onDone={refresh} />,
+            content: <InstallTab templates={state.templates} onDone={refresh} installAvailable={state.installAvailable} />,
           },
         ]}
       />
@@ -717,7 +732,7 @@ function QueryTab({ databases, selected, onSelect }: { databases: DbView[]; sele
 
 // ---------------------------------------------------------------- 安装
 
-function InstallTab({ templates, onDone }: { templates: DatabaseTemplate[]; onDone: () => Promise<void> }): React.JSX.Element {
+function InstallTab({ templates, onDone, installAvailable }: { templates: DatabaseTemplate[]; onDone: () => Promise<void>; installAvailable: boolean }): React.JSX.Element {
   const toast = useToast()
   const [engine, setEngine] = useState<DbEngine>('postgres')
   const [name, setName] = useState('')
@@ -887,8 +902,23 @@ function InstallTab({ templates, onDone }: { templates: DatabaseTemplate[]; onDo
           </p>
         ) : null}
 
+        {!installAvailable ? (
+          <Banner
+            tone="warning"
+            title="现在装不了：项目目录没挂进 kura-server"
+            description={
+              <>
+                快捷安装要把 compose 与 <code>.env</code> 写在 NAS 的项目目录里。kura-server 现在看不到那个目录的
+                原路径 —— 写进去的只会落在容器自己的文件系统里，容器一重建就没了，NAS 上什么都找不到。
+                <br />
+                想让这条能用：compose 里加上 <code>/volume1/docker:/volume1/docker</code> 再 <code>up -d</code>。
+              </>
+            }
+          />
+        ) : null}
+
         <div className="kura-form__actions">
-          <Button variant="secondary" icon={<Plus {...icon} />} disabled={installing} onClick={() => void install()}>
+          <Button variant="secondary" icon={<Plus {...icon} />} disabled={installing || !installAvailable} onClick={() => void install()}>
             {installing ? '安装中…（拉镜像可能要一两分钟）' : '安装'}
           </Button>
         </div>

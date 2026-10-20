@@ -21,16 +21,13 @@ services:
       # 终端：把请求转给 kura-shell 容器
       KURA_SHELL: http://kura-shell:8890
       KURA_SHELL_TOKEN_FILE: /run/kura-shell/token
-      # 查容器端口映射用（清单里的 host_port）。**必须指到下面挂进来的 docker.sock**：
-      # 不查的话，清单里 host_port 一律为 0，客户端只好拿 container_port 当本机端口——
-      # 两个服务 container_port 相同（如 account-panel 与 bili23-web 都是 8787）时就会撞车、少挂一个。
-      KURA_DOCKER_SOCKET: /var/run/docker.sock
+      # docker.sock **不用配了**：没配 KURA_DOCKER_SOCKET 时 kura-server 自己找
+      # （挂载点 → 经 /:/host 看见的 /host/run/docker.sock，见 server/src/docker/socket.ts）。
+      # 想强制指定某个路径再配这一项，配了就只认它。
       # 容器管理：compose 项目目录（宿主原路径）。下面 volumes 里按**原路径**再挂一次。
+      # 这个目录没按原路径挂进来时，Kura 仍然列得出项目、看得见 compose，但不能部署
+      # （判定方式见 server/src/docker/mounts.ts：比 inode，不猜字符串）。
       KURA_PROJECT_ROOT: /volume1/docker
-      # 自更新：kura-server 自己那个 compose 项目的目录。要更新自己时，Kura 用它来
-      # 起一个短命兄弟容器跑 compose（见 server/src/docker/selfupdate.ts）——
-      # 那个容器不属于 kura-server 这个 compose 项目，所以不会被一起停掉。
-      KURA_SELF_DIR: /volume1/docker/kura-server
     volumes:
       - ./state:/state
       # WebDAV 暴露宿主文件：整个宿主根挂进来（读写），rclone 在里面 serve。
@@ -46,6 +43,10 @@ services:
       # docker.sock：查端口映射 + 容器管理。**`:ro` 挡不住经 socket 发的 API 写请求**，它只是挂载选项；
       # 真正的边界是代码里的白名单（server/src/docker/engine.ts，每个能调的接口一个具名方法）。
       # docker.sock 等于宿主 root：加用途前先看那张表。
+      #
+      # 这一行现在是**可选**的：就算删掉，`/:/host` 已经把宿主的 socket 带进容器了
+      # （`/host/run/docker.sock`，同一个 inode），程序会自己找到它。
+      # 留着是为了明确表达「这个容器会操作 Docker」，也让路径更短。
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # compose 项目目录按**宿主原路径**挂：compose 里的相对路径（./data）是按执行目录解析后交给 dockerd 的，
       # 在 /host/volume1/... 下执行的话 dockerd 拿到宿主上不存在的路径，会挂一个空目录进去（应用看着像数据全丢）。

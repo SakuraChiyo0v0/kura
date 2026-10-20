@@ -23,7 +23,10 @@ export interface SelfUpdateTarget {
   configFiles: string[]
   /** 跑这个兄弟容器用的镜像 —— 就是 kura-server 自己那个 */
   image: string
-  /** docker.sock 在宿主上的路径 */
+  /**
+   * docker.sock 在**宿主**上的路径（如 `/var/run/docker.sock`）。
+   * 不是容器内看到的那条 —— 自动发现可能给的是 `/host/run/docker.sock`，那个路径在宿主上不存在。
+   */
   socketPath: string
 }
 
@@ -56,8 +59,12 @@ export function selfUpdateArgs(target: SelfUpdateTarget, container: string): str
     container,
     // 只用本地已有的镜像：这一趟可能本来就在没网的时候跑，别在这上面卡住
     '--pull=never',
+    // 左 = **宿主**路径，右 = 兄弟容器里的路径。两边不能写同一个：
+    // 自动发现可能找到的是 `/host/run/docker.sock`（经 `/:/host` 顺带看见的那份），
+    // 那个路径在宿主上不存在，照它挂会挂出一个空目录，docker CLI 找不到 socket ——
+    // 自更新会**静默失效**（`docker run` 起得来，compose 在里面连不上 daemon）。
     '-v',
-    `${target.socketPath}:${target.socketPath}`,
+    `${target.socketPath}:/var/run/docker.sock`,
     // 项目目录只要读得到 compose 文件与 .env 就够了。compose 里的相对路径（./state）
     // 是按这个目录解析成绝对路径后交给 dockerd 的，dockerd 在**宿主**上建目录，不在这里写
     '-v',

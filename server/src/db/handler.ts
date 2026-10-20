@@ -327,7 +327,9 @@ export function createDbHandler(options: DbHandlerOptions): {
           }
           databases.push({ ...toView(fillConnection(entry, raw), raw), ...(stats[entry.name] ? { tunnel: stats[entry.name] } : {}) })
         }
-        return json(res, 200, { databases, tunnelAvailable: registry.list().length > 0 })
+        // installAvailable：项目目录真的按原路径挂进来了，快捷安装才可用。
+        // 以前界面只在点了「安装」之后才从 409 里知道这件事，而且是白填一遍表单才发现。
+        return json(res, 200, { databases, tunnelAvailable: registry.list().length > 0, installAvailable: Boolean(options.files && options.projectRoot) })
       }
 
       if (method === 'POST' && head === 'create') {
@@ -502,7 +504,9 @@ export function createDbHandler(options: DbHandlerOptions): {
 
   /** 快捷安装：渲染模板 → ProjectFileStore.create（原子写 + compose 校验） → 起容器 → 登记。 */
   const install = async (name: string, template: (typeof templates)[DbEngine], image: string, from: string): Promise<unknown> => {
-    if (!options.files || !options.projectRoot) throw new DockerError(409, 'NAS 上的 kura-server 没有挂项目目录，不能用快捷安装')
+    if (!options.files || !options.projectRoot) {
+      throw new DockerError(409, '项目目录没有按原路径挂进 kura-server，不能用快捷安装（写进去的文件在 NAS 上看不到，容器一重建就没了）')
+    }
     const password = generatePassword()
     const created = await options.files.create(name, template.compose(name, defaultNetwork, image), template.env(template.database, template.username, password))
     // 记下**实际装的镜像**（不是模板默认的）—— 审计与后续「装的是哪个版本」都靠它

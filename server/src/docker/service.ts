@@ -14,17 +14,16 @@ import {
 } from '../../../src/core/docker-types.js'
 import { scanProjectRoot, within } from './compose.js'
 import { DockerError, type DockerEngine, type RawContainer, type RawInspect, type RawNetworkDetail, type RawStats } from './engine.js'
+import { isMounted, resolveProjectRoots, toOriginalPath, type MountCheckOptions, type ProjectRoots } from './mounts.js'
 
 /** Kura 自己的 compose 项目名：只读，动它等于剪掉自己连着的那根线（设计 §四）。 */
 export const selfProject = 'kura-server'
 export const appstoreRoot = '/volume1/@appstore'
 
-export interface DockerServiceOptions {
+export interface DockerServiceOptions extends MountCheckOptions {
   engine: DockerEngine
   /** 项目目录（宿主原路径，容器里按原路径挂进来）；空 = 不扫目录、不允许部署 */
   projectRoot: string
-  /** /volume1/@appstore 也按原路径挂进来了没有（默认没有） */
-  appstoreMounted?: boolean
 }
 
 const label = (labels: Record<string, string> | undefined, key: string): string => labels?.[`com.docker.compose.${key}`] ?? ''
@@ -60,24 +59,40 @@ function toContainer(raw: RawContainer): ContainerView {
 }
 
 export class DockerService {
-  constructor(private readonly options: DockerServiceOptions) {}
+  /** 项目目录的两套坐标（原路径 / 实际能读的地方），构造时算一次 —— 挂载不会在运行期变。 */
+  readonly roots: ProjectRoots
+
+  constructor(private readonly options: DockerServiceOptions) {
+    this.roots = options.projectRoot ? resolveProjectRoots(options.projectRoot, options) : { projectRoot: '', scanRoot: '', reachable: false, hint: '' }
+  }
 
   /**
-   * 能做什么由目录决定。`appstore` 只在它的目录也按原路径挂进来时才给启停 ——
-   * 和项目目录同一个原因：compose 在别的路径下执行，相对路径挂载会变成空目录。
-   * 现在的 compose 只挂了 /volume1/docker，所以绿联商店的项目落到 external（只能停止）。
+   * 能做什么由**目录真的可不可达**决定，不是名字匹配上了就算。
+   *
+   * 以前这里只做字符串比较（`within(dir, projectRoot)`）：项目目录没按原路径挂进来时，
+   * 它照样返回 managed，界面给「部署」按钮，点了才在 runCompose 里抛错。
+   * 现在 `managed` 要 `roots.reachable` —— 没挂对就是 `external`（列得出来、看得见，不能部署）。
+   *
+   * 为什么不把同类检查也套到 appstore 上：appstore 现在恒为 external（compose 里没挂那个目录），
+   * 行为已经是对的。将来真挂了它，`isMounted` 会自然放行 —— 那时才需要它。
    */
   kindOf(name: string, dir: string): ProjectKind {
     if (name === selfProject) return 'self'
-    if (within(dir, this.options.projectRoot)) return 'managed'
-    if (within(dir, appstoreRoot)) return this.options.appstoreMounted ? 'appstore' : 'external'
+    if (within(dir, this.options.projectRoot)) return this.roots.reachable ? 'managed' : 'external'
+    if (within(dir, appstoreRoot)) return isMounted(appstoreRoot, this.options) ? 'appstore' : 'external'
     return 'external'
+  }
+
+  /** 项目目录没挂对时给界面的一句话（可达时是空串）。 */
+  projectRootHint(): string {
+    return this.roots.hint
   }
 
   async overview(): Promise<DockerOverview> {
     const raw = await this.options.engine.listContainers()
     const containers = raw.map(toContainer).sort((a, b) => a.name.localeCompare(b.name))
-    return { containers, projects: this.projectsFrom(containers, raw) }
+    const hint = this.projectRootHint()
+    return { containers, projects: this.projectsFrom(containers, raw), ...(hint ? { projectRootHint: hint } : {}) }
   }
 
   async projects(): Promise<ProjectView[]> {
@@ -87,6 +102,11 @@ export class DockerService {
 
   private projectsFrom(containers: ContainerView[], raw: RawContainer[]): ProjectView[] {
     const byName = new Map<string, ProjectView>()
+    // Kura 自己先占位：它的名字来自容器名（`kura-server`），不是 compose 的项目标签 ——
+    // `docker run` 起的老独立容器没有标签，但「自己不能从自己里面操作」这条必须照样成立。
+    // 占位后标签那份会填上 dir / configFiles / 容器数（byName.get 命中同一个对象）。
+    const selfRaw = raw.some((r) => (r.Names ?? []).some((n) => n.replace(/^\//, '') === selfProject))
+    if (selfRaw) byName.set(selfProject, { name: selfProject, status: 'stopped', kind: 'self', dir: '', configFiles: [], containers: 0, running: 0, services: [] })
     for (const r of raw) {
       const name = label(r.Labels, 'project')
       if (!name) continue
@@ -104,10 +124,14 @@ export class DockerService {
       if (c.state === 'running') p.running += 1
       if (c.service && !p.services.includes(c.service)) p.services.push(c.service)
     }
-    // 项目目录里有 compose 文件、但一个容器都没有的：也列出来（能从 Kura 启动）
-    for (const d of scanProjectRoot(this.options.projectRoot)) {
+    // 项目目录里有 compose 文件、但一个容器都没有的：也列出来（能从 Kura 启动）。
+    // 扫的是 scanRoot：目录没按原路径挂进来时退到 /host 下那份，于是仍然**看得见**项目，
+    // 只是 kindOf 会判成 external（不给部署）。报出去的路径换回宿主原路径。
+    for (const d of scanProjectRoot(this.roots.scanRoot)) {
       if (byName.has(d.name)) continue
-      byName.set(d.name, { name: d.name, status: 'stopped', kind: this.kindOf(d.name, d.dir), dir: d.dir, configFiles: d.configFiles, containers: 0, running: 0, services: [] })
+      const dir = toOriginalPath(d.dir, this.roots)
+      const configFiles = d.configFiles.map((f) => toOriginalPath(f, this.roots))
+      byName.set(d.name, { name: d.name, status: 'stopped', kind: this.kindOf(d.name, dir), dir, configFiles, containers: 0, running: 0, services: [] })
     }
     const projects = [...byName.values()]
     for (const p of projects) {

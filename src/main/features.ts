@@ -488,7 +488,7 @@ export class DatabaseService {
     return this.client.available()
   }
 
-  list(): Promise<{ databases: DatabaseView[]; tunnelAvailable: boolean }> {
+  list(): Promise<{ databases: DatabaseView[]; tunnelAvailable: boolean; installAvailable?: boolean }> {
     return this.client.list()
   }
 

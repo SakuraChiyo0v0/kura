@@ -9,9 +9,17 @@ import { maskEnv, projectStatus } from '../../src/core/docker-types.js'
 import { composeArgs, runCompose, scanProjectRoot, within, type ComposeAction, type ComposeRun, type ComposeTarget } from '../src/docker/compose.js'
 import { DockerEngine, checkRef, createLogDemuxer } from '../src/docker/engine.js'
 import { createDockerHandler, type AuditSink } from '../src/docker/handler.js'
+import { resolveProjectRoots, toOriginalPath } from '../src/docker/mounts.js'
 import { DockerService, toStats } from '../src/docker/service.js'
 import type { AuditEntry } from '../src/shell/audit.js'
 import { FakeDocker, frame } from './fake-docker.js'
+
+/** 假文件身份：路径 → dev:ino。用来模拟「挂进来了 / 没挂进来」两种机器（见 mounts.ts）。 */
+function fakeFs(entries: Record<string, string>): (path: string) => string | undefined {
+  const normalize = (p: string): string => p.replace(/\/+/g, '/').replace(/\/$/, '') || '/'
+  const map = new Map(Object.entries(entries).map(([k, v]) => [normalize(k), v]))
+  return (path) => map.get(normalize(path))
+}
 
 let docker: FakeDocker
 let server: http.Server
@@ -41,9 +49,11 @@ beforeEach(async () => {
   composeExit = 0
   const engine = new DockerEngine({ socketPath: docker.socketPath, timeoutMs: 5_000 })
   const sink: AuditSink = (e) => audit.push({ ...e, at: new Date().toISOString(), id: String(audit.length), user: 'kura' })
+  // 单测里没有容器的挂载结构：`/host` 不存在 → mounts.ts 退回「存在就算可达」，
+  // 也就是「原路径就是本地路径」的普通文件系统。这正是临时目录这个形状，行为等同于真机上挂对了。
   const handler = createDockerHandler({
     engine,
-    service: new DockerService({ engine, projectRoot: root.replace(/\\/g, '/'), appstoreMounted: true }),
+    service: new DockerService({ engine, projectRoot: root.replace(/\\/g, '/') }),
     audit: sink,
     activity: (n) => audit.slice(-n),
     compose: fakeCompose,
@@ -176,11 +186,57 @@ describe('compose：发现与参数', () => {
     expect(within('/volume1/docker/../etc', '/volume1/docker')).toBe(false)
   })
 
-  it('绿联商店目录没按原路径挂进来：只读（落到 external），不给启动', () => {
-    const svc = new DockerService({ engine: new DockerEngine({ socketPath: docker.socketPath }), projectRoot: '/volume1/docker' })
-    expect(svc.kindOf('music-tag-web', '/volume1/@appstore/com.ugreen.docker.musictagweb')).toBe('external')
+  /**
+   * 「能不能部署」现在由**目录真实可达性**决定（mounts.ts 比 inode），不再是名字匹配上了就算。
+   * 这里喂一对假身份模拟两种机器，比真去挂文件系统可靠，也正是真机上的那两种形状。
+   */
+  it('目录按原路径挂进来了：项目目录下的是 managed，绿联商店的仍是 external', () => {
+    const key = fakeFs({
+      '/host': '1:1',
+      '/volume1/docker': '64768:1',
+      '/host/volume1/docker': '64768:1',
+    })
+    const svc = new DockerService({ engine: new DockerEngine({ socketPath: docker.socketPath }), projectRoot: '/volume1/docker', key })
     expect(svc.kindOf('openlist', '/volume1/docker/openlist')).toBe('managed')
     expect(svc.kindOf('kura-server', '/volume1/docker/kura-server')).toBe('self')
+    // /volume1/@appstore 没挂进来（真机就是这样）：即使挂载方式改了也不该突然放行
+    expect(svc.kindOf('music-tag-web', '/volume1/@appstore/com.ugreen.docker.musictagweb')).toBe('external')
+  })
+
+  it('目录没按原路径挂进来：路径长得对也不算 managed，并且给出补救建议', async () => {
+    // 容器里那个 /volume1/docker 是 overlay 层自己造的（ino 99:7），宿主的在 /host 下
+    const key = fakeFs({
+      '/host': '1:1',
+      '/volume1/docker': '99:7',
+      '/host/volume1/docker': '64768:1',
+    })
+    const svc = new DockerService({ engine: new DockerEngine({ socketPath: docker.socketPath }), projectRoot: '/volume1/docker', key })
+    // 以前这里返回 managed：界面给「部署」按钮，点了才在 runCompose 里抛错
+    expect(svc.kindOf('openlist', '/volume1/docker/openlist')).toBe('external')
+    expect(svc.projectRootHint()).toContain('/volume1/docker:/volume1/docker')
+    // 扫的是 /host 下那份 —— 项目照样看得见
+    expect(svc.roots).toMatchObject({ scanRoot: '/host/volume1/docker', reachable: false })
+  })
+
+  it('没挂对时扫 /host 下的项目：报出去的 dir 仍是宿主原路径，kind 是 external', async () => {
+    // 关键因果：scanRoot 是 /host 下那份 → 绝不能让 compose 拿着 /host/... 去跑
+    // （dockerd 会在宿主上建一个空目录挂进去，应用看着像数据全丢）。
+    // 真机上 /volume1/docker 现在挂对了，但 /volume1/@appstore 正是这个形状。
+    const key = fakeFs({
+      '/host': '1:1',
+      '/host/volume1/docker': '64768:1',
+      '/host/volume1/docker/openlist': '64768:2',
+      '/host/volume1/docker/openlist/docker-compose.yaml': '3:3',
+    })
+    // 扫描用真的目录树（scan 只看文件系统），身份判定用假的图
+    const dir = join(root, 'openlist')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'docker-compose.yaml'), 'services: {}\n')
+    const roots = resolveProjectRoots('/volume1/docker', { key })
+    expect(roots.reachable).toBe(false)
+    // 换回原路径这件事单独验：扫到 /host 下的路径，报出去要是修过的形状
+    expect(toOriginalPath(`${roots.scanRoot}/openlist`, roots)).toBe('/volume1/docker/openlist')
+    expect(toOriginalPath(`${roots.scanRoot}/openlist/docker-compose.yaml`, roots)).toBe('/volume1/docker/openlist/docker-compose.yaml')
   })
 
   it('环境变量里像密码的值遮住，其余照给', () => {
@@ -213,7 +269,8 @@ describe('docker 内置服务：只读', () => {
     expect(byName['account-panel']).toMatchObject({ status: 'partial', kind: 'managed', containers: 2, running: 1, services: ['proxy', 'web'] })
     expect(byName['openlist']).toMatchObject({ status: 'running', kind: 'managed' })
     expect(byName['kura-server'].kind).toBe('self')
-    expect(byName['music-tag-web'].kind).toBe('appstore')
+    // 绿联商店目录现在按**真实可达性**判：没挂进来就是 external（真机现状，compose 里没挂它）
+    expect(byName['music-tag-web'].kind).toBe('external')
     expect(byName['envtest'].kind).toBe('external')
     expect(byName['navidrome']).toMatchObject({ status: 'stopped', containers: 0, kind: 'managed' })
     // 单独起的容器不算项目，但在容器列表里

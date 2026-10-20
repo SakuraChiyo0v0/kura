@@ -1310,6 +1310,23 @@ export function ContainersView({ mapped = [], onOpenMirror }: { mapped?: Service
   return (
     <div className="kura-docker" data-testid="docker-page">
       {error && <Banner tone="warning" description={`刷新失败：${error}（显示的是上一次的状态）`} />}
+      {/* 项目目录没按原路径挂进来：项目列得出来、看得见，但都不能部署。
+          这条来自服务端按 inode 做的真实判定，不是字符串匹配 —— 提前说清楚，
+          好过让用户点了「部署」才看到一个 compose 的报错。 */}
+      {overview.projectRootHint ? (
+        <Banner
+          tone="warning"
+          title="项目目录没挂进 kura-server：能看，不能部署"
+          description={
+            <>
+              {overview.projectRootHint}
+              <br />
+              这条限制是有原因的：compose 里的相对路径（<code>./data</code>）按<strong>执行目录</strong>解析，
+              在错的路径下跑会让 Docker 在 NAS 上建一个空目录挂进去 —— 看起来就像数据全丢了。
+            </>
+          }
+        />
+      ) : null}
       {output && <OutputPanel title={output.title} streamId={output.id} failTitle={output.failTitle} wasPrune={output.wasPrune} onClose={() => setOutput(null)} />}
       {editing === 'new' && (
         <NewProject

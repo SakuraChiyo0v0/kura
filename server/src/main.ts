@@ -15,7 +15,9 @@ import { createAdminHandler } from './admin.js'
 import { DockerEngine } from './docker/engine.js'
 import { ProjectFileStore, composeValidator } from './docker/files.js'
 import { createDockerHandler, type AuditSink } from './docker/handler.js'
-import { DockerService, appstoreRoot } from './docker/service.js'
+import { DockerService } from './docker/service.js'
+import { isMounted } from './docker/mounts.js'
+import { findDockerSocket } from './docker/socket.js'
 import { AutoUpdate } from './docker/autoupdate.js'
 import { ProjectLocks } from './docker/locks.js'
 import { createDbHandler } from './db/handler.js'
@@ -35,7 +37,8 @@ import { TunnelService } from './db/tunnel.js'
  *   KURA_STATE           状态目录，默认 /state（services.json、webdav.json、tokens.json）
  *   KURA_SHELL           可选，kura-shell 的地址，如 http://kura-shell:8890；不设就没有终端
  *   KURA_SHELL_TOKEN_FILE 可选，内部令牌经共享卷传递；默认 /run/kura-shell/token
- *   KURA_DOCKER_SOCKET   可选，查容器端口映射 + 容器管理（内置服务 docker）；不设或文件不存在就都没有
+ *   KURA_DOCKER_SOCKET   可选，**不设就自动找**（挂载点 → /host 下那份，见 docker/socket.ts）；
+ *                        配了只认它。找不到 = 没有容器管理（内置服务 docker）
  *   KURA_PROJECT_ROOT    compose 项目目录（宿主原路径，容器里按原路径挂），默认 /volume1/docker
  *   KURA_TRUST_PROXY     1 = 信任 X-Forwarded-For（前面还有一层反代时才开）
  */
@@ -112,9 +115,15 @@ async function serve(): Promise<void> {
   const servicesFile = join(state, 'services.json')
   if (!existsSync(servicesFile)) writeFileSync(servicesFile, '{\n  "services": []\n}\n')
 
-  const socket = process.env.KURA_DOCKER_SOCKET
-  const hasDocker = Boolean(socket && existsSync(socket))
-  // 内置服务固定出现在清单上；docker 只在挂了 sock 时出现（客户端据此决定「容器」页可不可用）。
+  // Docker socket **自动发现**（见 docker/socket.ts）：配了 KURA_DOCKER_SOCKET 就只认它，
+  // 没配就依次试挂载点与 /host 下那份。宿主根 `/:/host` 本来就挂着（WebDAV 的根就是它），
+  // 所以连 compose 都不用改就有 Docker 页 —— 以前这里只要环境变量没配就整个功能不开。
+  const found = await findDockerSocket({ ...(process.env.KURA_DOCKER_SOCKET ? { env: process.env.KURA_DOCKER_SOCKET } : {}), log })
+  const socket = found?.path
+  const hasDocker = Boolean(socket)
+  if (socket) log('Docker socket 已找到', { 路径: socket, 来源: found!.source })
+  else log('没有可用的 Docker socket，Docker / 数据库功能不可用（挂上 docker.sock 即可）')
+  // 内置服务固定出现在清单上；docker 只在有 socket 时出现（客户端据此决定「容器」页可不可用）。
   // 端口号只是清单里的标签：内置服务都由 kura-server 自己处理，不会真按端口去连。
   const registry = new Registry(
     servicesFile,
@@ -153,16 +162,15 @@ async function serve(): Promise<void> {
     ? (() => {
         const engine = new DockerEngine({ socketPath: socket! })
         const projectRoot = process.env.KURA_PROJECT_ROOT?.trim() ?? '/volume1/docker'
-        // 项目目录没按原路径挂进来就不给编辑：写进去的文件宿主上看不到
-        const files = existsSync(projectRoot) ? new ProjectFileStore(projectRoot, composeValidator()) : undefined
+        // 项目目录没按原路径挂进来就不给编辑：写进去的文件宿主上看不到。
+        // 这里必须用 isMounted 而不是 existsSync —— 目录没挂对时，容器里的原路径
+        // **可能是别的项目写出来的**，往那儿写就等于写进容器自己的文件系统，一重建就没了
+        // （见 docker/mounts.ts 顶部）。
+        const files = isMounted(projectRoot) ? new ProjectFileStore(projectRoot, composeValidator()) : undefined
+        if (!files) log('项目目录没按原路径挂进来，不能新建 / 编辑项目', { 目录: projectRoot })
         let seq = 0
         const auditSink = (entry: Parameters<AuditSink>[0]) => audit.write({ ...entry, at: new Date().toISOString(), id: `d${Date.now().toString(36)}${++seq}`, user: 'kura' })
-        const service = new DockerService({
-          engine,
-          projectRoot,
-          // 绿联商店的项目要能启停，它的目录也得按原路径挂进来；没挂就只读
-          appstoreMounted: existsSync(appstoreRoot),
-        })
+        const service = new DockerService({ engine, projectRoot })
         // 项目级 compose 锁：界面操作与自动更新**共用同一把**，否则自动更新在 pull + up
         // 的时候用户点「重启」，两边会同时动同一个项目的容器（见 locks.ts）。
         const locks = new ProjectLocks()
@@ -173,9 +181,11 @@ async function serve(): Promise<void> {
           service,
           file: join(state, 'autoupdate.json'),
           locks,
-          // 自更新要的信息：compose 项目目录（kura-server 自己那个，跟项目根不同）+ docker.sock。
-          // 镜像名不在这里给 —— 从运行中的容器动态拿（见 autoupdate.ts runSelf）
-          self: { dir: process.env.KURA_SELF_DIR?.trim() ?? '/volume1/docker/kura-server', socketPath: socket! },
+          // 自更新要的只有 socket：**宿主路径**（兄弟容器是按宿主路径挂的，容器内路径在宿主上不存在）。
+          // 项目目录从 kura-server 自己容器的 compose 标签读，不写默认值 ——
+          // 以前默认成 `/volume1/docker/kura-server`，换目录部署时得记着配 KURA_SELF_DIR，
+          // 真机上就出现过 compose 没写这一项、靠默认值碰巧对上的情况。
+          self: { socketPath: found!.hostPath },
           onResult: (r) => auditSink({ action: 'docker-auto-update', detail: `${r.project}：${r.ok ? `更新了 ${r.images.join('、')}` : r.reason}`, exitCode: r.ok ? 0 : 1 }),
           log,
         })

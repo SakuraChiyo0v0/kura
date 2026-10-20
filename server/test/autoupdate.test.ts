@@ -32,7 +32,8 @@ function fakeCompose(target: ComposeTarget, action: ComposeAction): ComposeRun {
 /** 从状态文件的当前内容造一个实例（不重置它）。 */
 function load(options: Partial<AutoUpdateOptions> = {}): AutoUpdate {
   const engine = new DockerEngine({ socketPath: docker.socketPath, timeoutMs: 5_000 })
-  const service = new DockerService({ engine, projectRoot: root.replace(/\\/g, '/'), appstoreMounted: true })
+  // 没有 `/host` → mounts.ts 退回「存在就算可达」，即原路径就是本地路径（临时目录这个形状）
+  const service = new DockerService({ engine, projectRoot: root.replace(/\\/g, '/') })
   return new AutoUpdate({ engine, service, file: file.replace(/\\/g, '/'), intervalMs: 0, compose: fakeCompose, ...options })
 }
 
@@ -129,7 +130,8 @@ describe('自动更新的开关', () => {
     rmSync(file, { force: true })
     // 不经过 make()：它会把空状态文件写下去
     const engine = new DockerEngine({ socketPath: docker.socketPath, timeoutMs: 5_000 })
-    const service = new DockerService({ engine, projectRoot: root.replace(/\\/g, '/'), appstoreMounted: true })
+    // 没有 `/host` → mounts.ts 退回「存在就算可达」，即原路径就是本地路径（临时目录这个形状）
+  const service = new DockerService({ engine, projectRoot: root.replace(/\\/g, '/') })
     const auto = new AutoUpdate({ engine, service, file: file.replace(/\\/g, '/'), intervalMs: 0, compose: fakeCompose })
 
     expect(auto.status().projects).toEqual(['kura-server'])
@@ -140,22 +142,52 @@ describe('自动更新的开关', () => {
     docker.addContainer('kura-server-app-1', { project: 'kura-server', dir: '/volume1/docker/kura-server', image: 'ghcr.io/x/kura-server:latest' })
     registerImage('ghcr.io/x/kura-server:latest')
     const calls: Array<{ name: string; image: string; dir: string; configFiles: string[]; socketPath: string }> = []
-    const auto = make({ self: { dir: '/volume1/docker/kura-server', socketPath: '/var/run/docker.sock' }, selfUpdate: fakeSelfUpdate(calls) })
+    const auto = make({ self: { socketPath: '/var/run/docker.sock' }, selfUpdate: fakeSelfUpdate(calls) })
     auto.set('kura-server', true)
 
     const results = await auto.tick()
 
     // 关键：**没走本进程里的 compose**（那条会把执行它的自己停掉）
     expect(composeCalls).toEqual([])
+    // 目录来自容器自己的 compose 标签，不是从这里传下去的默认值
     expect(calls).toEqual([expect.objectContaining({ name: 'kura-server', image: 'ghcr.io/x/kura-server:latest', dir: '/volume1/docker/kura-server' })])
     expect(results).toEqual([expect.objectContaining({ project: 'kura-server', ok: true })])
+  })
+
+  it('更新自己：目录跟着容器标签走（换目录部署不用再配 KURA_SELF_DIR）', async () => {
+    // 部署根不在默认的 /volume1/docker/kura-server 下 —— 以前这里要靠环境变量，漏了就更新到错的目录
+    docker.addContainer('kura-server-app-1', { project: 'kura-server', dir: '/volume2/apps/kura-server', image: 'ghcr.io/x/kura-server:latest' })
+    registerImage('ghcr.io/x/kura-server:latest')
+    const calls: Array<{ name: string; image: string; dir: string; configFiles: string[]; socketPath: string }> = []
+    const auto = make({ self: { socketPath: '/var/run/docker.sock' }, selfUpdate: fakeSelfUpdate(calls) })
+    auto.set('kura-server', true)
+
+    await auto.tick()
+
+    expect(calls[0]).toMatchObject({ dir: '/volume2/apps/kura-server' })
+  })
+
+  it('更新自己：kura-server 不是 compose 起的（没有项目标签）就说清，不去猜目录', async () => {
+    // `docker run` 起的老独立容器没有 com.docker.compose.* 标签，但它**仍然是** kura-server ——
+    // 认自己的依据是容器名（selfProject），不是项目标签（见 DockerService.projectsFrom 顶部）。
+    docker.addContainer('kura-server', { image: 'ghcr.io/x/kura-server:latest' })
+    registerImage('ghcr.io/x/kura-server:latest')
+    const calls: Array<{ name: string; image: string; dir: string; configFiles: string[]; socketPath: string }> = []
+    const auto = make({ self: { socketPath: '/var/run/docker.sock' }, selfUpdate: fakeSelfUpdate(calls) })
+    auto.set('kura-server', true)
+
+    const results = await auto.tick()
+
+    // 以前会拿 /volume1/docker/kura-server 这个默认值硬跑 —— 目录不对等于在错的地方部署
+    expect(calls).toEqual([])
+    expect(results).toEqual([expect.objectContaining({ project: 'kura-server', ok: false, reason: expect.stringMatching(/不是用 compose 起的/) })])
   })
 
   it('更新自己时兄弟容器起不来：如实报错', async () => {
     docker.addContainer('kura-server-app-1', { project: 'kura-server', dir: '/volume1/docker/kura-server', image: 'ghcr.io/x/kura-server:latest' })
     registerImage('ghcr.io/x/kura-server:latest')
     const calls: Array<{ name: string; image: string; dir: string; configFiles: string[]; socketPath: string }> = []
-    const auto = make({ self: { dir: '/volume1/docker/kura-server', socketPath: '/var/run/docker.sock' }, selfUpdate: fakeSelfUpdate(calls, 1) })
+    const auto = make({ self: { socketPath: '/var/run/docker.sock' }, selfUpdate: fakeSelfUpdate(calls, 1) })
     auto.set('kura-server', true)
 
     const results = await auto.tick()

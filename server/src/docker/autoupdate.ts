@@ -50,8 +50,14 @@ export interface AutoUpdateOptions {
   compose?: typeof runCompose
   /** 自更新的执行器（短命兄弟容器）；测试注入 */
   selfUpdate?: typeof runSelfUpdate
-  /** 自更新要用到的信息（compose 项目目录、docker.sock）；不给 = 不能更新自己。镜像名每轮动态拿 */
-  self?: Omit<SelfUpdateTarget, 'name' | 'configFiles' | 'image'>
+  /**
+   * 自更新要用的信息，只留 **docker.sock 的宿主路径**；不给 = 不能更新自己。
+   *
+   * 项目目录（`dir`）与 compose 文件每轮从 kura-server 自己容器的标签里读（见 `runSelf`），
+   * 不再从这里传默认值 —— `/volume1/docker/kura-server` 那个默认值只是碰巧对上过，
+   * 换目录部署就得记着配环境变量。镜像名同样是每轮动态拿。
+   */
+  self?: Pick<SelfUpdateTarget, 'socketPath'>
   /** 与界面操作共用的项目锁；不给就自己造一个（测试用） */
   locks?: ProjectLocks
   onResult?: (result: AutoUpdateRunResult) => void
@@ -217,14 +223,20 @@ export class AutoUpdate {
    */
   private async runSelf(name: string, project: { dir: string; configFiles: string[] }, images: string[]): Promise<{ ok: boolean; reason: string }> {
     const self = this.options.self
-    if (!self) return { ok: false, reason: '没配自更新要用的信息（镜像 / docker.sock），更新不了自己' }
+    if (!self) return { ok: false, reason: '没配自更新要用的信息（docker.sock），更新不了自己' }
     // 兄弟容器用的镜像 = kura-server 自己那个。不硬编码名字，从它容器的 image 标签拿
     // （kura-server 与 kura-shell 是同一个镜像，去重后这里就一个）
     const image = images[0]
     if (!image) return { ok: false, reason: '不知道自己的镜像是什么，更新不了自己' }
+    // 项目目录与 compose 文件**来自容器标签**（DockerService 就是这么聚合的），不是猜的默认值。
+    // 读不到说明 kura-server 不是 compose 起的（`docker run` 的老独立容器），那就实话实说：
+    // 以前这时会拿 `/volume1/docker/kura-server` 去跑，目录不对等于在错的地方部署。
+    if (!project.dir || project.configFiles.length === 0) {
+      return { ok: false, reason: 'kura-server 不是用 compose 起的（容器上没有项目标签），不知道在哪更新；请在 NAS 上手动更新' }
+    }
     // 本进程里那把项目锁对兄弟容器没用（不同进程），但界面操作那条路仍然该被挡着 ——
     // 用户此刻手动「重启」kura-server 本来也被 assertMutable 拒了，这里是双保险
-    const run = this.selfUpdate({ ...self, name, configFiles: project.configFiles, image })
+    const run = this.selfUpdate({ ...self, name, dir: project.dir, configFiles: project.configFiles, image })
     let tail = ''
     run.onOutput((text) => {
       tail = (tail + text).slice(-2000)
@@ -243,7 +255,10 @@ export class AutoUpdate {
     const raw = await this.options.engine.listContainers()
     const seen = new Set<string>()
     for (const c of raw) {
-      if (c.Labels?.['com.docker.compose.project'] !== name) continue
+      // 自己的容器可能没有 compose 项目标签（`docker run` 起的那种），按容器名认
+      // —— 与 DockerService.projectsFrom 认自己的口径保持一致
+      const isSelfContainer = name === selfProject && (c.Names ?? []).some((n) => n.replace(/^\//, '') === selfProject)
+      if (!isSelfContainer && c.Labels?.['com.docker.compose.project'] !== name) continue
       if (c.Image) seen.add(c.Image)
     }
     // 一个容器都没起过的项目（刚建、还没 up）没有镜像可比，跳过

@@ -492,7 +492,7 @@ export interface KuraBridge {
     templates(): Promise<DatabaseTemplate[]>
     /** 某个引擎在 Docker Hub 上有哪些版本可装（查不到时回 error 字段，界面回退默认镜像） */
     versions(engine: DbEngine, registry?: string): Promise<VersionList>
-    list(): Promise<{ databases: DatabaseView[]; tunnelAvailable: boolean }>
+    list(): Promise<{ databases: DatabaseView[]; tunnelAvailable: boolean; installAvailable?: boolean }>
     /** 快捷安装：建项目、起容器、登记。可能几十秒 */
     /** 快捷安装。image 不填用模板默认的；填了必须是这个引擎的官方镜像。可能几十秒 */
     install(engine: DbEngine, name: string, image?: string): Promise<{ ok: boolean; name: string; engine: DbEngine; image: string; output: string; connection: { container: string; port: number; database: string; user: string } }>

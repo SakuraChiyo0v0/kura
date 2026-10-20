@@ -410,7 +410,7 @@ function handleDb(req, res, body) {
       defaultImage: dbState.templates.find((t) => t.engine === engine)?.image ?? '',
     })
   }
-  if (path === '/api/db/list') return json(200, { databases: dbState.databases, tunnelAvailable: dbState.databases.length > 0 })
+  if (path === '/api/db/list') return json(200, { databases: dbState.databases, tunnelAvailable: dbState.databases.length > 0, installAvailable: true })
   if (path === '/api/db/create' && req.method === 'POST') {
     const { engine, name } = JSON.parse(body.toString() || '{}')
     const t = dbState.templates.find((x) => x.engine === engine)

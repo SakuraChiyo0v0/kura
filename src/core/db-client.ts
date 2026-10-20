@@ -173,8 +173,12 @@ export class DbClient {
     return this.json<DatabaseTemplate[]>('GET', '/api/db/templates')
   }
 
-  async list(): Promise<{ databases: DatabaseView[]; tunnelAvailable: boolean }> {
-    return this.json<{ databases: DatabaseView[]; tunnelAvailable: boolean }>('GET', '/api/db/list')
+  /**
+   * `installAvailable`：服务端的项目目录真的按原路径挂进来了，快捷安装才可用。
+   * 老镜像没有这个字段 —— 那时按可用处理，让「安装」按钮照旧显示（点了会有明确的 409）。
+   */
+  async list(): Promise<{ databases: DatabaseView[]; tunnelAvailable: boolean; installAvailable?: boolean }> {
+    return this.json<{ databases: DatabaseView[]; tunnelAvailable: boolean; installAvailable?: boolean }>('GET', '/api/db/list')
   }
 
   install(engine: DbEngine, name: string, image?: string): Promise<InstallResult> {

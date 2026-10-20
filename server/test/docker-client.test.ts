@@ -1,5 +1,8 @@
 import http from 'node:http'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import type { AddressInfo, Socket } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DockerApiError, DockerClient } from '../../src/core/docker-client.js'
 import type { ComposeAction, ComposeTarget } from '../src/docker/compose.js'
@@ -16,15 +19,18 @@ import { FakeDocker, frame } from './fake-docker.js'
 let docker: FakeDocker
 let server: http.Server
 let client: DockerClient
+/** 项目目录用一个真存在的临时目录：假 dockerd 报的目录要对得上，部署权限那条判定才放行 */
+let root = ''
 const audit: AuditEntry[] = []
 
 beforeEach(async () => {
   docker = await new FakeDocker().start()
+  root = mkdtempSync(join(tmpdir(), 'kura-docker-client-'))
   audit.length = 0
   const engine = new DockerEngine({ socketPath: docker.socketPath })
   const handler = createDockerHandler({
     engine,
-    service: new DockerService({ engine, projectRoot: '/volume1/docker' }),
+    service: new DockerService({ engine, projectRoot: root.replace(/\\/g, '/') }),
     audit: (e) => audit.push({ ...e, at: new Date().toISOString(), id: String(audit.length), user: 'kura' }),
     activity: (n) => audit.slice(-n),
     compose: (_t: ComposeTarget, action: ComposeAction) => {
@@ -47,6 +53,7 @@ afterEach(async () => {
   server.closeAllConnections()
   await new Promise<void>((r) => server.close(() => r()))
   await docker.stop()
+  rmSync(root, { recursive: true, force: true })
 })
 
 describe('DockerClient ↔ kura-server', () => {
@@ -69,7 +76,10 @@ describe('DockerClient ↔ kura-server', () => {
   })
 
   it('流：输出里的 JSON 行照常给出，只有精确的结束帧被当成退出码', async () => {
-    docker.addContainer('app', { project: 'app', dir: '/volume1/docker/app' })
+    const dir = `${root.replace(/\\/g, '/')}/app`
+    mkdirSync(dir)
+    writeFileSync(join(dir, 'docker-compose.yaml'), 'services: {}\n')
+    docker.addContainer('app', { project: 'app', dir })
     const stream = await client.project('app', 'restart')
     let text = ''
     stream.onData((t) => (text += t))
