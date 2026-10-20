@@ -548,8 +548,10 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     // ⑦d3 容器管理：项目列表 → Kura 自己只读 → 重启项目，输出实时出现、结束后状态刷新 → 容器详情（密码遮住）与日志
     await nav('Docker')
     const projectsShown = await waitFor(`document.querySelector('[data-testid="project-list"] [data-project="openlist"]') !== null`, 10_000)
+    // 文案在 2026-10-16 换过：Kura 从「由 watchtower 更新，Kura 里只读」变成「自己更新自己」，
+    // 但「不能在这里启停」这条判据没变 —— 断言盯的是它，不是某句文案。
     const selfReadOnly = await js<boolean>(
-      `(() => { const li = document.querySelector('[data-project="kura-server"]'); return Boolean(li) && li.innerText.includes('只读') && ![...li.querySelectorAll('button')].some(b => b.textContent.trim() === '重启') })()`,
+      `(() => { const li = document.querySelector('[data-project="kura-server"]'); return Boolean(li) && li.innerText.includes('不能在这里启停') && ![...li.querySelectorAll('button')].some(b => b.textContent.trim() === '重启') })()`,
     )
     check('容器页：项目列表，Kura 自己只读', projectsShown && selfReadOnly, `projects=${projectsShown} selfReadOnly=${selfReadOnly}`)
     // 和服务映射互链：openlist 在映射页被关掉了（⑥），所以这里不该给它的本机地址；重新打开后应该出现
@@ -621,6 +623,9 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
       10_000,
     )
     check('项目操作失败：右下角弹出提示（不只是输出面板）', failToast, await js<string>(`JSON.stringify([...document.querySelectorAll('.sk-toast-root')].map(t => t.textContent.slice(0, 120)))`))
+    // 失败提示是「留到手动关」的（不像成功那样 5 秒自己消失）。验完就关掉，
+    // 否则后面每条断言 toast 的用例都会看到它，断言对象和实际弹出的对不上。
+    await js(`[...document.querySelectorAll('.sk-toast-close')].forEach(b => b.click())`)
     await js(`[...document.querySelectorAll('[data-project="openlist"] .kura-docker-members button')][0]?.click()`)
     const drawer = await waitFor(`document.querySelector('[data-testid="container-drawer"]')?.innerText.includes('ADMIN_PASSWORD') && document.querySelector('[data-testid="container-logs"]')?.textContent.includes('openlist started')`, 10_000)
     const masked = await js<boolean>(`document.querySelector('[data-testid="container-drawer"]')?.innerText.includes('已隐藏') ?? false`)
@@ -658,12 +663,26 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     )
     const toggled = await waitFor(`document.querySelector('[data-project="openlist"] .kura-docker-auto input')?.checked === true`, 8_000)
     check('自动更新：项目行上能开关，Kura 自己那行有开关但没有启停', selfSwitched && switchOn && toggled, `selfSwitched=${selfSwitched} switchOn=${switchOn} toggled=${toggled}`)
+    // 「立即跑一轮」有两个门槛，晚一步或早一步点都是静默落空：
+    // 1. 只在有项目开着自动更新时才渲染 —— 刚点完开关，工具栏要等一次重渲染；
+    // 2. 开关请求还在路上时它是禁用的（busy 是那个项目的名字）—— 禁用的按钮点了不触发 onClick。
+    const runButton = await waitFor(
+      `(() => { const b = document.querySelector('[data-testid="auto-run"]'); return b !== null && !b.disabled })()`,
+      8_000,
+    )
     await js(`document.querySelector('[data-testid="auto-run"]')?.click()`)
+    // 判据只认 toast 标题：「更新了 N 个项目」。
+    // 项目名不在 toast 里 —— 成功时 description 是空的，失败时才写「N 个失败：<项目> · <原因>」。
+    // 早先这里要求同时出现 openlist，那条断言从一开始就不可能通过。
     const autoToast = await waitFor(
-      `[...document.querySelectorAll('.sk-toast-root')].some(t => t.textContent.includes('更新了 1 个项目') && t.textContent.includes('openlist'))`,
+      `[...document.querySelectorAll('.sk-toast-root')].some(t => t.textContent.includes('更新了 1 个项目'))`,
       10_000,
     )
-    check('自动更新：立即跑一轮，结果弹提示', autoToast, await js<string>(`JSON.stringify([...document.querySelectorAll('.sk-toast-root')].map(t => t.textContent.slice(0, 120)))`))
+    check(
+      '自动更新：立即跑一轮，结果弹提示',
+      runButton && autoToast,
+      `按钮可点=${runButton} toast=${await js<string>(`JSON.stringify([...document.querySelectorAll('.sk-toast-root')].map(t => t.textContent.slice(0, 120)))`)}`,
+    )
     // 关掉，免得影响后面的用例（活动列表里会多出自动更新的条目）
     await js(`document.querySelector('[data-project="openlist"] .kura-docker-auto input')?.click()`)
     await waitFor(`document.querySelector('[data-project="openlist"] .kura-docker-auto input')?.checked === false`, 8_000)

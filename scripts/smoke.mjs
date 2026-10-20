@@ -142,8 +142,10 @@ const dockerState = {
     { id: 'sha256:bbb', tags: [], size: 19_400_000, created: Date.now() - 86_400_000, usedBy: 0, dangling: true },
     { id: 'sha256:ccc', tags: ['busybox:latest'], size: 4_200_000, created: Date.now() - 172_800_000, usedBy: 0, dangling: false },
   ],
-  // 和真服务端一个口径：Kura 自己默认开着，别的项目默认关
-  auto: { projects: ['kura-server'], lastRunAt: 0, lastResult: [] },
+  // 和真服务端一个口径：Kura 自己默认开着，别的项目默认关。
+  // running 不能漏：真服务端每轮结束会把它置回 false，界面靠它区分「跑完没变化」与「还没跑完」——
+  // 少了这个字段，runNow 会把每一次都当成「上一轮还在跑」，一条提示都不弹。
+  auto: { projects: ['kura-server'], lastRunAt: 0, lastResult: [], running: false },
   files: {
     compose: [{ path: '/volume1/docker/openlist/docker-compose.yaml', content: 'services:\n  openlist:\n    image: openlistteam/openlist:latest\n    restart: unless-stopped\n' }],
     env: { path: '/volume1/docker/openlist/.env', content: 'TZ=Asia/Shanghai\n', exists: true },
