@@ -18,6 +18,7 @@ import {
   Banner,
   ConfirmDialog,
   EmptyState,
+  FocusDialog,
   MotionTabs,
   ProgressBar,
   Section,
@@ -27,7 +28,7 @@ import {
   useToast,
 } from '@sakura-ui/react'
 import { humanBytes } from '../core/stats.js'
-import type { DavSettingsView, DavStatusView, FileEntry, NasScopeCheck, NasScopeView, Transfer } from '../shared/ipc.js'
+import type { DavSettingsView, DavStatusView, FileEntry, NasDirListing, NasScopeCheck, NasScopeView, Transfer } from '../shared/ipc.js'
 
 const icon = { size: 16, strokeWidth: 1.7, 'aria-hidden': true } as const
 
@@ -387,11 +388,155 @@ function Browser() {
   )
 }
 
+/**
+ * 目录选择器：从 NAS 的目录树里点着挑，不用手输路径。
+ *
+ * 为什么要单独一个接口（而不是复用文件页的浏览）：范围是白名单，**没放行的目录在 WebDAV 视图里根本不存在**。
+ * 最需要挑的恰恰是范围外的目录 —— 只能靠手输的话，拼错一个字符就静默不生效。
+ * 所以这里打 kura-server 的 `/_kura/api/browse`，只列目录名、不读文件名。
+ */
+function DirPicker({
+  open,
+  onOpenChange,
+  title,
+  onPick,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  title: string
+  onPick: (path: string) => void
+}) {
+  const [path, setPath] = useState('/')
+  const [listing, setListing] = useState<NasDirListing | null>(null)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  // 只认最后一次：连点两层时先发的那次晚回来不能把界面拉回去
+  const seq = useRef(0)
+  const load = useCallback(async (target: string) => {
+    if (!window.kura) return
+    const mine = ++seq.current
+    setLoading(true)
+    try {
+      const next = await window.kura.nasScope.browse(target)
+      if (mine !== seq.current) return
+      setListing(next)
+      setPath(next.path)
+      setError('')
+    } catch (caught) {
+      if (mine === seq.current) setError((caught as Error).message)
+    } finally {
+      if (mine === seq.current) setLoading(false)
+    }
+  }, [])
+
+  // 每次打开都从根开始：上次停在哪儿不重要，重要的是这次能挑到任意位置
+  useEffect(() => {
+    if (!open) return
+    setPath('/')
+    setListing(null)
+    setError('')
+    void load('/')
+  }, [open, load])
+
+  const parts = path.split('/').filter(Boolean)
+
+  return (
+    <FocusDialog
+      triggerLabel={title}
+      title={title}
+      description="从 NAS 的目录里挑一个；面向上级目录只用来通往放行的目录。"
+      open={open}
+      onOpenChange={onOpenChange}
+      triggerClassName="sk-control-button sk-control-button--secondary sk-control-button--sm"
+    >
+      <div className="kura-picker" data-testid="dir-picker">
+        <div className="kura-picker__bar">
+          <Button variant="ghost" size="sm" icon={<ArrowUp {...icon} />} aria-label="上一级" disabled={path === '/'} onClick={() => void load(parentOf(path))} />
+          <nav className="kura-crumbs" aria-label="当前目录">
+            <button type="button" className="kura-crumbs__item" onClick={() => void load('/')}>
+              <HardDrive {...icon} /> NAS
+            </button>
+            {parts.map((part, i) => {
+              const target = '/' + parts.slice(0, i + 1).join('/')
+              return (
+                <span key={target} className="kura-crumbs__seg">
+                  <ChevronRight size={14} aria-hidden />
+                  <button
+                    type="button"
+                    className="kura-crumbs__item"
+                    aria-current={i === parts.length - 1 ? 'page' : undefined}
+                    onClick={() => void load(target)}
+                  >
+                    {part}
+                  </button>
+                </span>
+              )
+            })}
+          </nav>
+        </div>
+
+        {error ? (
+          <Banner tone="warning" description={error} />
+        ) : listing === null ? (
+          <p className="kura-form__note">正在读取目录…</p>
+        ) : listing.entries.length === 0 ? (
+          <p className="kura-form__note" data-testid="picker-empty">
+            这个目录下面没有子目录
+          </p>
+        ) : (
+          <ul className="kura-picker__list" data-testid="picker-list">
+            {listing.entries.map((entry) => (
+              <li key={entry.path}>
+                <button type="button" className="kura-picker__row" onClick={() => void load(entry.path)} title={`进入 ${entry.path}`}>
+                  <Folder {...icon} className="kura-files__dir-icon" />
+                  <span>{entry.name}</span>
+                </button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  data-testid="picker-pick"
+                  aria-label={`选择 ${entry.path}`}
+                  onClick={() => {
+                    onPick(entry.path)
+                    onOpenChange(false)
+                  }}
+                >
+                  选这个
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {listing?.truncated && <p className="kura-form__note">子目录太多，只列了前 {listing.entries.length} 个；可以输路径精确指定。</p>}
+
+        <div className="kura-form__actions">
+          <Button
+            data-testid="picker-current"
+            disabled={loading || Boolean(error)}
+            onClick={() => {
+              onPick(path)
+              onOpenChange(false)
+            }}
+          >
+            {loading ? '读取中…' : `选择 ${path}`}
+          </Button>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+            取消
+          </Button>
+        </div>
+      </div>
+    </FocusDialog>
+  )
+}
+
 /** 一组路径规则的编辑器：每行一条，增删即时反映在草稿里。 */
 function RuleList({ label, description, rules, onChange, testId }: { label: string; description: string; rules: string[]; onChange: (rules: string[]) => void; testId: string }) {
   const [draft, setDraft] = useState('')
-  const add = () => {
-    const v = draft.trim()
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const add = (raw: string) => {
+    const v = raw.trim()
     if (!v) return
     const normalized = '/' + v.replace(/\\/g, '/').split('/').filter(Boolean).join('/')
     if (!rules.includes(normalized)) onChange([...rules, normalized])
@@ -414,14 +559,19 @@ function RuleList({ label, description, rules, onChange, testId }: { label: stri
         className="kura-rules__add"
         onSubmit={(event) => {
           event.preventDefault()
-          add()
+          add(draft)
         }}
       >
         <TextField label={`添加${label}`} placeholder="/volume1/照片" value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} />
         <Button type="submit" size="sm" variant="secondary" disabled={!draft.trim()}>
           添加
         </Button>
+        {/* 手输保留在这里：排除规则支持 * 通配（如 /volume1/@*），那种规则在目录树里点不出来 */}
+        <Button size="sm" variant="secondary" icon={<Folder {...icon} />} data-testid="picker-open" onClick={() => setPickerOpen(true)}>
+          浏览…
+        </Button>
       </form>
+      <DirPicker open={pickerOpen} onOpenChange={setPickerOpen} title={`选择${label}`} onPick={add} />
     </div>
   )
 }
@@ -548,6 +698,7 @@ function NasScopePanel() {
   const [saving, setSaving] = useState(false)
   const [loadError, setLoadError] = useState('')
   const [probe, setProbe] = useState('/volume1')
+  const [probePickerOpen, setProbePickerOpen] = useState(false)
   const [probeResult, setProbeResult] = useState<NasScopeCheck | null>(null)
 
   const refresh = useCallback(async () => {
@@ -663,7 +814,11 @@ function NasScopePanel() {
           <Button type="submit" size="sm" variant="secondary">
             检查
           </Button>
+          <Button size="sm" variant="secondary" icon={<Folder {...icon} />} data-testid="probe-picker-open" onClick={() => setProbePickerOpen(true)}>
+            浏览…
+          </Button>
         </form>
+        <DirPicker open={probePickerOpen} onOpenChange={setProbePickerOpen} title="选择要自检的目录" onPick={setProbe} />
         {probeResult && (
           <p className="kura-dav__probe" data-testid="scope-probe" data-visibility={probeResult.visibility}>
             <StatusBadge tone={probeResult.visibility === 'full' ? 'success' : probeResult.visibility === 'ancestor' ? 'warning' : 'neutral'} size="sm">

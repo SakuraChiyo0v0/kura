@@ -1,4 +1,5 @@
 import { normalizeDavPath, visibilityOf, writeDenial, type DavScope } from './dav-scope.js'
+import type { NasDirListing } from '../shared/ipc.js'
 
 /**
  * NAS 侧那份 WebDAV 暴露范围（kura-server 的 `state/webdav.json`）。
@@ -77,6 +78,36 @@ export function parseScope(body: Buffer): NasScopeView {
   }
   const response = parsed as ScopeResponse
   return { ...requireScope(response.limits, '范围'), defaults: requireScope(response.defaults, '默认范围') }
+}
+
+/** 目录选择器用的接口。与范围接口一样走统一网关（同属 kura-server 自己的接口）。 */
+export const browseApiPath = '/_kura/api/browse'
+
+/**
+ * 把 `GET /_kura/api/browse` 的响应收成界面用的形状。
+ *
+ * 与范围不同，这里拿到空列表**不是**危险信号（空目录就是空的），所以缺字段就当成空，
+ * 不像 `parseScope` 那样抛错。但 `path` 要有：界面上要显示「当前在哪一层」，
+ * 没有这个字段说明对面不是这个接口，得报出来而不是画一个空目录树。
+ */
+export function parseBrowse(body: Buffer): NasDirListing {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body.toString('utf8'))
+  } catch {
+    throw new Error('服务端返回的不是 JSON，可能不是 kura-server')
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('服务端返回的不是目录列表')
+  }
+  const raw = parsed as { path?: unknown; entries?: unknown; truncated?: unknown }
+  if (typeof raw.path !== 'string') throw new Error('服务端返回的目录列表里没有 path，可能不是 kura-server')
+  const entries = Array.isArray(raw.entries)
+    ? raw.entries
+        .filter((e): e is { name: string; path: string } => typeof e === 'object' && e !== null && typeof (e as { path?: unknown }).path === 'string')
+        .map((e) => ({ name: typeof e.name === 'string' ? e.name : e.path.slice(e.path.lastIndexOf('/') + 1), path: e.path }))
+    : []
+  return { path: raw.path, entries, truncated: raw.truncated === true }
 }
 
 /** 按范围算一条路径可不可见、能不能写。算法与本机那套是同一份 `dav-scope`。 */

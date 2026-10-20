@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { checkScope, parseScope, scopeApiPath } from './nas-scope.js'
+import { browseApiPath, checkScope, parseBrowse, parseScope, scopeApiPath } from './nas-scope.js'
 
 const buf = (value: unknown): Buffer => Buffer.from(JSON.stringify(value), 'utf8')
 
@@ -47,5 +47,27 @@ describe('NAS 侧暴露范围', () => {
 
   it('只读时可见但不可写', () => {
     expect(checkScope({ include: ['/volume1'], exclude: [] }, true, '/volume1/a')).toMatchObject({ visibility: 'full', writable: false })
+  })
+
+  it('目录选择器打的是网关上的 /_kura/api/browse', () => {
+    expect(browseApiPath).toBe('/_kura/api/browse')
+  })
+
+  it('解析目录列表：只留目录项，缺 path 就报错', () => {
+    expect(parseBrowse(buf({ path: '/volume1', entries: [{ name: '照片', path: '/volume1/照片' }], truncated: false }))).toEqual({
+      path: '/volume1',
+      entries: [{ name: '照片', path: '/volume1/照片' }],
+      truncated: false,
+    })
+    // 空目录是正常情况，不能当成错误（与范围不同：空范围会覆盖真的，空目录树只是空）
+    expect(parseBrowse(buf({ path: '/volume1', entries: [] }))).toEqual({ path: '/volume1', entries: [], truncated: false })
+    // 没有 path 说明对面不是这个接口，得报出来而不是画一个空目录树
+    expect(() => parseBrowse(buf({ entries: [] }))).toThrow(/没有 path/)
+    expect(() => parseBrowse(Buffer.from('not json'))).toThrow(/不是 JSON/)
+  })
+
+  it('目录列表里的脏项要滤掉，别把没有 path 的条目带进界面', () => {
+    const parsed = parseBrowse(buf({ path: '/v', entries: [{ name: 'a', path: '/v/a' }, { name: 'no-path' }, null, 'x'] }))
+    expect(parsed.entries).toEqual([{ name: 'a', path: '/v/a' }])
   })
 })

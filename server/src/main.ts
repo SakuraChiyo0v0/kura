@@ -225,6 +225,8 @@ async function serve(): Promise<void> {
     registry,
     webdav,
     tokens,
+    // 目录选择器列的就是 rclone 的根：同一处挂载，范围层看到什么它就列得出什么
+    hostRoot: webdav.settings().root,
     auditTail: (n) => audit.tail(n),
     shellAlive: shellAddress ? () => probeShell(shellAddress) : undefined,
     log,

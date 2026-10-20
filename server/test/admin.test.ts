@@ -1,5 +1,5 @@
 import http from 'node:http'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -31,7 +31,7 @@ beforeEach(async () => {
   webdav = new WebdavFeature({ settings: { ...webdavDefaults, port: 1 }, settingsFile: join(dir, 'webdav.json') })
   tokens = new TokenStore(join(dir, 'tokens.json'))
   const audit = new AuditLog(join(dir, 'audit.log'))
-  const admin = createAdminHandler({ registry, webdav, tokens, auditTail: (n) => audit.tail(n), shellAlive: async () => true })
+  const admin = createAdminHandler({ registry, webdav, tokens, hostRoot: dir, auditTail: (n) => audit.tail(n), shellAlive: async () => true })
   server = createKuraServer({ registry, admin })
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
@@ -119,6 +119,35 @@ describe('管理页', () => {
     const hidden = await get('/_kura/?probe=' + encodeURIComponent('/volume1/@appstore'))
     expect(hidden.body).toContain('不可见')
     expect(hidden.body).toContain('被排除规则')
+  })
+
+  it('目录选择器：只列子目录，不列文件', async () => {
+    mkdirSync(join(dir, 'volume1', '照片'), { recursive: true })
+    mkdirSync(join(dir, 'volume1', '@appstore'), { recursive: true })
+    writeFileSync(join(dir, 'volume1', 'readme.txt'), 'x')
+    const res = await get('/_kura/api/browse?path=/volume1')
+    expect(res.status).toBe(200)
+    const parsed = JSON.parse(res.body) as { path: string; entries: Array<{ name: string; path: string }>; truncated: boolean }
+    expect(parsed.path).toBe('/volume1')
+    expect(parsed.entries.map((e) => e.name).sort()).toEqual(['@appstore', '照片'])
+    expect(parsed.entries.every((e) => e.path.startsWith('/volume1/'))).toBe(true)
+    expect(parsed.truncated).toBe(false)
+  })
+
+  it('目录选择器：没放行的目录照样列得出来（这正是它存在的理由）', async () => {
+    await json('/_kura/api/scope', { include: ['/home'], exclude: [] })
+    mkdirSync(join(dir, 'volume2'), { recursive: true })
+    // WebDAV 视图里 /volume2 不存在，但在范围**之外**挑目录时正需要它
+    const res = await get('/_kura/api/browse?path=/')
+    expect(res.status).toBe(200)
+    expect((JSON.parse(res.body) as { entries: Array<{ name: string }> }).entries.map((e) => e.name)).toContain('volume2')
+  })
+
+  it('目录选择器：越界一律拒绝', async () => {
+    expect((await get('/_kura/api/browse?path=/../etc')).status).toBe(400)
+    expect((await get('/_kura/api/browse?path=/no-such-dir')).status).toBe(400)
+    writeFileSync(join(dir, 'a-file.txt'), 'x')
+    expect((await get('/_kura/api/browse?path=/a-file.txt')).status).toBe(400)
   })
 
   it('加服务：写进 services.json 并出现在页面上', async () => {

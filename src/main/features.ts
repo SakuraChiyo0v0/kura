@@ -11,10 +11,11 @@ import { errorMessage } from '../core/errors.js'
 import type { HttpRequester } from '../core/http.js'
 import { silentLogger, type Logger } from '../core/log.js'
 import type { Mirror } from '../core/mirror.js'
-import { checkScope, parseScope, scopeApiPath } from '../core/nas-scope.js'
+import { browseApiPath, checkScope, parseBrowse, parseScope, scopeApiPath } from '../core/nas-scope.js'
 import { readJson, writeJsonAtomic } from '../core/store.js'
 import type {
   DavCheckResult,
+  NasDirListing,
   DavSettingsView,
   DavStatusView,
   DbExecView,
@@ -299,6 +300,17 @@ export class NasScopeService {
   async check(path: string): Promise<NasScopeCheck> {
     const scope = await this.get()
     return checkScope(scope, scope.readOnly, path)
+  }
+
+  /**
+   * 目录选择器：列 NAS 上的子目录。
+   *
+   * 走 kura-server 的 `/_kura/api/browse`，**不经**范围层 —— 要挑的往往正是还没放行的目录
+   * （放行过的在文件页里本来就看得到）。只列目录、不列文件名，越界由服务端拒绝。
+   */
+  async browse(path: string): Promise<NasDirListing> {
+    const query = `?path=${encodeURIComponent(normalizeDavPath(path))}`
+    return parseBrowse(await this.request('GET', browseApiPath + query))
   }
 
   private async request(method: string, path: string, body?: string): Promise<Buffer> {

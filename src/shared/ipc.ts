@@ -77,6 +77,8 @@ export const kuraChannels = {
   nasScopeGet: 'kura:nas-scope:get',
   nasScopeSave: 'kura:nas-scope:save',
   nasScopeCheck: 'kura:nas-scope:check',
+  /** 目录选择器：列 NAS 上的子目录（只列目录，范围之外也能挑） */
+  nasScopeBrowse: 'kura:nas-scope:browse',
   // ---- v0.2 终端 ----
   terminalOpen: 'kura:terminal:open',
   terminalWrite: 'kura:terminal:write',
@@ -219,6 +221,24 @@ export interface NasScopeView {
 }
 
 export type NasScopeCheck = DavCheckResult
+
+/**
+ * 目录选择器列出来的一项。只列目录 —— NAS 上的文件名不经过这个接口
+ * （接口在暴露范围**之外**，否则挑不了范围外的目录；少给一样东西就少一分越界）。
+ */
+export interface NasDirEntry {
+  name: string
+  /** NAS 上的路径，可直接填进放行 / 排除规则 */
+  path: string
+}
+
+export interface NasDirListing {
+  path: string
+  entries: NasDirEntry[]
+  /** 超过上限被截断了，界面要说清「只显示前 N 个」 */
+  truncated: boolean
+}
+
 
 // ---- v0.2 终端 ----
 
@@ -383,6 +403,8 @@ export interface KuraBridge {
     get(): Promise<NasScopeView>
     save(view: NasScopeView): Promise<NasScopeView>
     check(path: string): Promise<NasScopeCheck>
+    /** 目录选择器用：列 NAS 上的子目录。**不**受当前范围裁剪，否则挑不到范围外的目录。 */
+    browse(path: string): Promise<NasDirListing>
   }
   terminal: {
     open(): Promise<string>

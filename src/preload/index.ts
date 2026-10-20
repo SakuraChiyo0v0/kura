@@ -89,6 +89,7 @@ const kura: KuraBridge = {
     get: () => invoke(ch.nasScopeGet),
     save: (view) => invoke(ch.nasScopeSave, view),
     check: (path) => invoke(ch.nasScopeCheck, path),
+    browse: (path) => invoke(ch.nasScopeBrowse, path),
   },
   terminal: {
     open: () => invoke(ch.terminalOpen),

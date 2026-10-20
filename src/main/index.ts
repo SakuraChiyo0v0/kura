@@ -425,6 +425,7 @@ function registerKuraIpc(): void {
   router.handle(ch.nasScopeGet, () => nasScope.get())
   router.handle(ch.nasScopeSave, (_event, view: NasScopeView) => nasScope.save(view))
   router.handle(ch.nasScopeCheck, (_event, path: string) => nasScope.check(String(path)))
+  router.handle(ch.nasScopeBrowse, (_event, path: string) => nasScope.browse(String(path)))
 
   // ---- 终端 ----
   router.handle(ch.terminalOpen, () => terminals.open())

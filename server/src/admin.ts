@@ -6,6 +6,7 @@ import type { WebdavFeature } from './webdav.js'
 import { excludeMatches, normalizeDavPath, normalizeRules, visibilityOf, type DavScope } from '../../src/core/dav-scope.js'
 import type { DavLimits } from '../../src/core/dav-server.js'
 import { defaultWebdavLimits } from './webdav.js'
+import { listDirectories } from './browse.js'
 import { errorMessage } from '../../src/core/errors.js'
 
 /**
@@ -22,6 +23,8 @@ export interface AdminOptions {
   registry: Registry
   webdav: WebdavFeature
   tokens: TokenStore
+  /** 容器里的宿主挂载根（compose 里 `/:/host`）。目录选择器在这个根下面列，越界就拒。 */
+  hostRoot: string
   /** 最近审计，从 shell 那边的 audit.log 读；返回最近 n 条 */
   auditTail: (limit: number) => AuditEntry[]
   /** kura-shell 在不在（拿 health 探） */
@@ -295,6 +298,18 @@ export function createAdminHandler(options: AdminOptions): AdminHandler {
         log('客户端改了 WebDAV 范围')
         // 形状与 GET 一致（也带 defaults）：客户端的解析器两种响应走同一份，缺字段会被当成「不是 kura-server」
         json(res, 200, { limits: options.webdav.limits(), defaults: defaultWebdavLimits })
+      } catch (error) {
+        json(res, 400, { error: errorMessage(error) })
+      }
+      return
+    }
+
+    // 「暴露范围」页的目录选择器要浏览整个 NAS 才能挑到放行范围**之外**的目录
+    // （没放行的目录在 WebDAV 视图里根本不存在，靠文件页列不出来）。
+    // 只列目录、不读文件名，根之外一律拒绝，详见 browse.ts。
+    if (path === '/api/browse' && req.method === 'GET') {
+      try {
+        json(res, 200, await listDirectories(options.hostRoot, query.get('path') ?? '/'))
       } catch (error) {
         json(res, 400, { error: errorMessage(error) })
       }
