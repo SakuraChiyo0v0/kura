@@ -66,11 +66,39 @@ export function socketCandidates(env: string | undefined, root = hostRoot): Dock
   ]
 }
 
+/**
+ * 这个路径上有没有一个 socket。
+ *
+ * **Windows 上这个问题的答案是「看不出来」，而且有四种不同的错法**
+ * （2026-10-20 实测，CI 的接线测试先红的，下面每条都真撞到了）：
+ *
+ *   1. `statSync('\\\\.\\pipe\\xxx')` **有时抛 `EBUSY`**；
+ *   2. 有时不抛、正常返回，但 `isSocket()` / `isFIFO()` **都是 false**；
+ *   3. 有时返回 **`isFile() === true`** —— 把命名管道当成普通文件（这就是最后抓到的那个）；
+ *   4. 探过一次之后，同一路径的 `existsSync` **变 false 且永久如此**，
+ *      而那个管道其实还活着、`http.request` 照样连得上。
+ *
+ * 第 4 条还废掉了「先 existsSync 再 stat，失败回退」这种写法：第一版就这么写，
+ * 第一次找成功、第二次起全是 undefined。
+ *
+ * **结论：文件系统在 Windows 上给不出可信答案，判定只认 ping。**
+ * 这个函数因此退化成「只在 Unix 上做一次廉价预筛」：只在**明确是 Unix socket 之外的
+ * 普通文件 / 目录**时否决，并且只在非 Windows 上这么做。
+ *
+ * 为什么这个 bug 只在 Windows 上出现：Node 的 unix socket 在 Windows 上就是命名管道，
+ * 而 Docker 跑在 NAS（Linux）上，日常开发碰不到 —— 除非用假 dockerd（CI 就是这么干的）。
+ */
 function defaultIsSocket(path: string): boolean {
+  // Windows：文件系统说什么都不信，全部交给 ping（它没副作用，可以反复问）。
+  if (process.platform === 'win32') return true
+  // 不用 existsSync：见上面第 4 条。
   try {
-    return statSync(path).isSocket()
-  } catch {
-    return false
+    const stat = statSync(path)
+    // 普通文件 / 目录肯定不是 socket，省一次没意义的连接
+    return !(stat.isFile() || stat.isDirectory())
+  } catch (error) {
+    // ENOENT 之外的情况说不准，留给 ping
+    return (error as NodeJS.ErrnoException).code !== 'ENOENT'
   }
 }
 
@@ -92,6 +120,10 @@ function defaultPing(path: string, timeoutMs = 3_000): Promise<boolean> {
  *
  * 为什么除了 `isSocket` 还要 ping：文件在、dockerd 死了的情况（升级中、宿主重启中）很常见，
  * 只判类型会让 Docker 页显示成「已启用但一用就报连不上」。
+ *
+ * **ping 会重试**：Windows 命名管道上连续连接会**交替失败**（实测 200 / socket hang up /
+ * 200 / socket hang up，同一个服务端、同一个路径）。一次不通不代表它不通 —— 直接判死会让
+ * 「同一个 socket 第二次找就说没有」这种烂状态出现。连两次都不通才算真的不通。
  */
 export async function findDockerSocket(options: FindOptions = {}): Promise<DockerSocket | undefined> {
   const isSocket = options.isSocket ?? defaultIsSocket
@@ -99,11 +131,19 @@ export async function findDockerSocket(options: FindOptions = {}): Promise<Docke
   const candidates = socketCandidates(options.env, options.hostRoot ?? hostRoot)
   for (const candidate of candidates) {
     if (!isSocket(candidate.path)) continue
-    if (!(await ping(candidate.path))) {
+    if (!(await answered(ping, candidate.path))) {
       options.log?.('发现 docker socket 但没应答，跳过', { 路径: candidate.path })
       continue
     }
     return candidate
   }
   return undefined
+}
+
+/** 连两次都失败才算没应答（原因见上面的注释）。 */
+async function answered(ping: (path: string) => Promise<boolean>, path: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (await ping(path)) return true
+  }
+  return false
 }

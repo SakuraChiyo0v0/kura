@@ -140,6 +140,14 @@ export class FakeDocker {
     }
     const m = /^\/containers\/([^/]+)(?:\/(\w+))?$/.exec(path)
 
+    // 活体检查。kura-server 找 socket 时会打它（见 server/src/docker/socket.ts）：
+    // 真实 dockerd 回 200 + "OK"。少了这一条，wiring 测试里 kura-server 会判定
+    // 「发现 socket 但没应答」而整个 Docker 功能不开。
+    if (req.method === 'GET' && path === '/_ping') {
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      res.end('OK')
+      return
+    }
     if (req.method === 'GET' && path === '/containers/json') return send(200, this.containers.map(({ env: _env, running: _r, ...c }) => c))
     // 守护进程系统信息（配置页用）。形状照真实的 /info，只给用得到的字段。
     if (req.method === 'GET' && path === '/info') {
