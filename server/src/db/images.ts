@@ -165,11 +165,35 @@ export async function listVersions(engine: DbEngine, options: { timeoutMs?: numb
 
     return { ...base, versions: versions.slice(0, maxVersions) }
   } catch (error) {
-    const message = (error as Error).name === 'AbortError' ? '查版本超时（NAS 连不上 Docker Hub？）' : (error as Error).message
-    return { ...base, error: message }
+    return { ...base, error: describeFetchError(error) }
   } finally {
     clearTimeout(timer)
   }
+}
+
+/**
+ * 把 fetch 的失败原因说清楚。
+ *
+ * **`fetch` 抛出来的永远只是一句 `fetch failed`**，真正的原因（DNS 解析不了、连不上、
+ * TLS 被拦、证书过期）全在 `error.cause` 里。只显示 `error.message` 的话，
+ * 用户看到的是一句等于没说的话 —— 这里逐层剥出 cause 链。
+ */
+export function describeFetchError(error: unknown): string {
+  const err = error as Error & { cause?: unknown }
+  if (err?.name === 'AbortError') return '查版本超时（NAS 连不上 Docker Hub？）'
+
+  const parts: string[] = []
+  let cursor: unknown = err
+  // cause 链可能有两三层（undici 的 TypeError → 系统错误 → …），全剥出来
+  for (let depth = 0; depth < 4 && cursor; depth += 1) {
+    const current = cursor as { message?: string; code?: string; cause?: unknown; errno?: number }
+    const text = [current.code, current.message].filter(Boolean).join(' ')
+    if (text && !parts.includes(text)) parts.push(text)
+    cursor = current.cause
+  }
+
+  const detail = parts.filter((p) => p && p !== 'fetch failed').join(' → ') || parts[0] || '未知原因'
+  return `NAS 上的 kura-server 连不上 Docker Hub：${detail}`
 }
 
 /**

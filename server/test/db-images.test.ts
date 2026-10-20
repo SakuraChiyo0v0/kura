@@ -131,6 +131,29 @@ describe('listVersions', () => {
     expect(list.defaultImage).toBe(templates.redis.image)
   })
 
+  it('把 fetch 的 cause 链剥出来（只说 "fetch failed" 等于没说）', async () => {
+    // Node 的 fetch 失败时，外层永远只是 TypeError('fetch failed')，
+    // 真实原因（ENOTFOUND / ECONNREFUSED / 证书）在 cause 里。真机上报的就是这个形状。
+    const outer = new TypeError('fetch failed')
+    ;(outer as Error & { cause?: unknown }).cause = Object.assign(new Error('getaddrinfo ENOTFOUND hub.docker.com'), {
+      code: 'ENOTFOUND',
+    })
+    const list = await listVersions('postgres', { fetchImpl: fakeFetch(() => ({ throw: outer })) })
+    // 关键：不能只显示 "fetch failed"
+    expect(list.error).not.toBe('fetch failed')
+    expect(list.error).toContain('ENOTFOUND')
+    expect(list.error).toContain('Docker Hub')
+  })
+
+  it('cause 里是 ECONNREFUSED 时也说得清', async () => {
+    const outer = new TypeError('fetch failed')
+    ;(outer as Error & { cause?: unknown }).cause = Object.assign(new Error('connect ECONNREFUSED 1.2.3.4:443'), {
+      code: 'ECONNREFUSED',
+    })
+    const list = await listVersions('redis', { fetchImpl: fakeFetch(() => ({ throw: outer })) })
+    expect(list.error).toContain('ECONNREFUSED')
+  })
+
   it('超时被识别成超时（不是含糊的网络错误）', async () => {
     const abortError = new Error('aborted')
     abortError.name = 'AbortError'
