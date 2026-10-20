@@ -184,10 +184,15 @@ export class DockerEngine {
    * `tty` 默认 **true**（进容器 shell 用：交互、输出是原样字节）。
    * 数据库命令执行要 **false**：要分开 stdout / stderr（SQL 错误必须在 stderr），
    * 开了 TTY 两者会混在一起、也拿不到结构化输出。
+   *
+   * `env` 是**这次 exec 额外的**环境变量（Docker 的 `Env` 字段，不经 shell，也不改容器本身）。
+   * 数据库命令执行靠它把连接参数（`PGUSER` 之类）交给容器里的官方 CLI —— 详见 db/templates.ts
+   * `clientEnv` 那段注释：`POSTGRES_USER` 只有镜像的 entrypoint 认，客户端走的是另一套变量名。
    */
-  async createExec(ref: string, cmd: string[], options: { tty?: boolean } = {}): Promise<string> {
+  async createExec(ref: string, cmd: string[], options: { tty?: boolean; env?: string[] } = {}): Promise<string> {
     const tty = options.tty !== false
-    const body = JSON.stringify({ AttachStdin: true, AttachStdout: true, AttachStderr: true, Tty: tty, Cmd: cmd })
+    const env = options.env ?? []
+    const body = JSON.stringify({ AttachStdin: true, AttachStdout: true, AttachStderr: true, Tty: tty, Cmd: cmd, ...(env.length ? { Env: env } : {}) })
     const res = await this.withTimeout(this.raw('POST', `/containers/${encodeURIComponent(checkRef(ref))}/exec`, body))
     if ((res.statusCode ?? 500) >= 300) throw await this.failure(res)
     return (JSON.parse(await this.read(res)) as { Id: string }).Id

@@ -30,11 +30,11 @@ export class FakeDocker {
   repoDigests = new Map<string, string[]>()
   /** 镜像标签 → 仓库里现在的 digest（没有就模拟仓库要认证） */
   remoteDigests = new Map<string, string>()
-  execs = new Map<string, { container: string; cmd: string[]; resized: string[]; tty: boolean; exitCode: number }>()
+  execs = new Map<string, { container: string; cmd: string[]; resized: string[]; tty: boolean; exitCode: number; env?: string[] }>()
   /** 非 TTY exec 启动时要吐出的分帧输出（数据库命令执行用）。键是 exec id。 */
   execOutput = new Map<string, Buffer>()
   /** 测试注入：非 TTY exec 起来后自己接管（用于「不结束，等超时」这类用例）。 */
-  onExecStart?: (exec: { container: string; cmd: string[]; resized: string[]; tty: boolean; exitCode: number }, socket: import('node:stream').Duplex) => void
+  onExecStart?: (exec: { container: string; cmd: string[]; resized: string[]; tty: boolean; exitCode: number; env?: string[] }, socket: import('node:stream').Duplex) => void
 
   async start(): Promise<this> {
     // exec start 是协议升级（Docker 用 `Upgrade: tcp` 接管连接）：接管后回显输入，像一个 shell
@@ -211,9 +211,9 @@ export class FakeDocker {
       const c = this.find(decodeURIComponent(execCreate[1]!))
       if (!c) return send(404, { message: 'No such container' })
       void readJson(req).then((body) => {
-        const spec = body as { Cmd: string[]; Tty?: boolean }
+        const spec = body as { Cmd: string[]; Tty?: boolean; Env?: string[] }
         const id = randomBytes(32).toString('hex')
-        this.execs.set(id, { container: c.Names![0]!.slice(1), cmd: spec.Cmd, resized: [], tty: spec.Tty !== false, exitCode: 0 })
+        this.execs.set(id, { container: c.Names![0]!.slice(1), cmd: spec.Cmd, resized: [], tty: spec.Tty !== false, exitCode: 0, env: spec.Env })
         send(201, { Id: id })
       })
       return

@@ -208,3 +208,56 @@ export function passwordEnvKey(engine: DbEngine): string {
       return 'REDIS_PASSWORD'
   }
 }
+
+/**
+ * 容器里的官方 CLI 要靠哪些**环境变量**才知道该连谁。
+ *
+ * 这一条踩过坑：镜像的 `POSTGRES_USER` / `MYSQL_USER` / `REDIS_PASSWORD` 是**镜像 entrypoint
+ * 用来初始化服务端的**，客户端的变量名是另一套（`PGUSER` / `MYSQL_PWD` / `REDISCLI_AUTH`）。
+ * 于是命令台 `docker exec` 进容器跑 `psql -c "SELECT version()"` 会报
+ * `FATAL: role "root" does not exist` —— psql 没看到 `PGUSER`，就按**当前 OS 用户**（root，
+ * 镜像 entrypoint 用 gosu 降权只影响主进程，exec 不受影响）去登录。
+ *
+ * 为什么用环境变量而不是补 `-U user`、`--password=...` 这类参数：
+ * 1. CLI 参数是**调用方拼的**，用户还能再传一个 `-U` 把它覆盖掉；环境变量优先级更低、不占参数位。
+ * 2. 口令进命令行会出现在容器的 `Cmd` 里（`docker inspect` 可见、审计日志也可能记到），
+ *    进 `Env` 则是 Docker 的常规定做法。
+ * 3. 三个引擎的写法完全一样：给一份 `NAME=value` 数组，不用为各自的参数顺序分叉。
+ *
+ * 空值一律不传 —— 传 `PGUSER=` 会覆盖掉容器自己的默认值，比不传更糟。
+ */
+export function clientEnv(engine: DbEngine, info: { user?: string; database?: string; password?: string }): string[] {
+  const env: string[] = []
+  const put = (key: string, value: string | undefined): void => {
+    if (value) env.push(`${key}=${value}`)
+  }
+  switch (engine) {
+    case 'postgres':
+      put('PGUSER', info.user)
+      put('PGDATABASE', info.database)
+      put('PGPASSWORD', info.password)
+      break
+    case 'mysql':
+    case 'mariadb':
+      put('MYSQL_PWD', info.password)
+      break
+    case 'redis':
+      put('REDISCLI_AUTH', info.password)
+      break
+  }
+  return env
+}
+
+/**
+ * MySQL / MariaDB 的 `mysql` 客户端不认环境变量指定用户与库（只有 `MYSQL_PWD`），
+ * 这两项只能走参数；`redis-cli` 用 `REDISCLI_AUTH` 就够了。
+ */
+export function clientArgs(engine: DbEngine, info: { user?: string; database?: string }): string[] {
+  switch (engine) {
+    case 'mysql':
+    case 'mariadb':
+      return [...(info.user ? ['-u', info.user] : []), ...(info.database ? [info.database] : [])]
+    default:
+      return []
+  }
+}
