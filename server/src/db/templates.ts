@@ -44,6 +44,11 @@ export interface DbTemplate {
   defaultVariant: string
   /** 从「版本 + 变体」拼出完整镜像名（各引擎的拼法不同） */
   imageOf: (version: string, variant: string) => string
+  /**
+   * 一个版本号里「主版本」是哪一段 —— 用来把补丁版本收成一个。
+   * PostgreSQL / Redis 的 `17.11` 归到 `17`；MySQL 的 `8.4` 本身就是主版本，原样返回。
+   */
+  majorOf: (version: string) => string
   compose: (name: string, network: string, image: string) => string
   /** 生成 .env 的内容（含密码） */
   env: (database: string, username: string, password: string) => string
@@ -82,6 +87,8 @@ export const templates: Record<DbEngine, DbTemplate> = {
     variants: ['alpine', 'bookworm', 'trixie', ''],
     defaultVariant: 'alpine',
     imageOf: (version, variant) => `postgres:${version}${variant ? `-${variant}` : ''}`,
+    // 17.11 → 17（官方主版本 tag 长期维护，跟着补丁走）
+    majorOf: (version) => version.split('.')[0] ?? version,
     compose: (name, network, image) => `${header(name)}
 services:
   ${name}:
@@ -118,6 +125,8 @@ networks:
     variants: [''],
     defaultVariant: '',
     imageOf: (version, variant) => `mysql:${version}${variant ? `-${variant}` : ''}`,
+    // MySQL 的 8.4 就是主版本，收成 8 会得到一个不存在的镜像
+    majorOf: (version) => version,
     compose: (name, network, image) => `${header(name)}
 services:
   ${name}:
@@ -155,6 +164,8 @@ networks:
     variants: ['', 'ubi'],
     defaultVariant: '',
     imageOf: (version, variant) => `mariadb:${version}${variant ? `-${variant}` : ''}`,
+    // MariaDB 同样是 11.4 这种两段式主版本
+    majorOf: (version) => version,
     compose: (name, network, image) => `${header(name)}
 services:
   ${name}:
@@ -193,6 +204,7 @@ networks:
     variants: ['alpine', 'bookworm', ''],
     defaultVariant: 'alpine',
     imageOf: (version, variant) => `redis:${version}${variant ? `-${variant}` : ''}`,
+    majorOf: (version) => version.split('.')[0] ?? version,
     compose: (name, network, image) => `${header(name)}
 services:
   ${name}:

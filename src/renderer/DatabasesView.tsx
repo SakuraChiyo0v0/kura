@@ -17,7 +17,9 @@ import {
   type DataTableColumn,
   type StatusTone,
 } from '@sakura-ui/react'
+import { useSettings } from '@sakura-ui/electron-react'
 import type { DatabaseTemplate, DatabaseView as DbView, DbEngine, TunnelStatus, VersionList } from '../shared/ipc.js'
+import { kuraSettingsDefaults, type KuraSettings } from '../shared/settings.js'
 import { DatabasesRedisView } from './DatabasesRedisView.js'
 import { DatabasesRelView } from './DatabasesRelView.js'
 
@@ -725,6 +727,9 @@ function InstallTab({ templates, onDone }: { templates: DatabaseTemplate[]; onDo
   // 版本与变体：从 Docker Hub 拉，拉不到就回退到模板默认镜像
   const [versions, setVersions] = useState<VersionList | null>(null)
   const [loadingVersions, setLoadingVersions] = useState(false)
+  // 镜像站点从设置里读：查版本要经 NAS 出去，国内网络通常只有加速器那条路能通
+  const { settings } = useSettings<KuraSettings>(kuraSettingsDefaults)
+  const mirror = settings.dbRegistryMirror
   /** 用户选中的完整镜像名；空串 = 用模板默认 */
   const [image, setImage] = useState('')
 
@@ -738,12 +743,14 @@ function InstallTab({ templates, onDone }: { templates: DatabaseTemplate[]; onDo
     let alive = true
     setLoadingVersions(true)
     void window.kura!.databases
-      .versions(engine)
+      .versions(engine, mirror)
       .then((list) => {
         if (alive) setVersions(list)
       })
       .catch((caught: Error) => {
-        if (alive) setVersions({ engine, repository: engine, versions: [], defaultImage: chosen?.image ?? '', error: caught.message })
+        if (alive) {
+          setVersions({ engine, repository: engine, versions: [], defaultImage: chosen?.image ?? '', source: 'builtin', error: caught.message })
+        }
       })
       .finally(() => {
         if (alive) setLoadingVersions(false)
@@ -752,7 +759,7 @@ function InstallTab({ templates, onDone }: { templates: DatabaseTemplate[]; onDo
       alive = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine])
+  }, [engine, mirror])
 
   /** 实际要装的镜像：用户选了就用它，没选用模板默认。 */
   const effectiveImage = image || chosen?.image || ''
@@ -827,9 +834,10 @@ function InstallTab({ templates, onDone }: { templates: DatabaseTemplate[]; onDo
               ]}
             />
           ) : (
+            // 只有「还在查」或「连内置列表都空」时才会走到这里（listVersions 承诺永远不返空）
             <TextField
               label="版本"
-              value={loadingVersions ? '正在查 Docker Hub…' : '查不到可用版本'}
+              value={loadingVersions ? '正在查可用版本…' : '用默认镜像'}
               onChange={() => {}}
               disabled
             />
@@ -841,7 +849,7 @@ function InstallTab({ templates, onDone }: { templates: DatabaseTemplate[]; onDo
               if (!engine) return
               setLoadingVersions(true)
               void window.kura!.databases
-                .versions(engine)
+                .versions(engine, mirror)
                 .then(setVersions)
                 .catch(() => {})
                 .finally(() => setLoadingVersions(false))
@@ -852,11 +860,23 @@ function InstallTab({ templates, onDone }: { templates: DatabaseTemplate[]; onDo
           </Button>
         </div>
 
-        {versions?.error ? (
+        {/* 版本列表的来源说清楚：用兜底列表时告诉用户为什么、以及怎么拿到完整列表 */}
+        {versions?.source === 'builtin' ? (
           <Banner
-            tone="neutral"
-            description={`查不到 Docker Hub 上的版本（${versions.error}），会用默认镜像 ${versions.defaultImage}。`}
+            tone="warning"
+            title="列的是内置的常用版本，不是实时的"
+            description={
+              <>
+                NAS 上的 kura-server 查不到 Docker Hub
+                {versions.error ? `（${versions.error}）` : ''}。下面这几个版本一定存在、装得起来，但可能不是最新的。
+                <br />
+                想看到完整列表：在「设置 → 数据库」里填一个镜像站点（如 <code>docker.1ms.run</code>）再回来点「重新查」。
+              </>
+            }
           />
+        ) : null}
+        {versions?.source === 'registry' ? (
+          <Banner tone="neutral" description={`版本列表来自你配的镜像站点（${mirror}）。`} />
         ) : null}
 
         {chosen ? (

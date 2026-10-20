@@ -496,9 +496,9 @@ export class DatabaseService {
     return this.client.install(engine, name, image)
   }
 
-  /** 某个引擎在 Docker Hub 上有哪些版本可装。 */
-  versions(engine: DbEngine) {
-    return this.client.versions(engine)
+  /** 某个引擎有哪些版本可装。registry 是可选的镜像站点。 */
+  versions(engine: DbEngine, registry?: string) {
+    return this.client.versions(engine, registry)
   }
 
   detail(name: string) {

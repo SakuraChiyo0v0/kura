@@ -304,7 +304,14 @@ export function createDbHandler(options: DbHandlerOptions): {
       if (method === 'GET' && head === 'versions') {
         const engineKind = url.searchParams.get('engine') ?? ''
         if (!templates[engineKind as DbEngine]) throw new DockerError(400, `不认识的引擎：${engineKind}`)
-        return json(res, 200, await listVersions(engineKind as DbEngine, { fetchImpl: options.fetchImpl }))
+        return json(
+          res,
+          200,
+          await listVersions(engineKind as DbEngine, {
+            fetchImpl: options.fetchImpl,
+            registry: url.searchParams.get('registry') ?? undefined,
+          }),
+        )
       }
 
       if (method === 'GET' && head === 'list') {

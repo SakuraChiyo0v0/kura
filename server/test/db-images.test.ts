@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DockerError } from '../src/docker/engine.js'
-import { assertImageName, isListable, listVersions, repositoryOf, splitTag } from '../src/db/images.js'
+import { assertImageName, builtinVersions, isListable, listVersions, normalizeRegistry, repositoryOf, splitTag } from '../src/db/images.js'
 import { templates } from '../src/db/templates.js'
 
 /**
@@ -92,11 +92,44 @@ describe('listVersions', () => {
       })),
     })
     expect(list.repository).toBe('redis')
-    // 8 在 7 前面（版本从新到旧）
-    expect(list.versions.map((v) => v.tag)).toEqual(['8-alpine', '7.2-alpine', '7-alpine', '7'])
+    // 8 在 7 前面（版本从新到旧）；7.2-alpine 被收进 7-alpine（同一主版本只留一个）
+    expect(list.versions.map((v) => v.tag)).toEqual(['8-alpine', '7-alpine', '7'])
     // latest 与三段版本被滤掉
     expect(list.versions.some((v) => v.tag === 'latest')).toBe(false)
     expect(list.versions.some((v) => v.version === '8.0.1')).toBe(false)
+  })
+
+  it('同一主版本的小版本被收成一个（否则下拉框被补丁版本刷满）', async () => {
+    // 真实形状：docker.1ms.run 上 PostgreSQL 列出来就是这一串
+    const list = await listVersions('postgres', {
+      fetchImpl: fakeFetch(() => ({
+        body: hubResponse([
+          { name: '17.11-alpine' },
+          { name: '17.11' },
+          { name: '17.11-bookworm' },
+          { name: '17.11-trixie' },
+          { name: '17.10-alpine' },
+          { name: '17.10' },
+          { name: '17.9-alpine' },
+          { name: '16.5-alpine' },
+        ]),
+      })),
+    })
+    // 17 只出一个 17-alpine / 17 / 17-bookworm / 17-trixie，不再有 17.11 / 17.10 / 17.9
+    const tags = list.versions.map((v) => v.tag)
+    expect(tags).not.toContain('17.11-alpine')
+    expect(tags).not.toContain('17.10-alpine')
+    expect(tags).toContain('17-alpine')
+    expect(tags).toContain('16-alpine')
+    // 每个 (主版本, 变体) 只出现一次
+    expect(new Set(tags).size).toBe(tags.length)
+  })
+
+  it('MySQL 的 8.4 不会被收成 8（那样镜像根本不存在）', async () => {
+    const list = await listVersions('mysql', {
+      fetchImpl: fakeFetch(() => ({ body: hubResponse([{ name: '8.4' }, { name: '8.0' }, { name: '5.7' }]) })),
+    })
+    expect(list.versions.map((v) => v.tag)).toEqual(['8.4', '8.0', '5.7'])
   })
 
   it('只留有 amd64 的那个大小（NAS 是 amd64）', async () => {
@@ -113,13 +146,15 @@ describe('listVersions', () => {
     expect(list.versions.map((v) => v.tag)).toEqual(['8.4', '8.0'])
   })
 
-  it('Docker Hub 挂了不抛错，回 error + 默认镜像（离线时不能把安装废掉）', async () => {
+  it('Docker Hub 挂了不抛错，回落到内置版本（离线时不能把安装废掉）', async () => {
     const list = await listVersions('postgres', {
       fetchImpl: fakeFetch(() => ({ status: 503, body: { message: 'unavailable' } })),
     })
-    expect(list.versions).toEqual([])
+    // 关键：**不是空列表** —— 用户仍然要能选一个版本装
+    expect(list.versions.length).toBeGreaterThan(0)
+    expect(list.source).toBe('builtin')
     expect(list.error).toContain('503')
-    // 关键：默认镜像还在，界面能回退
+    // 默认镜像还在，界面能回退
     expect(list.defaultImage).toBe(templates.postgres.image)
   })
 
@@ -199,5 +234,151 @@ describe('assertImageName：不能把任意字符串塞进 compose', () => {
   it('空 tag / 带空格的都拒', () => {
     expect(() => assertImageName('postgres', 'postgres:')).toThrow(DockerError)
     expect(() => assertImageName('postgres', '')).toThrow(DockerError)
+  })
+})
+
+/**
+ * 镜像站点通道（registry `/v2/tags/list`）。
+ *
+ * 这是给「NAS 连不上 hub.docker.com」的现实准备的：国内网络下 hub 的 web API 常常不通，
+ * 但镜像加速器代理的是 registry 接口。两者的响应形状**完全不同**，所以分成两个通道。
+ */
+describe('镜像站点：normalizeRegistry', () => {
+  it('只填域名时补 https', () => {
+    expect(normalizeRegistry('docker.1ms.run')).toBe('https://docker.1ms.run')
+  })
+
+  it('已经带了 scheme 就原样（去掉尾部斜杠）', () => {
+    expect(normalizeRegistry('https://docker.1ms.run/')).toBe('https://docker.1ms.run')
+    expect(normalizeRegistry('http://mirror.local:5000')).toBe('http://mirror.local:5000')
+  })
+
+  it('空 / 空白回空串（表示用官方）', () => {
+    expect(normalizeRegistry('')).toBe('')
+    expect(normalizeRegistry('   ')).toBe('')
+    expect(normalizeRegistry(undefined)).toBe('')
+  })
+})
+
+describe('内置兜底版本', () => {
+  it('每个引擎都有一份，且能拼成合法镜像名', () => {
+    for (const engine of ['postgres', 'mysql', 'mariadb', 'redis'] as const) {
+      const versions = builtinVersions(engine)
+      expect(versions.length).toBeGreaterThan(0)
+      for (const version of versions) {
+        expect(() => assertImageName(engine, `${repositoryOf(engine)}:${version.tag}`)).not.toThrow()
+      }
+    }
+  })
+
+  it('兜底列表也按版本从新到旧', () => {
+    const versions = builtinVersions('postgres')
+    const numbers = versions.map((v) => Number(v.version))
+    expect(numbers).toEqual([...numbers].sort((a, b) => b - a))
+  })
+})
+
+describe('listVersions：走镜像站点', () => {
+  /** 造一个只应答 registry 的假 fetch。 */
+  function registryFetch(handler: (url: string, headers: Record<string, string>) => { status: number; body?: unknown; headers?: Record<string, string> }): typeof fetch {
+    return (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      const headers = (init?.headers ?? {}) as Record<string, string>
+      const result = handler(url, headers)
+      return new Response(result.body === undefined ? '' : JSON.stringify(result.body), {
+        status: result.status,
+        headers: result.headers ?? { 'content-type': 'application/json' },
+      })
+    }) as typeof fetch
+  }
+
+  it('不需要认证的站点：直接给 tags', async () => {
+    const list = await listVersions('postgres', {
+      registry: 'docker.1ms.run',
+      fetchImpl: registryFetch((url) => {
+        if (url.includes('/v2/library/postgres/tags/list')) {
+          return { status: 200, body: { name: 'library/postgres', tags: ['17', '17-alpine', '16-alpine'] } }
+        }
+        return { status: 404 }
+      }),
+    })
+    expect(list.source).toBe('registry')
+    expect(list.versions.map((v) => v.tag)).toEqual(['17-alpine', '17', '16-alpine'])
+  })
+
+  it('要 Bearer 认证的站点：按 challenge 换 token 再查', async () => {
+    const seen: string[] = []
+    const list = await listVersions('postgres', {
+      registry: 'docker.m.daocloud.io',
+      fetchImpl: registryFetch((url, headers) => {
+        seen.push(url)
+        if (url.includes('/auth/token')) {
+          return { status: 200, body: { token: 'tok-123' } }
+        }
+        if (url.includes('/v2/library/postgres/tags/list')) {
+          if (headers.authorization !== 'Bearer tok-123') {
+            return {
+              status: 401,
+              headers: {
+                'content-type': 'application/json',
+                'www-authenticate': 'Bearer realm="https://m.daocloud.io/auth/token",service="docker.m.daocloud.io",scope="repository:library/postgres:pull"',
+              },
+              body: { errors: [{ code: 'UNAUTHORIZED' }] },
+            }
+          }
+          return { status: 200, body: { name: 'library/postgres', tags: ['17-alpine'] } }
+        }
+        return { status: 404 }
+      }),
+    })
+    expect(list.source).toBe('registry')
+    expect(list.versions.map((v) => v.tag)).toEqual(['17-alpine'])
+    // 确实按 challenge 去换了 token
+    expect(seen.some((u) => u.includes('/auth/token'))).toBe(true)
+    expect(seen.some((u) => u.includes('scope=repository%3Alibrary%2Fpostgres%3Apull'))).toBe(true)
+  })
+
+  it('站点禁掉 tags 列表时不当成「没有版本」，而是回退到内置列表', async () => {
+    // 实测 daocloud 就是回 {"name":"disable-list-tags","tags":[]}
+    const list = await listVersions('postgres', {
+      registry: 'docker.m.daocloud.io',
+      fetchImpl: registryFetch((url) => {
+        if (url.includes('/auth/token')) return { status: 200, body: { token: 't' } }
+        if (url.includes('/tags/list')) return { status: 200, body: { name: 'disable-list-tags', tags: [] } }
+        return { status: 404 }
+      }),
+    })
+    // 关键：不能是空列表 —— 那会让界面显示「没有版本可用」
+    expect(list.versions.length).toBeGreaterThan(0)
+    expect(list.source).toBe('builtin')
+    expect(list.error).toContain('不提供版本列表')
+  })
+
+  it('站点不通时继续试 Docker Hub，再不行用内置', async () => {
+    const list = await listVersions('redis', {
+      registry: 'dead.example',
+      fetchImpl: registryFetch((url) => {
+        if (url.includes('dead.example')) throw Object.assign(new TypeError('fetch failed'), {
+          cause: Object.assign(new Error('getaddrinfo ENOTFOUND dead.example'), { code: 'ENOTFOUND' }),
+        })
+        if (url.includes('hub.docker.com')) throw Object.assign(new TypeError('fetch failed'), {
+          cause: Object.assign(new Error('connect ECONNRESET'), { code: 'ECONNRESET' }),
+        })
+        return { status: 404 }
+      }),
+    })
+    expect(list.source).toBe('builtin')
+    expect(list.versions.length).toBeGreaterThan(0)
+    // 两条通道的失败原因都要报出来（排查时要知道是站点的问题还是 Hub 的问题）
+    expect(list.error).toContain('镜像站点')
+    expect(list.error).toContain('Docker Hub')
+  })
+
+  it('没配站点时直接走 Docker Hub（source=hub，带大小）', async () => {
+    const list = await listVersions('postgres', {
+      fetchImpl: fakeFetch(() => ({ body: hubResponse([{ name: '17-alpine', size: 250_000_000 }]) })),
+    })
+    expect(list.source).toBe('hub')
+    expect(list.versions[0]?.size).toBe(250_000_000)
   })
 })

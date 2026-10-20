@@ -18,6 +18,13 @@ export interface KuraSettings {
   mcpEnabled: boolean
   /** MCP 监听的回环端口 */
   mcpPort: number
+  /**
+   * 镜像站点（可选）。装了 Docker 加速器时填它的域名，如 `docker.1ms.run`。
+   *
+   * 只用来**查可装的版本列表**，不改变 docker 拉镜像的行为（那是 NAS 上 daemon.json 的事）。
+   * 留空就走 Docker Hub 官方；两条都不通时会退到内置的常用版本列表。
+   */
+  dbRegistryMirror: string
 }
 
 export const kuraSettingsDefaults: KuraSettings = {
@@ -29,4 +36,5 @@ export const kuraSettingsDefaults: KuraSettings = {
   lastSeenVersion: '',
   mcpEnabled: false,
   mcpPort: 18007,
+  dbRegistryMirror: '',
 }

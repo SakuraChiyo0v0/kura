@@ -78,9 +78,11 @@ export interface VersionList {
   repository: string
   /** 可选的版本，新的在前 */
   versions: ImageVersion[]
-  /** 查不到时回退用的默认镜像 */
+  /** 模板的默认镜像 */
   defaultImage: string
-  /** 查失败的原因；空的表示成功 */
+  /** 这批版本哪来的：镜像站点 / Docker Hub / 内置兜底 */
+  source: 'registry' | 'hub' | 'builtin'
+  /** 查失败的原因（用内置兜底时一定有） */
   error?: string
 }
 
@@ -179,9 +181,11 @@ export class DbClient {
     return this.json<InstallResult>('POST', '/api/db/create', { engine, name, ...(image ? { image } : {}) }, 300_000)
   }
 
-  /** 某个引擎在 Docker Hub 上有哪些版本可装（查不到不报错，回 error 字段）。 */
-  versions(engine: DbEngine): Promise<VersionList> {
-    return this.json<VersionList>('GET', `/api/db/versions?engine=${encodeURIComponent(engine)}`, undefined, 20_000)
+  /** 某个引擎有哪些版本可装。registry 是可选的镜像站点（国内网络通常只有这条路能通）。 */
+  versions(engine: DbEngine, registry?: string): Promise<VersionList> {
+    const query = new URLSearchParams({ engine })
+    if (registry) query.set('registry', registry)
+    return this.json<VersionList>('GET', `/api/db/versions?${query}`, undefined, 20_000)
   }
 
   detail(name: string): Promise<DatabaseView> {
