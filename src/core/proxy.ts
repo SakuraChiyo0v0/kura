@@ -183,6 +183,12 @@ export function createServiceProxy(svc: ProxyService, deps: ProxyDeps, stats?: S
         return
       }
 
+      // 「这一趟算不算成功」与 dav-server 同一口径：5xx 记失败，其余清掉上一次的失败。
+      // 不清的话，几分钟前那一次 DNS 抖动会一直挂在服务卡片上，看起来像服务还坏着；
+      // 而把 5xx 也当成功更糟 —— 上游真坏了，红字反而消失。
+      if (status >= 500) stats?.noteError(new Error(`上游 HTTP ${status}`))
+      else stats?.noteSuccess()
+
       const outHeaders: http.OutgoingHttpHeaders = {}
       for (const [name, value] of Object.entries(up.headers)) {
         if (value === undefined || hopByHop.has(name)) continue
@@ -279,6 +285,8 @@ export function createServiceProxy(svc: ProxyService, deps: ProxyDeps, stats?: S
     })
 
     upstream.on('upgrade', (up, upSocket: net.Socket | tls.TLSSocket, upHead) => {
+      // 101 拿到了，链路是通的
+      stats?.noteSuccess()
       const lines = [`HTTP/1.1 ${up.statusCode} ${up.statusMessage ?? 'Switching Protocols'}`]
       for (let i = 0; i < up.rawHeaders.length; i += 2) lines.push(`${up.rawHeaders[i]}: ${up.rawHeaders[i + 1]}`)
       socket.write(lines.join('\r\n') + '\r\n\r\n')
@@ -295,7 +303,10 @@ export function createServiceProxy(svc: ProxyService, deps: ProxyDeps, stats?: S
     // 上游没升级（返回了普通响应）：照实转给调用方
     upstream.on('response', (up) => {
       const status = up.statusCode ?? 502
-      if (isAuthRedirect(status, String(up.headers.location ?? ''))) deps.sessions.invalidate(route.sessionPort)
+      const authRedirect = isAuthRedirect(status, String(up.headers.location ?? ''))
+      if (authRedirect) deps.sessions.invalidate(route.sessionPort)
+      // 拒了升级但回了正常响应（比如 400），链路本身是通的；认证跳转不算
+      if (!authRedirect) stats?.noteSuccess()
       socket.write(`HTTP/1.1 ${status} ${up.statusMessage ?? ''}\r\nconnection: close\r\n\r\n`)
       up.pipe(socket)
     })

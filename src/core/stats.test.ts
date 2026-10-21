@@ -33,3 +33,30 @@ describe('ServiceStats 趋势', () => {
     expect(stats.requests).toBe(1) // 累计不受窗口影响
   })
 })
+
+describe('ServiceStats 的 lastError', () => {
+  it('成功一次就清掉「最近一次失败」—— 链路恢复了不该还挂着旧错误', () => {
+    const stats = new ServiceStats()
+    stats.noteError(new Error('getaddrinfo ENOTFOUND app-8898-x.cn30.ugdocker.link'))
+    expect(stats.lastError).toContain('ENOTFOUND')
+    stats.noteSuccess()
+    expect(stats.lastError).toBe('')
+  })
+
+  it('清 lastError 但不动 errors 计数 —— 一共失败过几次是统计，不能篡改', () => {
+    const stats = new ServiceStats()
+    stats.noteError(new Error('a'))
+    stats.noteError(new Error('b'))
+    stats.noteSuccess()
+    expect(stats.lastError).toBe('')
+    expect(stats.errors).toBe(2)
+    expect(stats.snapshot().errors).toBe(2)
+  })
+
+  it('本来就没错误时 noteSuccess 不做任何事', () => {
+    const stats = new ServiceStats()
+    stats.noteSuccess()
+    expect(stats.lastError).toBe('')
+    expect(stats.snapshot().lastError).toBe('')
+  })
+})

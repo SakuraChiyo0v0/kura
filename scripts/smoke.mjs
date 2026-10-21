@@ -30,6 +30,8 @@ const rsaToken = Buffer.from(publicKey.export({ type: 'spki', format: 'pem' }).t
 let token = 0
 // 冒烟里要断言「某个接口被打了几次」（例如保存时有没有重复查 ID）
 const counters = { lookups: 0, terminalResize: 0, terminalResizeCols: 0, terminalPaste: '' }
+/** 置 1 时假 NAS 对所有应用请求回 500（模拟「上游坏了」），冒烟验「恢复后错误提示会消失」用 */
+let upstreamFail = 0
 let slowServicesMs = 0
 // 假 NAS 上的应用：像真网关那样按 X-Nas-Service 分流到不同的「容器」
 //   webdav      → 内存里的 WebDAV（形态照 rclone serve webdav：href 绝对路径、Destination 带 host 要匹配）
@@ -512,6 +514,16 @@ const appServer = http.createServer(async (req, res) => {
   for await (const c of req) chunks.push(c)
   const body = Buffer.concat(chunks)
   const service = req.headers['x-nas-service']
+  // 可控的上游 5xx：验「链路恢复后卡片上那句『最近一次失败』会消失」要用。
+  // 不是真网络故障 —— 真 DNS 抖动在冒烟里没法稳定复现。
+  if (service && req.url.startsWith('/__smoke/fail')) {
+    upstreamFail = req.url.includes('off') ? 0 : 1
+    return res.end('ok')
+  }
+  if (service && upstreamFail && !req.url.startsWith('/__smoke/')) {
+    res.statusCode = 500
+    return res.end('upstream says no')
+  }
   if (service === 'webdav') return handleDav(req, res, body)
   // nas-console 端点模拟 **kura-server**（不是独立 nas-console）：不做认证，认不认 cookie 都回 200 ——
   // 终端不需要凭据这一点才测得出来。

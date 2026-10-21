@@ -241,6 +241,43 @@ describe('反代：流量统计', () => {
     expect((await get(url + '/')).status).toBe(502)
     expect(stats.errors).toBe(1)
   })
+
+  it('失败之后再成功一次，卡片上那句「最近一次失败」就消失', async () => {
+    // 自己搭一遍（front() 把 route 烘在闭包里，改不了）：先用连不上的上游制造失败，再换成能用的。
+    // 同一个 stats 实例贯穿两次请求 —— 要验的正是「同一次失败记录会不会被后来的成功清掉」。
+    const sessions = new SessionManager({
+      ugreen: new UgreenClient({ base: fake.url, username: 'u', password: 'p' }),
+      ttlMs: 60 * 60_000,
+    })
+    const stats = new ServiceStats()
+    const route: Route = { upstream: 'http://127.0.0.1:1', host: '', gatewayService: '', sessionPort: 5244 }
+    const svc: ProxyService = { port: 5244, label: '文件' }
+    const proxy = createServiceProxy(svc, { sessions, router: { route: () => route } }, stats)
+    const server = http.createServer(proxy.request)
+    server.on('upgrade', proxy.upgrade)
+    const addr = await listen(server)
+
+    expect((await get(`http://${addr}/`)).status).toBe(502)
+    expect(stats.lastError).toContain('ECONNREFUSED')
+
+    // 上游恢复
+    route.upstream = await upstreamServer((_req, res) => res.end('ok'))
+    expect((await get(`http://${addr}/`)).status).toBe(200)
+    expect(stats.lastError).toBe('')
+    // 累计失败次数不动：清的是「最近一次」那句话，不是统计
+    expect(stats.errors).toBe(1)
+  })
+
+  it('上游回 5xx 不算成功：红字不能消失', async () => {
+    // 把 5xx 也当成功的话，上游真坏着的时候卡片反而一片正常 —— 比不清还糟
+    const up = await upstreamServer((_req, res) => {
+      res.statusCode = 503
+      res.end('nope')
+    })
+    const { url, stats } = await front(up)
+    expect((await get(url + '/')).status).toBe(503)
+    expect(stats.lastError).toContain('503')
+  })
 })
 
 describe('反代：WebSocket', () => {

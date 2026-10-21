@@ -54,6 +54,18 @@ export class ServiceStats {
     this.current().errors += 1
   }
 
+  /**
+   * 一次请求顺利走完。**只清 lastError，不动 errors 计数。**
+   *
+   * 不清的话那句「最近一次失败：…」会一直挂在服务卡片上，即使后面几千个请求全都成功 ——
+   * 用户看到红字会以为服务还是坏的。而「最近一次失败」本来就该是最近一次，不是历史上任意一次。
+   *
+   * 累计的 errors 保留：它是「一共失败过多少次」，清掉等于篡改统计。
+   */
+  noteSuccess(): void {
+    if (this.lastError) this.lastError = ''
+  }
+
   private current(): TrendPoint {
     this.advance()
     return this.buckets[this.buckets.length - 1]!

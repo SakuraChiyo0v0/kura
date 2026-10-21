@@ -228,7 +228,10 @@ export async function handleDavRequest(req: http.IncomingMessage, res: http.Serv
       if (value === undefined || hopByHop.has(name)) continue
       outHeaders[name] = value
     }
+    // 5xx 记一次失败，其余都算这一趟通了 —— 两个分支互斥，不会既清又记。
+    // 清的是「最近一次失败」那句话：链路恢复后不该还挂着几分钟前那次的错误。
     if (status >= 500) noteError(new Error(`上游 HTTP ${status}`))
+    else stats?.noteSuccess()
 
     if (method === 'PROPFIND' && status === 207) {
       const chunks: Buffer[] = []

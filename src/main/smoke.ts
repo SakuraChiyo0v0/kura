@@ -299,6 +299,24 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     await delay(3_500) // 等一轮快照刷新，卡片上的请求数跟上
     await shot('v0.1-服务映射.png')
 
+    // ⑤b 「最近一次失败」是**最近一次**，不是历史上任意一次。
+    // 以前 stats.lastError 只写不清：链路恢复后那句红字会一直挂在卡片上，看起来像服务还坏着
+    // （实测触发场景是 DNS 抖一下 getaddrinfo ENOTFOUND，之后一切正常但红字不动）。
+    //
+    // 走 webdav 那张卡：它经网关，proxy 会带 x-nas-service 头，假 NAS 才认得出是哪个服务、回 500。
+    const webdavPort = Number(process.env.SMOKE_PORT_WEBDAV)
+    const webdavCard = `document.querySelector('[data-service="webdav"] .kura-card__error')?.textContent ?? ''`
+    await httpGet(`http://127.0.0.1:${webdavPort}/__smoke/fail?on=1`).catch(() => {})
+    await httpGet(`http://127.0.0.1:${webdavPort}/`).catch(() => {})
+    const sawError = await waitFor(`(${webdavCard}).includes('最近一次失败')`, 10_000)
+    check('上游出错后卡片显示「最近一次失败」', sawError, `卡片=${JSON.stringify(await js<string>(webdavCard))}`)
+
+    await httpGet(`http://127.0.0.1:${webdavPort}/__smoke/fail?off=1`).catch(() => {})
+    // 成功一次就该把那句话清掉；界面 3 秒轮询一次流量数字
+    await httpGet(`http://127.0.0.1:${webdavPort}/`).catch(() => {})
+    const cleared = await waitFor(`!(${webdavCard}).includes('最近一次失败')`, 10_000)
+    check('链路恢复后「最近一次失败」消失', cleared, `卡片=${JSON.stringify(await js<string>(webdavCard))}`)
+
     // ⑥ 关掉 openlist：端口真的释放
     await js(`document.querySelector('[data-service="openlist"] [role="switch"]')?.click()`)
     const off = await waitFor(`document.querySelector('[data-service="openlist"]')?.innerText.includes('已关闭')`)
