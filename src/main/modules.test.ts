@@ -179,10 +179,10 @@ describe('ModuleManager', () => {
     const cleared: string[] = []
     const m = manager({ clearNetworkHistory: async (v) => (cleared.push(v), '') })
     await m.detect()
-    m.saveMountSettings({ ...mountDefaults, mode: 'network', volumeName: 'DXP4800GT' })
+    m.saveMountSettings({ ...mountDefaults, mode: 'network', volumeName: 'NAS-SHARE' })
     await m.mount()
     await m.unmount()
-    expect(cleared).toEqual(['DXP4800GT'])
+    expect(cleared).toEqual(['NAS-SHARE'])
     expect(m.status().mount).toMatchObject({ state: 'stopped', error: '' })
   })
 
@@ -190,12 +190,12 @@ describe('ModuleManager', () => {
     installFake()
     const m = manager({ clearNetworkHistory: async () => 'reg delete 失败' })
     await m.detect()
-    m.saveMountSettings({ ...mountDefaults, mode: 'network', volumeName: 'DXP4800GT' })
+    m.saveMountSettings({ ...mountDefaults, mode: 'network', volumeName: 'NAS-SHARE' })
     await m.mount()
     await m.unmount()
     // 卸载本身是成功的（dist 已断开），但残留这事必须说出来
     expect(m.status().mount.state).toBe('stopped')
-    expect(m.status().mount.error).toContain('DXP4800GT')
+    expect(m.status().mount.error).toContain('NAS-SHARE')
     expect(m.status().mount.error).toContain('残留')
   })
 
@@ -217,7 +217,7 @@ describe('ModuleManager', () => {
       sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
     }
     try {
-      const failed = await clearNetworkHistory('DXP4800GT', 600, registry)
+      const failed = await clearNetworkHistory('NAS-SHARE', 600, registry)
       // 等窗口彻底过去再断言：旧逻辑此刻已经 return 了，而键会在这之后才被写出来
       await new Promise((r) => setTimeout(r, 300))
       expect(failed, '守满窗口后应当删掉，返回成功').toBe('')

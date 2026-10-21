@@ -112,7 +112,7 @@ invalid argument "v1.75.2" for "--version" flag: strconv.ParseBool: parsing "v1.
 
 ## 真机部署（2026-10-14 当天做完）
 
-在真 NAS（UGREEN DXP4800GT，Docker 29.6.2 / Compose v5.1.3）上并行起了 **8898**，旧的
+在真 NAS（UGREEN <型号>，Docker 29.6.2 / Compose v5.1.3）上并行起了网关端口，旧的
 sso-gateway（8897）、nas-console（8890）**一个都没停**。部署在 `/volume1/docker/kura-server/`
 （700 root:root，`.env` 600），两个容器 `kura-server` / `kura-shell` 均 healthy。
 
@@ -153,12 +153,12 @@ compose 里那行 `/var/run/docker.sock` 是**注释着的**（可选）。没�
 - ~~node-pty / musl 二进制能否在 UGOS 内核跑~~ → **通过**。`docker exec kura-shell node -e 'require("node-pty")'` OK；
   终端真开起来了（见下）。
 - ~~绿联中继是否支持 WebSocket~~ → **支持，实测通过**。这是本项目悬了几轮的未知项，现在有结论：
-  - **对照**（nas-console 8890 经中继，`wss://app-8890-….ugdocker.link/api/tty?token=nsc_…`）：
+  - **对照**（nas-console 8890 经中继，`wss://app-<端口>-<设备>.<节点>.ugdocker.link/api/tty?token=nsc_…`）：
     291ms 升级成功，PTY 回显正常。
   - **kura-server**（8898 经中继，先 `/api/firstfactor` 换会话，再带 `x-nas-service: nas-console`
     升 `/api/tty`）：745ms 升级成功，收到 PTY 回显 `KURA_WS_OK_42`（真宿主 shell，resize 也发了）。
   - **结论：外网下终端可用**，不降级。
-- **`pid: host` + `nsenter` 在 node:24-alpine 上** → **通过**。宿主 `DXP4800GT-114A`、root、内核 6.18.15，
+- **`pid: host` + `nsenter` 在 node:24-alpine 上** → **通过**。宿主 `<机型>-<序列>`、root、内核 6.18.15，
   看得到 447 个宿主进程。
 - **还没做的**：客户端切到 8898 的**逐项验收**（映射、文件、本机 WebDAV、终端 UI 全流程）。
   上面都是服务端直连验证，UI 层还没走过。
