@@ -137,21 +137,41 @@ function ServiceCard({ view, refresh }: { view: ServiceView; refresh: () => Prom
         </a>
       )}
 
+      {/* 上排是近一天（和概览同一口径），下排才是装机以来的累计 —— 两排数字不同，
+          不写清楚会让人以为其中一个是错的 */}
       <dl className="kura-card__stats">
         <div>
-          <dt>请求</dt>
+          <dt>近一天请求</dt>
+          <dd>{view.stats.recent.requests}</dd>
+        </div>
+        <div>
+          <dt>近一天失败</dt>
+          <dd data-bad={view.stats.recent.errors > 0}>{view.stats.recent.errors}</dd>
+        </div>
+        <div>
+          <dt>↑ 近一天</dt>
+          <dd>{humanBytes(view.stats.recent.bytesUp)}</dd>
+        </div>
+        <div>
+          <dt>↓ 近一天</dt>
+          <dd>{humanBytes(view.stats.recent.bytesDown)}</dd>
+        </div>
+      </dl>
+      <dl className="kura-card__stats kura-card__stats--total">
+        <div>
+          <dt>累计请求</dt>
           <dd>{view.stats.requests}</dd>
         </div>
         <div>
-          <dt>失败</dt>
+          <dt>累计失败</dt>
           <dd data-bad={view.stats.errors > 0}>{view.stats.errors}</dd>
         </div>
         <div>
-          <dt>↑ 上行</dt>
+          <dt>↑ 累计</dt>
           <dd>{humanBytes(view.stats.bytesUp)}</dd>
         </div>
         <div>
-          <dt>↓ 下行</dt>
+          <dt>↓ 累计</dt>
           <dd>{humanBytes(view.stats.bytesDown)}</dd>
         </div>
       </dl>

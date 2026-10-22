@@ -19,10 +19,18 @@ export function OverviewView({ snapshot, onOpenMirror }: { snapshot: MirrorSnaps
   const states = snapshot.services.map(serviceState)
   const running = states.filter((s) => s.tone === 'success').length
   const problems = states.filter((s) => s.tone === 'danger' || s.tone === 'warning').length
-  const requests = snapshot.services.reduce((sum, s) => sum + s.stats.requests, 0)
-  const errors = snapshot.services.reduce((sum, s) => sum + s.stats.errors, 0)
-  const up = snapshot.services.reduce((sum, s) => sum + s.stats.bytesUp, 0)
-  const down = snapshot.services.reduce((sum, s) => sum + s.stats.bytesDown, 0)
+  // 概览读**近一天**（最近 24 个小时格），不是装机以来的累计：
+  // 累计数只增不减，涨到几 GB 之后再看就不动了，看不出「现在忙不忙」。
+  const recent = snapshot.services.reduce(
+    (sum, s) => ({
+      requests: sum.requests + s.stats.recent.requests,
+      errors: sum.errors + s.stats.recent.errors,
+      bytesUp: sum.bytesUp + s.stats.recent.bytesUp,
+      bytesDown: sum.bytesDown + s.stats.recent.bytesDown,
+    }),
+    { requests: 0, errors: 0, bytesUp: 0, bytesDown: 0 },
+  )
+  const { requests, errors } = recent
 
   const lan =
     snapshot.lanHost === ''
@@ -70,12 +78,17 @@ export function OverviewView({ snapshot, onOpenMirror }: { snapshot: MirrorSnaps
           trend={problems ? { label: `${problems} 个异常`, direction: 'down', tone: 'danger' } : undefined}
         />
         <StatCard
-          label="请求"
+          label="近一天请求"
           icon={<ArrowDownUp {...icon} />}
           value={requests}
           description={errors ? `失败 ${errors}` : '没有失败'}
         />
-        <StatCard label="流量" value={humanBytes(down)} unit="下行" description={`上行 ${humanBytes(up)}`} />
+        <StatCard
+          label="近一天流量"
+          value={humanBytes(recent.bytesDown)}
+          unit="下行"
+          description={`上行 ${humanBytes(recent.bytesUp)}`}
+        />
       </div>
 
       <Section

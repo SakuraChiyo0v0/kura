@@ -7,6 +7,7 @@ import { silentLogger, type Logger } from './log.js'
 import { createServiceProxy } from './proxy.js'
 import { SessionManager, noGateway, type AuthStatus } from './session.js'
 import { ServiceStats, type StatsSnapshot } from './stats.js'
+import { StatsStore } from './stats-store.js'
 import { ServiceOverrideStore, readJson, writeJsonAtomic } from './store.js'
 import { UgreenClient, appBase } from './ugreen.js'
 import { Watchdog, type ProbeResult } from './watchdog.js'
@@ -99,6 +100,8 @@ export interface MirrorOptions {
   discoverIntervalMs?: number
   /** watchdog 间隔，0 关闭 */
   probeIntervalMs?: number
+  /** 流量统计的落盘间隔，默认见 StatsStore（测试里调小） */
+  statsFlushMs?: number
   discover?: boolean
 }
 
@@ -152,6 +155,7 @@ export class Mirror {
   private readonly log: Logger
   private readonly watchdog: Watchdog
   private readonly overrides: ServiceOverrideStore
+  private readonly statsStore: StatsStore
   private readonly cacheFile: string
   private readonly options: MirrorOptions
   private readonly byKey = new Map<string, Mounted>()
@@ -212,6 +216,7 @@ export class Mirror {
       : noGateway
     this.watchdog = new Watchdog({ log: this.log })
     this.overrides = new ServiceOverrideStore(join(options.dataDir, 'services.json'))
+    this.statsStore = new StatsStore(join(options.dataDir, 'stats.json'), { log: this.log, flushMs: options.statsFlushMs })
     this.cacheFile = join(options.dataDir, 'discovered.json')
   }
 
@@ -234,7 +239,9 @@ export class Mirror {
     const taken = this.byPort.get(localPort)
     if (taken) throw new Error(`本机端口 ${localPort} 已被 ${taken.spec.label} 占用`)
 
-    const stats = new ServiceStats()
+    // 统计接着上次的算：重启（尤其是升级自更新）不该让「一共多少流量」归零
+    const stats = new ServiceStats({ saved: this.statsStore.get(key) })
+    this.statsStore.track(key, stats)
     const proxy = createServiceProxy(
       { port: spec.port, service: spec.service, label: spec.label, headers: spec.headers },
       { sessions: this.sessions, router: this.router, log: this.log },
@@ -266,6 +273,7 @@ export class Mirror {
   async start(): Promise<void> {
     if (this.running) return
     this.running = true
+    this.statsStore.start()
 
     for (const spec of this.options.localServices ?? []) {
       try {
@@ -309,12 +317,18 @@ export class Mirror {
   }
 
   async stop(): Promise<void> {
-    if (!this.running) return
+    if (!this.running) {
+      // 没 start 过也可能已经有统计（启动失败前、或只跑了一轮同步），停表时同样要兜一次
+      this.statsStore.stop()
+      return
+    }
     this.running = false
     for (const stop of this.stops) stop()
     this.stops = []
     await Promise.all([...this.byKey.values()].flatMap((m) => [m.listener.close(), m.internal?.close()]))
     for (const m of this.byKey.values()) m.internal = undefined
+    // 最后再兜一次统计：监听都关了，不会再有新的字节进来
+    this.statsStore.stop()
   }
 
   /**

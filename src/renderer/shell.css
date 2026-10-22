@@ -501,6 +501,18 @@ body {
   color: var(--sk-danger-text);
 }
 
+/* 第二排（累计）：两排数字不一样，视觉上也要分开一档，不然会以为是同一个值的不同写法 */
+.kura-card__stats--total {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--sk-line);
+}
+
+.kura-card__stats--total dd {
+  font-weight: 500;
+  color: var(--sk-muted);
+}
+
 .kura-spark {
   max-width: 100%;
   height: auto;

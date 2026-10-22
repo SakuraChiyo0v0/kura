@@ -297,6 +297,18 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     const viaMirror = await httpGet(`http://127.0.0.1:${portA}/`)
     check('本机端口转发到 NAS 应用', viaMirror.status === 200 && viaMirror.body.includes('fake openlist'), `${viaMirror.status} ${viaMirror.body.slice(0, 80)}`)
     await delay(3_500) // 等一轮快照刷新，卡片上的请求数跟上
+    // 统计分两排：近一天（和概览同口径）与累计。两排都得有数字 —— 只验「有 <dl>」看不出
+    // 累计那段是不是被写成了和近一天一样的值，而那正是最容易出错的地方。
+    const cardRows = await js<string>(
+      `JSON.stringify([...document.querySelectorAll('[data-service] .kura-card__stats')].map(dl => dl.className + '|' + dl.innerText.replace(/\\s+/g, ' ')))`,
+    )
+    check(
+      '服务卡片有「近一天」与「累计」两排数字',
+      await js<boolean>(
+        `[...document.querySelectorAll('[data-service]')].every(c => c.querySelectorAll('.kura-card__stats').length === 2 && c.querySelector('.kura-card__stats--total') !== null)`,
+      ),
+      cardRows,
+    )
     await shot('v0.1-服务映射.png')
 
     // ⑤b 「最近一次失败」是**最近一次**，不是历史上任意一次。
@@ -342,6 +354,17 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     )
     const addrFontKinds = new Set(addrFonts)
     check('概览页服务地址：可点的与失败的是同一套排版', addrFonts.length > 0 && addrFontKinds.size === 1, `行数=${addrFonts.length} 排版种类=${addrFontKinds.size} ${JSON.stringify([...addrFontKinds])}`)
+
+    // ⑦a 概览的请求 / 流量卡读的是「近一天」，不是装机以来的累计。
+    // 刚才那一串请求都发生在同一个小时格内，两个数字此刻相等 —— 所以这里查的是**标签**：
+    // 标签还写着「请求」「流量」就说明界面没换到新口径，而数字本身分不出对错。
+    // StatCard 的标题没有专门的 class，但它被写进了 section 的 aria-label
+    const statLabels = await js<string[]>(`[...document.querySelectorAll('.kura-stats .sk-stat-card')].map(n => n.getAttribute('aria-label') ?? '')`)
+    check(
+      '概览的请求 / 流量卡标明是「近一天」',
+      statLabels.includes('近一天请求') && statLabels.includes('近一天流量'),
+      JSON.stringify(statLabels),
+    )
     await delay(500)
     await shot('v0.1-概览.png')
 

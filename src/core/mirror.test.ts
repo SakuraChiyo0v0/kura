@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { HttpRequester } from './http.js'
 import { request as realRequest } from './http.js'
 import { Mirror, discoveryGroup, type ConnectionConfig } from './mirror.js'
+import type { ServiceStats } from './stats.js'
 import { FakeUgreen } from './testing/fake-ugreen.js'
 
 /**
@@ -296,5 +297,44 @@ describe('Mirror：端到端', () => {
     const m = newMirror()
     await m.syncNow()
     expect(m.snapshot().services[0]!.externalUrl).toBe(`https://app-${port}-dev-1.cn30.ugdocker.link`)
+  })
+})
+
+describe('Mirror：流量统计落盘', () => {
+  it('重启后累计数还在，不是每次都从 0 开始', async () => {
+    const port = await freePort()
+    fake.servicesBody = JSON.stringify({ services: [{ name: 'navidrome', container_port: port }] })
+    const first = newMirror()
+    await first.syncNow()
+    // 直接给统计灌数字：这里验的是落盘与读回，不是反代
+    const st = (first as unknown as { byKey: Map<string, { stats: ServiceStats }> }).byKey.get('navidrome')!.stats
+    st.noteRequest()
+    st.noteRequest()
+    st.bytesDown = 4096
+    await first.stop() // stop 里兜一次写盘
+
+    const again = newMirror()
+    await again.syncNow()
+    expect(again.snapshot().services[0]!.stats).toMatchObject({ requests: 2, bytesDown: 4096 })
+    // 本次启动又走了一个请求：累计变成 3，近一天也是 3
+    const stats2 = (again as unknown as { byKey: Map<string, { stats: ServiceStats }> }).byKey.get('navidrome')!.stats
+    stats2.noteRequest()
+    expect(again.snapshot().services[0]!.stats).toMatchObject({ requests: 3 })
+    expect(again.snapshot().services[0]!.stats.recent.requests).toBe(3)
+  })
+
+  it('改本机端口不会把统计弄丢（键按 NAS 端口 / 服务名，不按本机端口）', async () => {
+    const [nasPort, other] = [await freePort(), await freePort()]
+    fake.servicesBody = JSON.stringify({ services: [{ name: 'svc', container_port: nasPort }] })
+    const m = newMirror()
+    await m.syncNow()
+    const st = (m as unknown as { byKey: Map<string, { stats: ServiceStats }> }).byKey.get('svc')!.stats
+    st.bytesDown = 2048
+    await m.setServicePort('svc', other)
+    await m.stop()
+
+    const again = newMirror()
+    await again.syncNow()
+    expect(again.snapshot().services[0]!.stats.bytesDown).toBe(2048)
   })
 })
