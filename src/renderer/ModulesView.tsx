@@ -283,18 +283,32 @@ export function ModulesView() {
             />
             {/* 缓存上限只有开着缓存时才有意义；0 = 不限 */}
             {settings.cacheMode !== 'off' ? (
-              <TextField
-                label="缓存上限（GB，0 = 不限）"
-                value={String(settings.cacheMaxGb)}
-                disabled={mounted}
-                inputMode="numeric"
-                onChange={(e) => {
-                  const n = Number(e.target.value)
-                  if (!Number.isInteger(n) || n < 0) return
-                  setSettings({ ...settings, cacheMaxGb: n })
-                }}
-                onBlur={() => saveSettings(settings)}
-              />
+              <>
+                <TextField
+                  label="缓存上限（GB，0 = 不限）"
+                  value={String(settings.cacheMaxGb)}
+                  disabled={mounted}
+                  inputMode="numeric"
+                  onChange={(e) => {
+                    const n = Number(e.target.value)
+                    if (!Number.isInteger(n) || n < 0) return
+                    setSettings({ ...settings, cacheMaxGb: n })
+                  }}
+                  onBlur={() => saveSettings(settings)}
+                />
+                <TextField
+                  label="缓存保留（小时，0 = 永不）"
+                  value={String(settings.cacheMaxAgeHours)}
+                  disabled={mounted}
+                  inputMode="numeric"
+                  onChange={(e) => {
+                    const n = Number(e.target.value)
+                    if (!Number.isInteger(n) || n < 0) return
+                    setSettings({ ...settings, cacheMaxAgeHours: n })
+                  }}
+                  onBlur={() => saveSettings(settings)}
+                />
+              </>
             ) : null}
           </div>
 

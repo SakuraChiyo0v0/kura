@@ -304,6 +304,8 @@ export interface MountSettingsView {
   cacheMode: 'off' | 'minimal' | 'writes' | 'full'
   /** 缓存上限（GB）；0 = 不限制。超了由 rclone 淘汰最久没用的 */
   cacheMaxGb: number
+  /** 缓存保留多久（小时，按上次访问算）；0 = 永不过期 */
+  cacheMaxAgeHours: number
 }
 
 export interface AppInfo {

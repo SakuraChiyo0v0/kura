@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { clampCacheMaxGb, ModuleManager, clearNetworkHistory, mountArgs, mountDefaults, mountTarget, rcloneRelease, validateDrive, validateFolder } from './modules.js'
+import { cacheMaxAgeHoursRange, clampCacheMaxAgeHours, clampCacheMaxGb, foreverCacheAge, ModuleManager, clearNetworkHistory, mountArgs, mountDefaults, mountTarget, rcloneRelease, validateDrive, validateFolder } from './modules.js'
 
 describe('rclone 挂载参数', () => {
   it('连接串形态、盘符、缓存目录、只读', () => {
@@ -40,9 +40,30 @@ describe('rclone 挂载参数', () => {
     expect(clampCacheMaxGb(20.7)).toBe(20)
   })
 
-  it('不设 max-age —— 按时间过期会让听过的歌重新从 NAS 拉', () => {
-    const args = mountArgs(mountDefaults, 'http://127.0.0.1:18006/', 'C:\cache')
+  it('保留时长显式传给 rclone（不传会用它的默认 1 小时）', () => {
+    const args = mountArgs({ ...mountDefaults, cacheMaxAgeHours: 720 }, 'http://127.0.0.1:18006/', 'C:\cache')
+    expect(args[args.indexOf('--vfs-cache-max-age') + 1]).toBe('720h')
+  })
+
+  it('选「永不」时传 10 年，不传 0（实测 0 与 0h 都会立刻淘汰）', () => {
+    const args = mountArgs({ ...mountDefaults, cacheMaxAgeHours: 0 }, 'http://127.0.0.1:18006/', 'C:\cache')
+    const value = args[args.indexOf('--vfs-cache-max-age') + 1]
+    expect(value).toBe(foreverCacheAge)
+    // 这个断言是那次实测的结论：0 / 0h 在 rclone 里等于「立刻过期」
+    expect(value).not.toBe('0h')
+    expect(value).not.toBe('0')
+  })
+
+  it('缓存关掉时不给 max-age', () => {
+    const args = mountArgs({ ...mountDefaults, cacheMode: 'off' }, 'http://127.0.0.1:18006/', 'C:\cache')
     expect(args).not.toContain('--vfs-cache-max-age')
+  })
+
+  it('保留时长的脏值也钳回来', () => {
+    expect(clampCacheMaxAgeHours(-1)).toBe(0)
+    expect(clampCacheMaxAgeHours(999999)).toBe(cacheMaxAgeHoursRange.max)
+    expect(clampCacheMaxAgeHours('x')).toBe(mountDefaults.cacheMaxAgeHours)
+    expect(clampCacheMaxAgeHours(72.9)).toBe(72)
   })
 
   it('只有网络模式加 --network-mode；固定磁盘与目录挂载都不加', () => {

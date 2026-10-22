@@ -792,6 +792,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
           autoMount: { type: 'boolean', description: '开机自动挂载' },
           cacheMode: { type: 'string', enum: ['off', 'minimal', 'writes', 'full'] },
           cacheMaxGb: { type: 'number', description: '缓存上限（GB），0 = 不限制。不填保持当前值' },
+          cacheMaxAgeHours: { type: 'number', description: '缓存保留时长（小时，按上次访问算），0 = 永不过期。不填保持当前值' },
         },
         ['mode', 'drive', 'folder', 'volumeName', 'readOnly', 'autoMount', 'cacheMode'],
       ),
@@ -808,6 +809,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
             ? (args.cacheMode as MountSettingsView['cacheMode'])
             : current.cacheMode,
           cacheMaxGb: typeof args.cacheMaxGb === 'number' ? args.cacheMaxGb : current.cacheMaxGb,
+          cacheMaxAgeHours: typeof args.cacheMaxAgeHours === 'number' ? args.cacheMaxAgeHours : current.cacheMaxAgeHours,
         }
         return deps.modules.saveMountSettings(settings)
       },

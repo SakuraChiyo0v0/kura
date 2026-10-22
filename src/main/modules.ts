@@ -72,7 +72,26 @@ export interface MountSettings {
    * 超了由 rclone 自己淘汰最久没用的 —— 我们不用写清理逻辑。
    */
   cacheMaxGb: number
+  /**
+   * 缓存保留多久（小时，**按上次访问算**）。0 = 永不过期。
+   *
+   * **必须显式传给 rclone**：它的 `--vfs-cache-max-age` 默认是 1 小时，
+   * 不传就等于悄悄按 1 小时淘汰 —— 一首歌今天听过、下周再听就得重新从 NAS 拉。
+   *
+   * **0 不能直接传给 rclone**（实测：`0` 与 `0h` 都会立刻淘汰缓存文件，
+   * 因为它算的是「距上次访问已超过 0 小时」，恒为真）。选「永不」时传下面那个
+   * foreverCacheAge，效果等同。
+   */
+  cacheMaxAgeHours: number
 }
+
+/**
+ * 「永不淘汰」实际传给 rclone 的值（10 年）。
+ *
+ * rclone 没有「关闭按时间淘汰」的开关 —— 实测 `0` 与 `0h` 都会**立刻**淘汰
+ * （判断是「距上次访问 > 0 小时」，恒真）。所以用一个大到没意义的时长代替。
+ */
+export const foreverCacheAge = '87600h'
 
 export const mountDefaults: MountSettings = {
   mode: 'disk',
@@ -83,15 +102,26 @@ export const mountDefaults: MountSettings = {
   autoMount: false,
   cacheMode: 'writes',
   cacheMaxGb: 20,
+  // 默认永不过期：容量上限已经管住了磁盘占用，再按时间淘汰只会让缓存白白失效重下
+  cacheMaxAgeHours: 0,
 }
 
 /** 缓存上限允许的取值范围（0 = 不限；太大等于没限，太小会频繁失效重下）。 */
 export const cacheMaxGbRange = { min: 0, max: 1024 } as const
 
+/** 缓存保留时长的取值范围（小时；0 = 永不）。上限一年，再长和「永不」没区别了。 */
+export const cacheMaxAgeHoursRange = { min: 0, max: 8760 } as const
+
 /** 把用户填的缓存上限钳到合法范围（非数字、负数、超大值都收敛）。 */
 export function clampCacheMaxGb(value: unknown): number {
   const n = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : mountDefaults.cacheMaxGb
   return Math.max(cacheMaxGbRange.min, Math.min(n, cacheMaxGbRange.max))
+}
+
+/** 把用户填的保留时长钳到合法范围（小时）。 */
+export function clampCacheMaxAgeHours(value: unknown): number {
+  const n = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : mountDefaults.cacheMaxAgeHours
+  return Math.max(cacheMaxAgeHoursRange.min, Math.min(n, cacheMaxAgeHoursRange.max))
 }
 
 export interface MountStatus {
@@ -207,10 +237,15 @@ export function mountArgs(settings: MountSettings, davUrl: string, cacheDir: str
     cacheDir,
     // 缓存上限：`full` 档连读过的文件也留，没有上限的话缓存目录只增不减。
     // 超了由 rclone 自己淘汰最久没用的（不需要我们写清理逻辑）。
-    // 只设容量、不设 max-age —— 按时间过期会让「上周听过、这周还想听」的歌重新从 NAS 拉。
     // 0 = 用户明确选了「不限制」。只在缓存开着时给这个参数（off 档给了也没意义）。
     ...(settings.cacheMode !== 'off' && settings.cacheMaxGb > 0
       ? ['--vfs-cache-max-size', `${settings.cacheMaxGb}G`]
+      : []),
+    // 保留时长**必须显式给**：rclone 的默认是 1 小时（按上次访问算），
+    // 不传就等于悄悄按 1 小时淘汰 —— 上周听过的歌这周再听要重新从 NAS 拉。
+    // 选「永不」时传 foreverCacheAge 而不是 0（0 会被 rclone 理解成「立刻过期」，实测过）。
+    ...(settings.cacheMode !== 'off'
+      ? ['--vfs-cache-max-age', settings.cacheMaxAgeHours > 0 ? `${settings.cacheMaxAgeHours}h` : foreverCacheAge]
       : []),
     // 资源管理器会频繁列目录，目录缓存短一点：NAS 上别处改了文件能较快看到
     '--dir-cache-time',
@@ -369,6 +404,7 @@ export class ModuleManager {
       ...stored,
       // 老配置文件没有这个字段（用默认值）；手改成了负数/超大值也在这里收回来
       cacheMaxGb: clampCacheMaxGb(stored?.cacheMaxGb ?? mountDefaults.cacheMaxGb),
+      cacheMaxAgeHours: clampCacheMaxAgeHours(stored?.cacheMaxAgeHours ?? mountDefaults.cacheMaxAgeHours),
     }
     this.clearHistory = options.clearNetworkHistory ?? clearNetworkHistory
     this.probeMountPoint = options.probeMountPoint ?? mountPointReady
@@ -451,6 +487,7 @@ export class ModuleManager {
       autoMount: Boolean(next.autoMount),
       cacheMode: (['off', 'minimal', 'writes', 'full'] as const).includes(next.cacheMode) ? next.cacheMode : 'writes',
       cacheMaxGb: clampCacheMaxGb(next.cacheMaxGb),
+      cacheMaxAgeHours: clampCacheMaxAgeHours(next.cacheMaxAgeHours),
     }
     writeJsonAtomic(this.settingsFile, clean)
     this.settings = clean
