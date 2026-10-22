@@ -38,9 +38,15 @@ RUN node server/build.mjs
 FROM node:24-alpine
 # rclone 要用 `-L` 跟随符号链接；kura-shell 要 nsenter / bash 进宿主
 # docker-cli + compose：容器管理执行 `docker compose`（经挂进来的 docker.sock）。
-# 版本固定，和 NAS 宿主上的 Engine 29.6 / Compose v5.1 对得上（2026-10-15 实测：alpine 3.24 给的是 29.8.2 / 5.1.4）。
-# 基础镜像升了 alpine 大版本、这两个版本号没了就会构建失败 —— 那正是要的：换版本前先对一下宿主。
-RUN apk add --no-cache ca-certificates tzdata bash util-linux docker-cli=29.8.2-r0 docker-cli-compose=5.1.4-r1
+# 锁到**上游版本**、不锁打包修订号：`~29.8` 而不是 `=29.8.2-r0`。
+#
+# 踩过的坑：原来钉死在 `=29.8.2-r0` / `=5.1.4-r1`，2026-10-22 起构建全挂 —— 不是上游升了版本，
+# 是 Alpine 只把修订号从 r0→r1、r1→r2 重打了一次包。钉修订号等于每重打一次包就得改一次 Dockerfile，
+# 而这种失败报的是 "unable to select packages"，看着像版本对不上，实际版本一模一样。
+#
+# `~` 只放宽最后一段修订号，上游版本变了照样失败 —— 那正是要的：Engine 变了得先对一下宿主
+# （2026-10-15 实测 alpine 3.24 给 29.8.2 / 5.1.4，宿主 Engine 29.x / Compose v5.1）。
+RUN apk add --no-cache ca-certificates tzdata bash util-linux docker-cli~29.8 docker-cli-compose~5.1
 COPY --from=rclone /usr/local/bin/rclone /usr/local/bin/rclone
 # WORKDIR 必须在 COPY 之前：不然 node_modules 会落到 /node_modules，node 找不到（模块解析从 /app 往上找）
 WORKDIR /app
