@@ -309,6 +309,23 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
       ),
       cardRows,
     )
+    // 统计库是真在用的 SQLite 文件，不是静默退回「不落盘」：
+    // 路径写错、node:sqlite 在打包产物里 require 不到，界面看起来都完全正常，只有这里是破的。
+    // 落盘是节流的，等一轮再查。
+    const statsFile = join(ctx.userData, 'mirror', 'stats.db')
+    const statsDb = await (async () => {
+      const deadline = Date.now() + 25_000
+      while (Date.now() < deadline) {
+        try {
+          if (readFileSync(statsFile).subarray(0, 15).toString() === 'SQLite format 3') return 'ok'
+        } catch {
+          // 还没写
+        }
+        await delay(1_000)
+      }
+      return '没有 stats.db'
+    })()
+    check('流量统计落进 SQLite 文件', statsDb === 'ok', `${statsFile} → ${statsDb}`)
     await shot('v0.1-服务映射.png')
 
     // ⑤b 「最近一次失败」是**最近一次**，不是历史上任意一次。

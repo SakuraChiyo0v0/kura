@@ -7,7 +7,7 @@ import { silentLogger, type Logger } from './log.js'
 import { createServiceProxy } from './proxy.js'
 import { SessionManager, noGateway, type AuthStatus } from './session.js'
 import { ServiceStats, type StatsSnapshot } from './stats.js'
-import { StatsStore } from './stats-store.js'
+import { NullStatsStore, StatsStore, type StatsSink } from './stats-store.js'
 import { ServiceOverrideStore, readJson, writeJsonAtomic } from './store.js'
 import { UgreenClient, appBase } from './ugreen.js'
 import { Watchdog, type ProbeResult } from './watchdog.js'
@@ -155,7 +155,7 @@ export class Mirror {
   private readonly log: Logger
   private readonly watchdog: Watchdog
   private readonly overrides: ServiceOverrideStore
-  private readonly statsStore: StatsStore
+  private readonly statsStore: StatsSink
   private readonly cacheFile: string
   private readonly options: MirrorOptions
   private readonly byKey = new Map<string, Mounted>()
@@ -216,8 +216,21 @@ export class Mirror {
       : noGateway
     this.watchdog = new Watchdog({ log: this.log })
     this.overrides = new ServiceOverrideStore(join(options.dataDir, 'services.json'))
-    this.statsStore = new StatsStore(join(options.dataDir, 'stats.json'), { log: this.log, flushMs: options.statsFlushMs })
+    this.statsStore = this.openStatsStore(options)
     this.cacheFile = join(options.dataDir, 'discovered.json')
+  }
+
+  /**
+   * 打开流量库。**打不开不能让整个映射起不来** —— 统计是附加信息，先把服务跑起来再说。
+   * 失败时退回一个不落盘的替身，界面上数字照常按本次启动算，只是重启后归零。
+   */
+  private openStatsStore(options: MirrorOptions): StatsSink {
+    try {
+      return new StatsStore(join(options.dataDir, 'stats.db'), { log: this.log, flushMs: options.statsFlushMs })
+    } catch (error) {
+      this.log.warn('流量统计库打不开，本次统计不落盘', { err: errorMessage(error) })
+      return new NullStatsStore()
+    }
   }
 
   private keyOf(spec: ServiceSpec): string {

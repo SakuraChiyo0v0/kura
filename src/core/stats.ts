@@ -133,6 +133,8 @@ export class ServiceStats {
   private down = 0
   private buckets: TrendPoint[] = []
   private hourly: HourlyPoint[]
+  /** 自上次落盘以来动过的小时格（按 at）。落盘只写这几个，不整份重写。 */
+  private readonly touched = new Set<number>()
   private readonly bucketMs: number
   private readonly now: () => number
 
@@ -158,7 +160,11 @@ export class ServiceStats {
     if (delta === 0) return
     this.up = value
     // 只把「多出来的量」记进当前小时格；倒退（没人这么用）只改总数
-    if (delta > 0) this.currentHour().bytesUp += delta
+    if (delta > 0) {
+      const hour = this.currentHour()
+      hour.bytesUp += delta
+      this.touched.add(hour.at)
+    }
     this.revision += 1
   }
 
@@ -171,14 +177,20 @@ export class ServiceStats {
     const delta = value - this.down
     if (delta === 0) return
     this.down = value
-    if (delta > 0) this.currentHour().bytesDown += delta
+    if (delta > 0) {
+      const hour = this.currentHour()
+      hour.bytesDown += delta
+      this.touched.add(hour.at)
+    }
     this.revision += 1
   }
 
   noteRequest(): void {
     this.requests += 1
     this.current().requests += 1
-    this.currentHour().requests += 1
+    const hour = this.currentHour()
+    hour.requests += 1
+    this.touched.add(hour.at)
     this.revision += 1
   }
 
@@ -186,7 +198,9 @@ export class ServiceStats {
     this.errors += 1
     this.lastError = error instanceof Error ? error.message : String(error)
     this.current().errors += 1
-    this.currentHour().errors += 1
+    const hour = this.currentHour()
+    hour.errors += 1
+    this.touched.add(hour.at)
     this.revision += 1
   }
 
@@ -245,7 +259,13 @@ export class ServiceStats {
     }
   }
 
-  /** 落盘用：先把小时格推到当前，写出去的才是最新的一份。 */
+  /**
+   * 落盘用：`hours` **只含自上次落盘以来动过的那几格**。
+   *
+   * 小时格一共就 48 个，但每个请求都在改当前那一格。整份重写等于每分钟往库里灌
+   * 几十行一模一样的数据；只写动过的，稳态下每次就一行。
+   * 写的是**绝对值**（不是增量），所以同一个格子重复写也是幂等的。
+   */
   toSaved(): SavedStats {
     this.currentHour()
     return {
@@ -254,8 +274,13 @@ export class ServiceStats {
       errors: this.errors,
       bytesUp: this.up,
       bytesDown: this.down,
-      hours: this.hourly.map((point) => ({ ...point })),
+      hours: this.hourly.filter((point) => this.touched.has(point.at)).map((point) => ({ ...point })),
     }
+  }
+
+  /** 这一批确实落盘了：清掉脏标记，下一批从零开始数。写失败时**不能**调这个。 */
+  markSaved(): void {
+    this.touched.clear()
   }
 }
 

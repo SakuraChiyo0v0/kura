@@ -88,7 +88,6 @@ describe('ServiceStats 的小时格与「近一天」', () => {
     clock = (hourBuckets + 5) * hourMs
     expect(stats.recent()).toEqual({ requests: 0, errors: 0, bytesUp: 0, bytesDown: 0 })
     expect(stats.bytesDown).toBe(777)
-    expect(stats.toSaved().hours).toHaveLength(hourBuckets)
   })
 
   it('字节设成同一个值不重复记账（setter 按增量算）', () => {
@@ -147,6 +146,18 @@ describe('ServiceStats 落盘与读回', () => {
     const point = { at, requests: 3, errors: 0, bytesUp: 1, bytesDown: 2 }
     const stats = new ServiceStats({ now: () => at, saved: { requests: 0, errors: 0, bytesUp: 0, bytesDown: 0, hours: [point, point] } })
     expect(stats.recent().requests).toBe(3)
+  })
+
+  it('toSaved 只给动过的格子；markSaved 之后这一批清空', () => {
+    // 落盘按这批格子写库，所以契约必须是「动过的」而不是「全部」：
+    // 给全部的话每个小时都会把 48 行原样重写一遍。
+    const stats = new ServiceStats({ now: () => 0 })
+    stats.noteRequest()
+    expect(stats.toSaved().hours.map((h) => h.at)).toEqual([0])
+    stats.markSaved()
+    expect(stats.toSaved().hours).toEqual([]) // 没有新变化，没什么可写的
+    stats.bytesDown = 10
+    expect(stats.toSaved().hours.map((h) => h.at)).toEqual([0])
   })
 
   it('revision 只在会落盘的字段变化时才加 —— lastError 不落盘', () => {

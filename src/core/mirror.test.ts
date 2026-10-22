@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
 import type { AddressInfo } from 'node:net'
@@ -321,6 +321,22 @@ describe('Mirror：流量统计落盘', () => {
     stats2.noteRequest()
     expect(again.snapshot().services[0]!.stats).toMatchObject({ requests: 3 })
     expect(again.snapshot().services[0]!.stats.recent.requests).toBe(3)
+  })
+
+  it('统计库坏了也让映射照常起来，只是数字不落盘', async () => {
+    // 库文件不是 SQLite（被别的东西占了路径、或磁盘上就是坏的）：
+    // 统计是附加信息，不能因为它把整个映射拖垮。
+    writeFileSync(join(dataDir, 'stats.db'), 'definitely not a database')
+    const port = await freePort()
+    fake.servicesBody = JSON.stringify({ services: [{ name: 'svc', container_port: port }] })
+    const m = newMirror()
+    expect(await m.syncNow()).toBe(1)
+    expect(m.snapshot().services[0]!.listener.running).toBe(true)
+    // 照样能计数（按本次启动算）
+    const st = (m as unknown as { byKey: Map<string, { stats: ServiceStats }> }).byKey.get('svc')!.stats
+    st.noteRequest()
+    expect(m.snapshot().services[0]!.stats.requests).toBe(1)
+    await m.stop()
   })
 
   it('改本机端口不会把统计弄丢（键按 NAS 端口 / 服务名，不按本机端口）', async () => {
