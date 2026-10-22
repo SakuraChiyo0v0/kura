@@ -65,6 +65,13 @@ export interface MountSettings {
   autoMount: boolean
   /** VFS 缓存模式：writes 能让 Office 之类程序正常保存，off 最省磁盘 */
   cacheMode: 'off' | 'minimal' | 'writes' | 'full'
+  /**
+   * 缓存占用的上限（GB）。0 = 不限制。
+   *
+   * `full` 档会连读过的文件都留在本机，没有上限的话缓存目录只增不减。
+   * 超了由 rclone 自己淘汰最久没用的 —— 我们不用写清理逻辑。
+   */
+  cacheMaxGb: number
 }
 
 export const mountDefaults: MountSettings = {
@@ -75,6 +82,16 @@ export const mountDefaults: MountSettings = {
   readOnly: false,
   autoMount: false,
   cacheMode: 'writes',
+  cacheMaxGb: 20,
+}
+
+/** 缓存上限允许的取值范围（0 = 不限；太大等于没限，太小会频繁失效重下）。 */
+export const cacheMaxGbRange = { min: 0, max: 1024 } as const
+
+/** 把用户填的缓存上限钳到合法范围（非数字、负数、超大值都收敛）。 */
+export function clampCacheMaxGb(value: unknown): number {
+  const n = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : mountDefaults.cacheMaxGb
+  return Math.max(cacheMaxGbRange.min, Math.min(n, cacheMaxGbRange.max))
 }
 
 export interface MountStatus {
@@ -191,8 +208,10 @@ export function mountArgs(settings: MountSettings, davUrl: string, cacheDir: str
     // 缓存上限：`full` 档连读过的文件也留，没有上限的话缓存目录只增不减。
     // 超了由 rclone 自己淘汰最久没用的（不需要我们写清理逻辑）。
     // 只设容量、不设 max-age —— 按时间过期会让「上周听过、这周还想听」的歌重新从 NAS 拉。
-    '--vfs-cache-max-size',
-    '20G',
+    // 0 = 用户明确选了「不限制」。只在缓存开着时给这个参数（off 档给了也没意义）。
+    ...(settings.cacheMode !== 'off' && settings.cacheMaxGb > 0
+      ? ['--vfs-cache-max-size', `${settings.cacheMaxGb}G`]
+      : []),
     // 资源管理器会频繁列目录，目录缓存短一点：NAS 上别处改了文件能较快看到
     '--dir-cache-time',
     '30s',
@@ -344,7 +363,13 @@ export class ModuleManager {
   constructor(private readonly options: ModuleManagerOptions) {
     this.log = options.log ?? silentLogger
     this.settingsFile = join(options.dir, 'mount.json')
-    this.settings = { ...mountDefaults, ...readJson<Partial<MountSettings>>(this.settingsFile) }
+    const stored = readJson<Partial<MountSettings>>(this.settingsFile)
+    this.settings = {
+      ...mountDefaults,
+      ...stored,
+      // 老配置文件没有这个字段（用默认值）；手改成了负数/超大值也在这里收回来
+      cacheMaxGb: clampCacheMaxGb(stored?.cacheMaxGb ?? mountDefaults.cacheMaxGb),
+    }
     this.clearHistory = options.clearNetworkHistory ?? clearNetworkHistory
     this.probeMountPoint = options.probeMountPoint ?? mountPointReady
   }
@@ -425,6 +450,7 @@ export class ModuleManager {
       readOnly: Boolean(next.readOnly),
       autoMount: Boolean(next.autoMount),
       cacheMode: (['off', 'minimal', 'writes', 'full'] as const).includes(next.cacheMode) ? next.cacheMode : 'writes',
+      cacheMaxGb: clampCacheMaxGb(next.cacheMaxGb),
     }
     writeJsonAtomic(this.settingsFile, clean)
     this.settings = clean

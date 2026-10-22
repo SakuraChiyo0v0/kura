@@ -1022,8 +1022,8 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     await shot('v0.7-数据库-安装.png')
 
     // ⑦e v0.3 模块页：能显示依赖检测结果（不在冒烟里真去下载 rclone）
-    await nav('模块')
-    check('模块页', await waitFor(`document.querySelector('[data-testid="module-rclone"] .kura-req') !== null`))
+    await nav('挂载')
+    check('挂载页', await waitFor(`document.querySelector('[data-testid="module-rclone"] .kura-req') !== null`))
     // 挂载形态三选一：切到「挂到文件夹」应换成父目录输入，且不再显示盘符/卷名
     const seg = `[data-testid="module-rclone"] .sk-segmented`
     const segReady = await waitFor(`document.querySelectorAll('${seg} input[type="radio"]').length === 3`)

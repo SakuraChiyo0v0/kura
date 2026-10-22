@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { ModuleManager, clearNetworkHistory, mountArgs, mountDefaults, mountTarget, rcloneRelease, validateDrive, validateFolder } from './modules.js'
+import { clampCacheMaxGb, ModuleManager, clearNetworkHistory, mountArgs, mountDefaults, mountTarget, rcloneRelease, validateDrive, validateFolder } from './modules.js'
 
 describe('rclone 挂载参数', () => {
   it('连接串形态、盘符、缓存目录、只读', () => {
@@ -15,9 +15,29 @@ describe('rclone 挂载参数', () => {
     expect(args[args.indexOf('--vfs-cache-mode') + 1]).toBe('writes')
   })
 
-  it('缓存有容量上限（full 档连读过的都留，没上限就只增不减）', () => {
-    const args = mountArgs(mountDefaults, 'http://127.0.0.1:18006/', 'C:\cache')
+  it('缓存有容量上限，且用用户填的值（full 档连读过的都留，没上限就只增不减）', () => {
+    const args = mountArgs({ ...mountDefaults, cacheMaxGb: 20 }, 'http://127.0.0.1:18006/', 'C:\cache')
     expect(args[args.indexOf('--vfs-cache-max-size') + 1]).toBe('20G')
+    const custom = mountArgs({ ...mountDefaults, cacheMaxGb: 50 }, 'http://127.0.0.1:18006/', 'C:\cache')
+    expect(custom[custom.indexOf('--vfs-cache-max-size') + 1]).toBe('50G')
+  })
+
+  it('上限填 0 = 不限制：不给 --vfs-cache-max-size', () => {
+    const args = mountArgs({ ...mountDefaults, cacheMaxGb: 0 }, 'http://127.0.0.1:18006/', 'C:\cache')
+    expect(args).not.toContain('--vfs-cache-max-size')
+  })
+
+  it('缓存关掉时不带上限参数（给了也没意义）', () => {
+    const args = mountArgs({ ...mountDefaults, cacheMode: 'off', cacheMaxGb: 20 }, 'http://127.0.0.1:18006/', 'C:\cache')
+    expect(args).not.toContain('--vfs-cache-max-size')
+  })
+
+  it('脏值被钳回来：负数 → 0、超大 → 1024、非数字 → 默认', () => {
+    expect(clampCacheMaxGb(-5)).toBe(0)
+    expect(clampCacheMaxGb(99999)).toBe(1024)
+    expect(clampCacheMaxGb('abc')).toBe(mountDefaults.cacheMaxGb)
+    expect(clampCacheMaxGb(undefined)).toBe(mountDefaults.cacheMaxGb)
+    expect(clampCacheMaxGb(20.7)).toBe(20)
   })
 
   it('不设 max-age —— 按时间过期会让听过的歌重新从 NAS 拉', () => {

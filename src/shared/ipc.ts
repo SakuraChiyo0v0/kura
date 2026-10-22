@@ -302,6 +302,8 @@ export interface MountSettingsView {
   readOnly: boolean
   autoMount: boolean
   cacheMode: 'off' | 'minimal' | 'writes' | 'full'
+  /** 缓存上限（GB）；0 = 不限制。超了由 rclone 淘汰最久没用的 */
+  cacheMaxGb: number
 }
 
 export interface AppInfo {

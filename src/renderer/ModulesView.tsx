@@ -281,6 +281,21 @@ export function ModulesView() {
               disabled={mounted}
               onValueChange={(v) => saveSettings({ ...settings, cacheMode: v as MountSettingsView['cacheMode'] })}
             />
+            {/* 缓存上限只有开着缓存时才有意义；0 = 不限 */}
+            {settings.cacheMode !== 'off' ? (
+              <TextField
+                label="缓存上限（GB，0 = 不限）"
+                value={String(settings.cacheMaxGb)}
+                disabled={mounted}
+                inputMode="numeric"
+                onChange={(e) => {
+                  const n = Number(e.target.value)
+                  if (!Number.isInteger(n) || n < 0) return
+                  setSettings({ ...settings, cacheMaxGb: n })
+                }}
+                onBlur={() => saveSettings(settings)}
+              />
+            ) : null}
           </div>
 
           <div className="kura-module__switches">

@@ -60,9 +60,9 @@ export const pages: readonly PageDef[] = [
   },
   {
     id: 'modules',
-    label: '模块',
+    label: '挂载',
     icon: <Blocks {...iconProps} />,
-    summary: '按需安装的进阶功能，例如把 NAS 挂载为本机磁盘（rclone）',
+    summary: '把 NAS 挂载为本机磁盘或文件夹（rclone），可见范围、缓存与只读都在这里配',
     plannedIn: 'v0.3',
   },
   {

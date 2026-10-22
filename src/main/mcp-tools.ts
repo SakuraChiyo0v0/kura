@@ -791,6 +791,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
           readOnly: { type: 'boolean' },
           autoMount: { type: 'boolean', description: '开机自动挂载' },
           cacheMode: { type: 'string', enum: ['off', 'minimal', 'writes', 'full'] },
+          cacheMaxGb: { type: 'number', description: '缓存上限（GB），0 = 不限制。不填保持当前值' },
         },
         ['mode', 'drive', 'folder', 'volumeName', 'readOnly', 'autoMount', 'cacheMode'],
       ),
@@ -806,6 +807,7 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
           cacheMode: (['off', 'minimal', 'writes', 'full'] as const).includes(args.cacheMode as MountSettingsView['cacheMode'])
             ? (args.cacheMode as MountSettingsView['cacheMode'])
             : current.cacheMode,
+          cacheMaxGb: typeof args.cacheMaxGb === 'number' ? args.cacheMaxGb : current.cacheMaxGb,
         }
         return deps.modules.saveMountSettings(settings)
       },
