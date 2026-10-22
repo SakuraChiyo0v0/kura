@@ -7,6 +7,7 @@ import type { DavSettingsView, MountSettingsView, NasScopeView } from '../shared
 import type { McpTool, McpAnnotations } from '../core/mcp.js'
 import type { ContainerService, DatabaseService, FileService, LocalDavService, NasScopeService } from './features.js'
 import type { ModuleManager } from './modules.js'
+import type { CacheDoctorService } from './cache-doctor-service.js'
 
 /**
  * MCP 工具表：AI 客户端能做的每一件事。
@@ -27,6 +28,7 @@ export interface McpToolDeps {
   nasScope: NasScopeService
   localDav: LocalDavService
   modules: ModuleManager
+  cacheDoctor: CacheDoctorService
   databases: DatabaseService
   /** 当前连接（没配置 / 没起来时返回 undefined） */
   mirror: () => Mirror | undefined
@@ -833,6 +835,26 @@ export function createMcpTools(deps: McpToolDeps): McpTool[] {
         await deps.modules.unmount()
         return deps.modules.status().mount
       },
+    },
+    {
+      name: 'kura_cache_scan',
+      title: '挂载缓存体检',
+      description:
+        '核对本机挂载缓存和 NAS 上是否一致。**rclone 只按文件大小判断缓存有没有过期**，所以「原地改标签」这类不改变大小的修改它发现不了 —— 用户的挂载盘上会一直显示旧内容，刷新重启都没用。' +
+        '这里按内容重新核对，分出三类：内容一致、只改了标签（补文件头即可，几十 KB）、音频也变了（得整份重下）。另外找出 NAS 上已不存在的孤儿缓存。只读，不改任何文件。',
+      inputSchema: object({}),
+      annotations: ro,
+      handler: async () => deps.cacheDoctor.scan(),
+    },
+    {
+      name: 'kura_cache_repair',
+      title: '修挂载缓存',
+      description:
+        '按 kura_cache_scan 的结果修：只改标签的只补文件头，音频变了的整份重下，孤儿缓存删掉（删前已确认 NAS 上确实没有）。' +
+        '**会改本机缓存文件**，建议先调 kura_cache_scan 看一遍数字。需要先扫过。',
+      inputSchema: object({}),
+      annotations: destructive,
+      handler: async () => deps.cacheDoctor.repair(),
     },
   ]
 }

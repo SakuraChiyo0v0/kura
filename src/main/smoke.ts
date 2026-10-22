@@ -1064,6 +1064,17 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     // ⑦e v0.3 模块页：能显示依赖检测结果（不在冒烟里真去下载 rclone）
     await nav('挂载')
     check('挂载页', await waitFor(`document.querySelector('[data-testid="module-rclone"] .kura-req') !== null`))
+    // 缓存体检卡片：rclone 只按大小判缓存失效，所以这块要真的在页面上、能看懂在说什么。
+    // 不真的跑扫描 —— 冒烟没有真缓存目录，扫了也是空结果，证明不了判定逻辑（那由单测覆盖）。
+    check('缓存体检卡片在挂载页', await waitFor(`document.querySelector('[data-testid="cache-doctor"]') !== null`))
+    check(
+      '缓存体检说清了「只按大小判断」这件事',
+      await waitFor(`document.querySelector('[data-testid="cache-doctor"]')?.innerText.includes('文件大小')`),
+    )
+    check(
+      '缓存体检有「开始体检」按钮',
+      await waitFor(`document.querySelector('[data-testid="cache-doctor"]')?.innerText.includes('开始体检')`),
+    )
     // 挂载形态三选一：切到「挂到文件夹」应换成父目录输入，且不再显示盘符/卷名
     const seg = `[data-testid="module-rclone"] .sk-segmented`
     const segReady = await waitFor(`document.querySelectorAll('${seg} input[type="radio"]').length === 3`)

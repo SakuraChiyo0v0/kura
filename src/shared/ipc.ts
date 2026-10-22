@@ -117,6 +117,13 @@ export const kuraChannels = {
   modulesUnmount: 'kura:modules:unmount',
   modulesOpenDrive: 'kura:modules:open-drive',
   modulesPickFolder: 'kura:modules:pick-folder',
+  // ---- 挂载缓存体检 ----
+  cacheDoctorScan: 'kura:cache-doctor:scan',
+  cacheDoctorRepair: 'kura:cache-doctor:repair',
+  cacheDoctorSettings: 'kura:cache-doctor:settings',
+  cacheDoctorSave: 'kura:cache-doctor:save',
+  cacheDoctorState: 'kura:cache-doctor:state',
+  cacheDoctorProgress: 'kura:cache-doctor:progress',
   // ---- 容器管理 ----
   dockerAvailable: 'kura:docker:available',
   dockerOverview: 'kura:docker:overview',
@@ -306,6 +313,46 @@ export interface MountSettingsView {
   cacheMaxGb: number
   /** 缓存保留多久（小时，按上次访问算）；0 = 永不过期 */
   cacheMaxAgeHours: number
+}
+
+// ---- 挂载缓存体检 ----
+
+/** 一条体检发现。kind 决定修起来的代价：tag 只补文件头，audio 要整份重下。 */
+export interface CacheIssueView {
+  name: string
+  size: number
+  kind: 'tag' | 'audio'
+  reason: string
+}
+
+export interface CacheScanView {
+  /** 什么时候扫的（毫秒）；0 = 从没扫过 */
+  scannedAt: number
+  /** 缓存里一共多少条目 */
+  total: number
+  intact: number
+  stale: CacheIssueView[]
+  orphans: { name: string; size: number }[]
+  skipped: number
+  bytes: { total: number; stale: number; orphans: number; needDownload: number; fullRedownload: number }
+}
+
+export interface CacheDoctorSettingsView {
+  /** 挂载成功后自动扫一次 */
+  scanOnMount: boolean
+  /** 已挂载时每隔多少小时扫一次；0 = 关掉 */
+  intervalHours: number
+}
+
+export interface CacheDoctorStateView {
+  settings: CacheDoctorSettingsView
+  /** 最近一次扫描结果；没扫过时 scannedAt 为 0、各项为 0 */
+  last: CacheScanView
+  /** 正在跑什么：'' = 空闲 */
+  busy: '' | 'scan' | 'repair'
+  progress: { done: number; total: number; phase: string }
+  /** 上次修复的结果摘要；没修过为 null */
+  lastRepair: { retagged: number; redownloaded: number; removed: number; failed: number; downloaded: number; at: number } | null
 }
 
 export interface AppInfo {
@@ -548,6 +595,21 @@ export interface KuraBridge {
     openDrive(): Promise<void>
     /** 选一个目录作为 folder 模式的挂载点父目录；取消返回 '' */
     pickFolder(): Promise<string>
+  }
+  /**
+   * 挂载缓存体检：找出本机缓存和 NAS 上不一致的文件。
+   *
+   * rclone 只按大小判失效，所以「原地改标签」这类等字节长度的改动它发现不了，
+   * 挂载盘上就一直是旧内容。这里按内容重新核对，并尽量只补文件头。
+   */
+  cacheDoctor: {
+    state(): Promise<CacheDoctorStateView>
+    settings(): Promise<CacheDoctorSettingsView>
+    save(settings: CacheDoctorSettingsView): Promise<CacheDoctorSettingsView>
+    scan(): Promise<CacheDoctorStateView>
+    repair(): Promise<CacheDoctorStateView>
+    /** 扫描/修复的进度推送 */
+    onProgress(listener: (progress: { done: number; total: number; phase: string }) => void): () => void
   }
   /** 给 AI 客户端连的 MCP 服务器。开关与端口同时存在设置里（mcpEnabled / mcpPort），这里是运行状态与令牌。 */
   mcp: {

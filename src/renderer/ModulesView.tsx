@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { CheckCircle2, CircleAlert, Download, ExternalLink, FolderOpen, FolderTree, HardDrive, HardDriveDownload, Network, RefreshCw } from 'lucide-react'
 import { Button, ConfirmDialog, EmptyState, FluidSegmented, ProgressBar, SelectField, StatusBadge, SwitchField, TextField, useToast } from '@sakura-ui/react'
 import { folderLeaf, folderTarget } from '../shared/mount.js'
-import type { ModulesStatusView, MountSettingsView } from '../shared/ipc.js'
+import type { CacheDoctorSettingsView, CacheDoctorStateView, ModulesStatusView, MountSettingsView } from '../shared/ipc.js'
 
 const icon = { size: 16, strokeWidth: 1.7, 'aria-hidden': true } as const
 
@@ -389,6 +389,207 @@ export function ModulesView() {
           </details>
         )}
       </article>
+
+      <CacheDoctorCard enabled={settings.cacheMode !== 'off'} />
     </div>
   )
+}
+
+/**
+ * 缓存体检卡片。
+ *
+ * 为什么需要它：rclone 判断缓存有没有过期**只比文件大小**。给音乐改个标签
+ * （`年轮` → `花海`，都是 6 字节 UTF-8）文件大小纹丝不动，挂载盘上就一直是旧标签，
+ * 刷新重启都没用 —— 用户没法自己看出这里有问题，所以得有个地方把话说清楚。
+ */
+function CacheDoctorCard({ enabled }: { enabled: boolean }) {
+  const toast = useToast()
+  const [state, setState] = useState<CacheDoctorStateView | null>(null)
+  const [settingsDraft, setSettingsDraft] = useState<CacheDoctorSettingsView | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [confirmRepair, setConfirmRepair] = useState(false)
+
+  useEffect(() => {
+    void window.kura?.cacheDoctor
+      .state()
+      .then((next) => {
+        setState(next)
+        setSettingsDraft(next.settings)
+      })
+      .catch(() => {
+        // 拿不到就当没扫过，不阻塞挂载页其它内容
+      })
+  }, [])
+
+  // 进度用推送，不轮询 —— 扫描可能跑几分钟，轮询会一直压着界面
+  useEffect(() => {
+    return window.kura?.cacheDoctor.onProgress((progress) => {
+      setState((prev) => (prev ? { ...prev, progress } : prev))
+    })
+  }, [])
+
+  const scan = async () => {
+    setBusy(true)
+    try {
+      setState(await window.kura!.cacheDoctor.scan())
+    } catch (caught) {
+      toast.notify({ title: '体检失败', description: (caught as Error).message, tone: 'error', duration: 0 })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const repair = async () => {
+    setConfirmRepair(false)
+    setBusy(true)
+    try {
+      const next = await window.kura!.cacheDoctor.repair()
+      setState(next)
+      const fixed = next.lastRepair
+      toast.notify({
+        title: '修好了',
+        description: fixed
+          ? `补标签 ${fixed.retagged} · 重下 ${fixed.redownloaded} · 删孤儿 ${fixed.removed}${fixed.failed ? ` · 失败 ${fixed.failed}` : ''}，共下载 ${formatBytes(fixed.downloaded)}`
+          : '',
+        tone: fixed?.failed ? 'warning' : 'success',
+        duration: 6000,
+      })
+    } catch (caught) {
+      toast.notify({ title: '修复失败', description: (caught as Error).message, tone: 'error', duration: 0 })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const saveSettings = (next: CacheDoctorSettingsView) => {
+    setSettingsDraft(next)
+    void window.kura?.cacheDoctor.save(next).then(setSettingsDraft).catch(() => setSettingsDraft(next))
+  }
+
+  const last = state?.last
+  const scanned = Boolean(last?.scannedAt)
+  const problems = (last?.stale.length ?? 0) + (last?.orphans.length ?? 0)
+  const progress = state?.progress
+  const running = state?.busy === 'scan' || state?.busy === 'repair' || busy
+
+  return (
+    <article className="kura-card" data-testid="cache-doctor">
+      <header className="kura-card__head">
+        <div>
+          <h2>缓存体检</h2>
+          <p>
+            rclone 只按<strong>文件大小</strong>判断缓存有没有过期。给 NAS 上的文件原地改标签、换封面这类
+            <strong>不改变大小</strong>的修改，它发现不了 —— 磁盘上看着还是旧内容，刷新也没用。这里按内容重新核对。
+          </p>
+        </div>
+        <StatusBadge tone={!enabled ? 'neutral' : problems > 0 ? 'warning' : scanned ? 'success' : 'neutral'}>
+          {!enabled ? '缓存已关' : problems > 0 ? `${problems} 处待处理` : scanned ? '一切正常' : '没扫过'}
+        </StatusBadge>
+      </header>
+
+      {enabled ? (
+        <>
+          {scanned && last ? (
+            <div className="kura-cache-doctor__summary" data-testid="cache-doctor-summary">
+              <div>
+                <strong>{last.total}</strong>
+                <span>个缓存条目</span>
+              </div>
+              <div>
+                <strong>{last.intact}</strong>
+                <span>内容一致</span>
+              </div>
+              <div data-warn={last.stale.length > 0 || undefined}>
+                <strong>{last.stale.length}</strong>
+                <span>已过期</span>
+              </div>
+              <div data-warn={last.orphans.length > 0 || undefined}>
+                <strong>{last.orphans.length}</strong>
+                <span>孤儿（NAS 上已没有）</span>
+              </div>
+            </div>
+          ) : (
+            <p className="kura-form__note">还没扫过。点「开始体检」核对本机缓存和 NAS 上的内容是否一致。</p>
+          )}
+
+          {running && progress && progress.total > 0 ? (
+            <div className="kura-cache-doctor__progress">
+              <ProgressBar
+                label={progress.phase === 'repair' ? '修复中' : '扫描中'}
+                value={progress.done}
+                max={progress.total}
+                showValue
+              />
+            </div>
+          ) : null}
+
+          {scanned && last && problems > 0 ? (
+            <p className="kura-form__note">
+              修复需要下载 {formatBytes(last.bytes.needDownload)}
+              {last.bytes.fullRedownload > last.bytes.needDownload ? `（全部重下要 ${formatBytes(last.bytes.fullRedownload)}）` : ''}
+              。只改了标签的只补文件头，音频真变了的才整份重下。
+            </p>
+          ) : null}
+
+          <div className="kura-form__actions">
+            <Button variant="secondary" icon={<RefreshCw {...icon} />} disabled={running} onClick={() => void scan()}>
+              {state?.busy === 'scan' || busy ? '体检中…' : '开始体检'}
+            </Button>
+            <Button
+              variant={problems > 0 ? 'primary' : 'secondary'}
+              disabled={running || problems === 0}
+              onClick={() => setConfirmRepair(true)}
+            >
+              修复 {problems > 0 ? `${problems} 处` : ''}
+            </Button>
+          </div>
+          {/* ConfirmDialog 自带触发器；这里按钮已经在上面了，所以用它的受控形态不方便，
+              改成自己弹一个确认（点「修复」→ 二次确认 → 才真的动文件） */}
+          {confirmRepair ? (
+            <div className="kura-cache-doctor__confirm" role="alertdialog" aria-label="确认修复缓存">
+              <p>
+                会改动本机缓存文件：只改了标签的只补文件头（几十 KB），音频真变了的整份重下，
+                NAS 上已不存在的孤儿缓存会被删掉。
+              </p>
+              <div className="kura-form__actions">
+                <Button variant="primary" onClick={() => void repair()}>
+                  确认修复
+                </Button>
+                <Button variant="ghost" onClick={() => setConfirmRepair(false)}>
+                  取消
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="kura-module__switches">
+            <SwitchField
+              label="挂载成功后自动体检"
+              checked={settingsDraft?.scanOnMount ?? false}
+              onCheckedChange={(v) => settingsDraft && saveSettings({ ...settingsDraft, scanOnMount: v })}
+            />
+            <TextField
+              label="定时体检（小时，0 = 关）"
+              value={String(settingsDraft?.intervalHours ?? 0)}
+              inputMode="numeric"
+              onChange={(e) => settingsDraft && setSettingsDraft({ ...settingsDraft, intervalHours: Number(e.target.value) || 0 })}
+              onBlur={() => settingsDraft && saveSettings(settingsDraft)}
+            />
+          </div>
+          <p className="kura-form__note">
+            自动体检要在挂载成功 5 分钟后才跑 —— 刚挂上就扫会跟你打开文件抢带宽。
+          </p>
+        </>
+      ) : (
+        <p className="kura-form__note">缓存关着的时候没有可体检的内容。</p>
+      )}
+    </article>
+  )
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${Math.round(bytes / 1024 / 1024)} MB`
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`
 }

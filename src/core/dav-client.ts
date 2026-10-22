@@ -242,4 +242,44 @@ export class DavClient {
       res.pipe(sink)
     })
   }
+
+  /**
+   * 读文件的一段（HTTP Range），返回这段字节。
+   *
+   * 缓存体检靠它：判断「远程这个文件相对本地缓存变没变」只需要文件头（ID3 区）
+   * 和末尾一小段，把整个几 MB 的音频拉下来纯属浪费。
+   *
+   * `start === 0 && end === undefined` 时退化成「读到第一个空块就停」，
+   * 适合只取文件头又不想实现 Range 的上游。正常情况上游都会回 206。
+   */
+  async readRange(path: string, start: number, end?: number, options: { maxBytes?: number } = {}): Promise<Buffer> {
+    const headers: Record<string, string> = {}
+    if (end !== undefined) headers.range = `bytes=${start}-${end}`
+    else if (start > 0) headers.range = `bytes=${start}-`
+    const res = await this.send('GET', path, { headers, timeoutMs: 60_000 })
+    // 200 = 上游不认 Range，给的是整个文件；也能用，但要按调用方的上限截断
+    if (res.statusCode !== 200 && res.statusCode !== 206) await DavClient.expect(res, [200, 206], `读取 ${path} 的字节段 `)
+    const cap = options.maxBytes ?? Number.POSITIVE_INFINITY
+    const chunks: Buffer[] = []
+    let got = 0
+    return new Promise<Buffer>((resolve, reject) => {
+      res.on('data', (chunk: Buffer) => {
+        const room = cap - got
+        if (room <= 0) {
+          res.destroy()
+          return
+        }
+        chunks.push(chunk.length > room ? chunk.subarray(0, room) : chunk)
+        got += Math.min(chunk.length, room)
+        if (got >= cap) res.destroy()
+      })
+      res.on('error', (error) => {
+        // 自己 destroy 的会是 ECONNRESET/aborted 一类，已经拿够字节就当成功
+        if (got >= cap) resolve(Buffer.concat(chunks))
+        else reject(error)
+      })
+      res.on('end', () => resolve(Buffer.concat(chunks)))
+      res.on('close', () => resolve(Buffer.concat(chunks)))
+    })
+  }
 }

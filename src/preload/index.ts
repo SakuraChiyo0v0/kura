@@ -6,6 +6,8 @@ import type { MirrorSnapshot } from '../core/mirror.js'
 import {
   kuraChannels as ch,
   type AppInfo,
+  type CacheDoctorSettingsView,
+  type CacheDoctorStateView,
   type ConnectionForm,
   type ConnectionSummary,
   type ConnectionTestProgress,
@@ -177,6 +179,18 @@ const kura: KuraBridge = {
     unmount: () => invoke(ch.modulesUnmount),
     openDrive: () => invoke(ch.modulesOpenDrive),
     pickFolder: () => invoke(ch.modulesPickFolder),
+  },
+  cacheDoctor: {
+    state: () => invoke<CacheDoctorStateView>(ch.cacheDoctorState),
+    settings: () => invoke<CacheDoctorSettingsView>(ch.cacheDoctorSettings),
+    save: (settings) => invoke<CacheDoctorSettingsView>(ch.cacheDoctorSave, settings),
+    scan: () => invoke<CacheDoctorStateView>(ch.cacheDoctorScan),
+    repair: () => invoke<CacheDoctorStateView>(ch.cacheDoctorRepair),
+    onProgress: (listener) => {
+      const handler = (_event: unknown, progress: { done: number; total: number; phase: string }) => listener(progress)
+      ipcRenderer.on(ch.cacheDoctorProgress, handler)
+      return () => ipcRenderer.off(ch.cacheDoctorProgress, handler)
+    },
   },
   mcp: {
     status: () => invoke(ch.mcpStatus),

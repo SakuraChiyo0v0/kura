@@ -23,6 +23,8 @@ import {
   kuraChannels as ch,
   type AppInfo,
   type ConnectionForm,
+  type CacheDoctorSettingsView,
+  type CacheDoctorStateView,
   type DavSettingsView,
   type KuraBootstrap,
   type ModulesStatusView,
@@ -38,6 +40,7 @@ import { DbTunnelService } from './db-tunnel.js'
 import type { ProjectAction } from '../core/docker-client.js'
 import { McpService } from './mcp.js'
 import { ModuleManager, rcloneRelease, winfspDownloadPage } from './modules.js'
+import { CacheDoctorService } from './cache-doctor-service.js'
 import { fileLogger } from './file-log.js'
 import { decideWindowClose, isHiddenLaunch, loginItemSettings } from './lifecycle.js'
 import { runRestartSmoke, runSmoke } from './smoke.js'
@@ -109,6 +112,24 @@ const modules = new ModuleManager({
     if (!view.running) throw new Error('本机 WebDAV 没有在运行（文件页 → 本机 WebDAV 里打开它）')
     return view.url
   },
+  // 挂载起来 / 卸下来时告诉缓存体检：只有挂载期间才值得扫（扫的就是那个挂载的缓存）
+  onMountChange: (mounted) => {
+    if (mounted) cacheDoctor.onMounted()
+    else cacheDoctor.onUnmounted()
+  },
+})
+/**
+ * 挂载缓存体检：rclone 只按大小判失效，「原地改标签」这类等字节长度的改动它发现不了，
+ * 挂载盘上就一直是旧内容。这里按内容重新核对，并尽量只补文件头。
+ */
+const cacheDoctor = new CacheDoctorService({
+  cacheDir: () => join(userData, 'modules', 'rclone-cache'),
+  dav: () => files.client,
+  dataDir: userData,
+  log,
+  mounted: () => modules.status().mount.state === 'mounted',
+  onState: (state: CacheDoctorStateView) => windows.broadcast(ch.cacheDoctorState, state),
+  onProgress: (progress: { done: number; total: number; phase: string }) => windows.broadcast(ch.cacheDoctorProgress, progress),
 })
 /**
  * MCP：给 AI 客户端（Claude Code 等）连的回环 HTTP 端点。与其它能力层共用同一批服务实例 ——
@@ -124,6 +145,7 @@ const mcp = new McpService({
   nasScope,
   localDav,
   modules,
+  cacheDoctor,
   databases,
 })
 
@@ -604,6 +626,13 @@ function registerKuraIpc(): void {
     const picked = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options)
     return picked.canceled || !picked.filePaths[0] ? '' : picked.filePaths[0]
   })
+
+  // ---- 挂载缓存体检 ----
+  router.handle(ch.cacheDoctorState, () => cacheDoctor.state())
+  router.handle(ch.cacheDoctorSettings, () => cacheDoctor.settingsView())
+  router.handle(ch.cacheDoctorSave, (_event, settings: CacheDoctorSettingsView) => cacheDoctor.save(settings))
+  router.handle(ch.cacheDoctorScan, () => cacheDoctor.scan())
+  router.handle(ch.cacheDoctorRepair, () => cacheDoctor.repair())
 
   // ---- MCP ----
   router.handle(ch.mcpStatus, () => mcp.view())

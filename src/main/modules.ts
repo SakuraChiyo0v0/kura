@@ -385,6 +385,12 @@ export interface ModuleManagerOptions {
   clearNetworkHistory?: (volumeName: string) => Promise<string>
   /** 测试注入：替代真的去探测挂载点（假挂载不会真的产生盘符/目录） */
   probeMountPoint?: (mode: MountMode, target: string) => Promise<boolean>
+  /**
+   * 挂载状态变了（挂上 / 卸掉 / 意外退出）。
+   * 缓存体检靠它决定什么时候开始 / 停止自动扫描 —— 扫的就是这份挂载的缓存，
+   * 没挂载时扫了也没意义（还会对着一堆陈旧条目发请求）。
+   */
+  onMountChange?: (mounted: boolean) => void
 }
 
 export class ModuleManager {
@@ -449,6 +455,26 @@ export class ModuleManager {
     }
   }
 
+  /**
+   * 改挂载状态的**唯一**入口。
+   *
+   * 原先散着十来处直接赋值 `this.mountState = ...`，加个「状态变了要通知谁」的需求时
+   * 漏一处就是一个静默的 bug（缓存体检会在挂载掉线后继续扫）。统一收在这里，
+   * 只有真的从「挂着」变成「没挂」或反过来时才回调。
+   */
+  private setMountState(next: MountStatus): void {
+    const wasMounted = this.mountState.state === 'mounted'
+    this.mountState = next
+    const isMounted = next.state === 'mounted'
+    if (wasMounted !== isMounted) {
+      try {
+        this.options.onMountChange?.(isMounted)
+      } catch (error) {
+        this.log.warn('挂载状态回调失败', { err: errorMessage(error) })
+      }
+    }
+  }
+
   mountSettings(): MountSettings {
     return { ...this.settings }
   }
@@ -471,12 +497,12 @@ export class ModuleManager {
     this.reconciledAt = now
     // 进程没了，挂载一定也没了
     if (!this.child) {
-      this.mountState = { ...this.mountState, state: 'error', error: '挂载进程已经不在运行了（被别的程序结束，或系统休眠后掉了），这个位置已断开。' }
+      this.setMountState({ ...this.mountState, state: 'error', error: '挂载进程已经不在运行了（被别的程序结束，或系统休眠后掉了），这个位置已断开。' })
       return
     }
     // 进程还在，但挂载点访问不到了：WinFsp 挂载掉了
     if (this.mountState.target && !(await this.probeMountPoint(this.settings.mode, this.mountState.target))) {
-      this.mountState = { ...this.mountState, state: 'error', error: `${this.mountState.target} 已经访问不到了（挂载掉了）。重新挂载可恢复。` }
+      this.setMountState({ ...this.mountState, state: 'error', error: `${this.mountState.target} 已经访问不到了（挂载掉了）。重新挂载可恢复。` })
     }
   }
 
@@ -577,7 +603,7 @@ export class ModuleManager {
     if (this.settings.mode !== 'folder' && !this.options.spawnMount && (await driveExists(target))) throw new Error(`盘符 ${target} 已被占用，换一个`)
     const args = mountArgs(this.settings, this.options.davUrl(), join(this.options.dir, 'rclone-cache'))
     this.stopping = false
-    this.mountState = { state: 'starting', target, error: '', log: [] }
+    this.setMountState({ state: 'starting', target, error: '', log: [] })
     const child = this.options.spawnMount
       ? this.options.spawnMount(status.rclone.path, args)
       : spawn(status.rclone.path, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -590,23 +616,23 @@ export class ModuleManager {
     child.on('error', (error) => {
       spawnFailed = true
       if (this.child === child) this.child = undefined
-      this.mountState = { ...this.mountState, state: 'error', error: errorMessage(error) }
+      this.setMountState({ ...this.mountState, state: 'error', error: errorMessage(error) })
     })
     child.on('exit', (code) => {
       if (this.child === child) this.child = undefined
       if (this.stopping) {
-        this.mountState = { ...this.mountState, state: 'stopped', error: '' }
+        this.setMountState({ ...this.mountState, state: 'stopped', error: '' })
         return
       }
       const last = this.mountState.log.at(-1) ?? ''
-      this.mountState = { ...this.mountState, state: 'error', error: `rclone 意外退出（${code}）${last ? `：${last}` : ''}` }
+      this.setMountState({ ...this.mountState, state: 'error', error: `rclone 意外退出（${code}）${last ? `：${last}` : ''}` })
       this.log.warn('rclone 挂载进程退出', { code, last })
     })
     // rclone mount 成功时不会主动报告；等挂载点出现（WinFsp 挂好后就能访问）
     const until = Date.now() + 15_000
     while (Date.now() < until && this.child === child && !spawnFailed) {
       if (this.options.spawnMount || (await mountPointReady(this.settings.mode, target))) {
-        this.mountState = { ...this.mountState, state: 'mounted' }
+        this.setMountState({ ...this.mountState, state: 'mounted' })
         this.log.info('已挂载', { 形态: this.settings.mode, 位置: target })
         return
       }
@@ -622,7 +648,7 @@ export class ModuleManager {
     const mode = this.settings.mode
     const volumeName = this.settings.volumeName || mountDefaults.volumeName
     if (!child) {
-      this.mountState = { ...this.mountState, state: 'stopped', error: '' }
+      this.setMountState({ ...this.mountState, state: 'stopped', error: '' })
       // 进程早就没了（被外部杀掉、或上次挂载就失败）也可能留着网络位置残留，顺手清一次
       if (mode === 'network') await this.clearLeftoverNetworkHistory(volumeName)
       return
@@ -642,7 +668,7 @@ export class ModuleManager {
       child.kill('SIGINT')
     })
     this.child = undefined
-    this.mountState = { ...this.mountState, state: 'stopped', error: '' }
+    this.setMountState({ ...this.mountState, state: 'stopped', error: '' })
     // 网络模式挂一次就在 Explorer 留一条 \\server\<卷名> 历史（见 MountMode 注释），卸载时顺手清掉
     if (mode === 'network') await this.clearLeftoverNetworkHistory(volumeName)
   }
@@ -655,13 +681,13 @@ export class ModuleManager {
   private async clearLeftoverNetworkHistory(volumeName: string): Promise<void> {
     const failed = await this.clearHistory(volumeName)
     if (!failed) {
-      this.mountState = { ...this.mountState, error: '' }
+      this.setMountState({ ...this.mountState, error: '' })
       return
     }
     this.log.warn('清理网络位置历史失败', { 卷名: volumeName, err: failed })
-    this.mountState = {
+    this.setMountState({
       ...this.mountState,
       error: `已卸载，但「网络位置」里那条 ${volumeName} 的残留没清掉（它会显示成点不开的图标）。重启 Kura 或重新挂载一次会再试。`,
-    }
+    })
   }
 }
