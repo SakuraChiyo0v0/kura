@@ -14,6 +14,22 @@ const mountModes: { value: MountSettingsView['mode']; label: string; icon: React
   { value: 'folder', label: '挂到文件夹', icon: <FolderTree {...icon} />, description: '不占盘符，只挂成某个目录（如 D:\\KuraNAS）。盘符紧张、或只想让特定程序按路径访问时用。' },
 ]
 
+/**
+ * 把「小时数」说成人话。
+ *
+ * 光写「小时」没人能立刻反应出 720 是多久 —— 用户得自己算，
+ * 而算错就会以为「设了一个月」实际设成一天。
+ */
+function describeCacheAge(hours: number): string {
+  if (hours <= 0) return '永不淘汰'
+  if (hours < 24) return `${hours} 小时`
+  const days = hours / 24
+  if (days < 30) return `${Math.round(days * 10) / 10} 天`
+  const months = days / 30
+  if (months < 12) return `${Math.round(months * 10) / 10} 个月`
+  return `${Math.round((months / 12) * 10) / 10} 年`
+}
+
 const cacheModes = [
   { value: 'writes', label: '写入缓存（推荐）', description: 'Office、图片编辑器这类「写临时文件再改名」的程序能正常保存' },
   { value: 'minimal', label: '最少', description: '只缓存正在打开写入的文件' },
@@ -39,6 +55,10 @@ export function ModulesView() {
   const [status, setStatus] = useState<ModulesStatusView | null>(null)
   const [settings, setSettings] = useState<MountSettingsView | null>(null)
   const [busy, setBusy] = useState('')
+  /** 保留时长的输入框草稿：输入过程中不收口，失焦才归一 */
+  const [ageText, setAgeText] = useState('0')
+  /** 容量上限的草稿，同上 */
+  const [gbText, setGbText] = useState('20')
 
   // 只认最后一次发出的请求：轮询与按钮触发的刷新会并发，保存也会被连点。
   // 先发后到的旧响应要是也 set，界面就会跳回旧值（例如连点两次开关，最后停在第一次的结果）。
@@ -105,6 +125,16 @@ export function ModulesView() {
       void refresh()
     }
   }
+
+  // 输入框草稿跟着保存后的值走（主进程会把超范围的钳回来，得让用户看见实际生效的值）。
+  // **必须在早退之前** —— 放在 `if (!status || !settings) return` 后面会违反 Hooks 规则，
+  // 首帧 status 还是 null 时就少调了两个 hook，React 直接崩（踩过：整个挂载页白屏）。
+  useEffect(() => {
+    if (settings) setAgeText(String(settings.cacheMaxAgeHours))
+  }, [settings?.cacheMaxAgeHours])
+  useEffect(() => {
+    if (settings) setGbText(String(settings.cacheMaxGb))
+  }, [settings?.cacheMaxGb])
 
   if (!status || !settings) {
     if (loadError) {
@@ -285,32 +315,44 @@ export function ModulesView() {
             {settings.cacheMode !== 'off' ? (
               <>
                 <TextField
-                  label="缓存上限（GB，0 = 不限）"
-                  value={String(settings.cacheMaxGb)}
+                  label="缓存上限（GB）"
+                  value={gbText}
                   disabled={mounted}
                   inputMode="numeric"
-                  onChange={(e) => {
-                    const n = Number(e.target.value)
-                    if (!Number.isInteger(n) || n < 0) return
-                    setSettings({ ...settings, cacheMaxGb: n })
+                  onChange={(e) => setGbText(e.target.value)}
+                  onBlur={() => {
+                    const n = Number(gbText)
+                    const gb = Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0
+                    setSettings({ ...settings, cacheMaxGb: gb })
+                    saveSettings({ ...settings, cacheMaxGb: gb })
                   }}
-                  onBlur={() => saveSettings(settings)}
                 />
                 <TextField
-                  label="缓存保留（小时，0 = 永不）"
-                  value={String(settings.cacheMaxAgeHours)}
+                  label="缓存保留"
+                  value={ageText}
                   disabled={mounted}
                   inputMode="numeric"
-                  onChange={(e) => {
-                    const n = Number(e.target.value)
-                    if (!Number.isInteger(n) || n < 0) return
-                    setSettings({ ...settings, cacheMaxAgeHours: n })
+                  onChange={(e) => setAgeText(e.target.value)}
+                  onBlur={() => {
+                    // 失焦时才归一：输入过程中不要拒绝（否则打到超限的那一位就"打不进去"）
+                    const n = Number(ageText)
+                    const hours = Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0
+                    setSettings({ ...settings, cacheMaxAgeHours: hours })
+                    saveSettings({ ...settings, cacheMaxAgeHours: hours })
                   }}
-                  onBlur={() => saveSettings(settings)}
                 />
               </>
             ) : null}
           </div>
+
+          {/* 一句人话的换算：光写「小时」没人能立刻反应出 720 是多久 */}
+          {settings.cacheMode !== 'off' ? (
+            <p className="kura-form__note">
+              现在是：<strong>{describeCacheAge(settings.cacheMaxAgeHours)}</strong>
+              {settings.cacheMaxGb > 0 ? `，最多占 ${settings.cacheMaxGb} GB` : '，不占容量上限'}。
+              两个都填 <code>0</code> 表示不限制。缓存保留的常用值：<code>168</code> 一周 · <code>720</code> 一个月 · <code>8760</code> 一年。
+            </p>
+          ) : null}
 
           <div className="kura-module__switches">
             <SwitchField label="只读挂载" checked={settings.readOnly} disabled={mounted} onCheckedChange={(v) => saveSettings({ ...settings, readOnly: v })} />

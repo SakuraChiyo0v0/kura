@@ -109,8 +109,13 @@ export const mountDefaults: MountSettings = {
 /** 缓存上限允许的取值范围（0 = 不限；太大等于没限，太小会频繁失效重下）。 */
 export const cacheMaxGbRange = { min: 0, max: 1024 } as const
 
-/** 缓存保留时长的取值范围（小时；0 = 永不）。上限一年，再长和「永不」没区别了。 */
-export const cacheMaxAgeHoursRange = { min: 0, max: 8760 } as const
+/**
+ * 缓存保留时长的取值范围（小时；0 = 永不）。
+ *
+ * 上限给到 100 年：再长和「永不」没区别，但**不能卡得太紧** ——
+ * 原来卡一年（8760），用户想输 87600 会直接被拒，表现是「打不进去第五位」。
+ */
+export const cacheMaxAgeHoursRange = { min: 0, max: 876000 } as const
 
 /** 把用户填的缓存上限钳到合法范围（非数字、负数、超大值都收敛）。 */
 export function clampCacheMaxGb(value: unknown): number {

@@ -66,6 +66,16 @@ describe('rclone 挂载参数', () => {
     expect(clampCacheMaxAgeHours(72.9)).toBe(72)
   })
 
+  it('五位数时长能进来（原来卡在 8760，输 87600 直接被拒）', () => {
+    // 用户输入的第五位被拒，表现是「打不进去」—— 实际是上限卡得太死
+    expect(clampCacheMaxAgeHours(87600)).toBe(87600)
+    expect(cacheMaxAgeHoursRange.max).toBeGreaterThanOrEqual(100000)
+  })
+
+  it('超过上限也不报错，收回到上限（不是静默丢弃）', () => {
+    expect(clampCacheMaxAgeHours(cacheMaxAgeHoursRange.max + 1)).toBe(cacheMaxAgeHoursRange.max)
+  })
+
   it('只有网络模式加 --network-mode；固定磁盘与目录挂载都不加', () => {
     const dav = 'http://127.0.0.1:18006/'
     expect(mountArgs({ ...mountDefaults, mode: 'network' }, dav, 'C:\\cache')).toContain('--network-mode')
