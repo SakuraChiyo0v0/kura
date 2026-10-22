@@ -188,6 +188,11 @@ export function mountArgs(settings: MountSettings, davUrl: string, cacheDir: str
     settings.cacheMode,
     '--cache-dir',
     cacheDir,
+    // 缓存上限：`full` 档连读过的文件也留，没有上限的话缓存目录只增不减。
+    // 超了由 rclone 自己淘汰最久没用的（不需要我们写清理逻辑）。
+    // 只设容量、不设 max-age —— 按时间过期会让「上周听过、这周还想听」的歌重新从 NAS 拉。
+    '--vfs-cache-max-size',
+    '20G',
     // 资源管理器会频繁列目录，目录缓存短一点：NAS 上别处改了文件能较快看到
     '--dir-cache-time',
     '30s',

@@ -17,7 +17,7 @@ const mountModes: { value: MountSettingsView['mode']; label: string; icon: React
 const cacheModes = [
   { value: 'writes', label: '写入缓存（推荐）', description: 'Office、图片编辑器这类「写临时文件再改名」的程序能正常保存' },
   { value: 'minimal', label: '最少', description: '只缓存正在打开写入的文件' },
-  { value: 'full', label: '完整', description: '读也缓存到本机，反复打开同一文件最快，占本机磁盘' },
+  { value: 'full', label: '完整', description: '读也缓存到本机，反复打开同一文件最快。缓存最多占 20 GB，超了自动淘汰最久没用的' },
   { value: 'off', label: '关闭', description: '不占本机磁盘，但很多程序无法直接保存到盘里' },
 ] as const
 

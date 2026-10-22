@@ -15,6 +15,16 @@ describe('rclone 挂载参数', () => {
     expect(args[args.indexOf('--vfs-cache-mode') + 1]).toBe('writes')
   })
 
+  it('缓存有容量上限（full 档连读过的都留，没上限就只增不减）', () => {
+    const args = mountArgs(mountDefaults, 'http://127.0.0.1:18006/', 'C:\cache')
+    expect(args[args.indexOf('--vfs-cache-max-size') + 1]).toBe('20G')
+  })
+
+  it('不设 max-age —— 按时间过期会让听过的歌重新从 NAS 拉', () => {
+    const args = mountArgs(mountDefaults, 'http://127.0.0.1:18006/', 'C:\cache')
+    expect(args).not.toContain('--vfs-cache-max-age')
+  })
+
   it('只有网络模式加 --network-mode；固定磁盘与目录挂载都不加', () => {
     const dav = 'http://127.0.0.1:18006/'
     expect(mountArgs({ ...mountDefaults, mode: 'network' }, dav, 'C:\\cache')).toContain('--network-mode')
@@ -118,6 +128,8 @@ describe('ModuleManager', () => {
     await m.mount()
     expect(m.status().mount).toMatchObject({ state: 'mounted', target: 'Q:' })
     expect(spawned[0]!.args).toContain('Q:')
+    // 缓存上限要真的传给 rclone（不是只写在 mountArgs 里）
+    expect(spawned[0]!.args[spawned[0]!.args.indexOf('--vfs-cache-max-size') + 1]).toBe('20G')
     await m.unmount()
     expect(m.status().mount.state).toBe('stopped')
   })
