@@ -96,14 +96,23 @@ describe('DockerClient ↔ kura-server', () => {
     expect(docker.calls.some((c) => c.startsWith('POST /images/prune'))).toBe(true)
   })
 
-  it('旧镜像（没有 docker 服务）：说清是镜像太旧，不是一句 JSON 解析失败', async () => {
+  it('服务端没有这条路由：说清可能是版本或 socket，并给出下一步，不是一句 JSON 解析失败', async () => {
     const old = http.createServer((_req, res) => {
       res.writeHead(404, { 'content-type': 'text/plain' })
       res.end('Not found')
     })
     await new Promise<void>((r) => old.listen(0, '127.0.0.1', () => r()))
     const c = new DockerClient(async () => `http://127.0.0.1:${(old.address() as AddressInfo).port}`)
-    await expect(c.overview()).rejects.toThrow(/镜像太旧/)
+    // 以前这里只写「镜像太旧，等 watchtower 换新」—— 2026-10-25 真机上
+    // 镜像是最新的、问题只是启动时没探到 socket，这句错话把人引向了永远等不到的修复。
+    // 现在要同时给出两种可能，并说出「先重启容器」这个真的有效的动作。
+    const error = await c.overview().then(
+      () => undefined,
+      (e: Error) => e.message,
+    )
+    expect(error).toContain('没有容器管理接口')
+    expect(error).toMatch(/镜像版本旧|没连上 docker\.sock/)
+    expect(error).toContain('重启')
     await new Promise<void>((r) => old.close(() => r()))
   })
 })

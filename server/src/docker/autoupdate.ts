@@ -57,7 +57,7 @@ export interface AutoUpdateOptions {
    * 不再从这里传默认值 —— `/volume1/docker/kura-server` 那个默认值只是碰巧对上过，
    * 换目录部署就得记着配环境变量。镜像名同样是每轮动态拿。
    */
-  self?: Pick<SelfUpdateTarget, 'socketPath'>
+  self?: Pick<SelfUpdateTarget, 'socketPath'> | (() => Pick<SelfUpdateTarget, 'socketPath'>)
   /** 与界面操作共用的项目锁；不给就自己造一个（测试用） */
   locks?: ProjectLocks
   onResult?: (result: AutoUpdateRunResult) => void
@@ -222,8 +222,15 @@ export class AutoUpdate {
    * 不是「更新成功了没有」。真正成不成，看下一轮 Kura 起来后的镜像 digest。
    */
   private async runSelf(name: string, project: { dir: string; configFiles: string[] }, images: string[]): Promise<{ ok: boolean; reason: string }> {
-    const self = this.options.self
-    if (!self) return { ok: false, reason: '没配自更新要用的信息（docker.sock），更新不了自己' }
+    const configured = this.options.self
+    if (!configured) return { ok: false, reason: '没配自更新要用的信息（docker.sock），更新不了自己' }
+    // 允许给一个 getter：socket 的宿主路径要等探到了才知道（见 socket.ts 顶部）
+    let self: Pick<SelfUpdateTarget, 'socketPath'>
+    try {
+      self = typeof configured === 'function' ? configured() : configured
+    } catch (error) {
+      return { ok: false, reason: `现在拿不到 docker.sock，更新不了自己：${(error as Error).message}` }
+    }
     // 兄弟容器用的镜像 = kura-server 自己那个。不硬编码名字，从它容器的 image 标签拿
     // （kura-server 与 kura-shell 是同一个镜像，去重后这里就一个）
     const image = images[0]

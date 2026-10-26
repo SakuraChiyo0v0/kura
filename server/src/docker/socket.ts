@@ -46,6 +46,12 @@ export interface FindOptions {
   isSocket?: (path: string) => boolean
   /** 真发一次 `GET /_ping`，确认 daemon 活着。默认走真请求 */
   ping?: (path: string) => Promise<boolean>
+  /** 每轮之间等多久（默认 1 秒）。测试传 0 */
+  delayMs?: number
+  /** 等多久的注入点，测试换掉真 sleep */
+  sleep?: (ms: number) => Promise<void>
+  /** 最多探几轮（默认 3）。1 = 只探一轮，旧行为 */
+  rounds?: number
   log?: (message: string, fields?: Record<string, unknown>) => void
 }
 
@@ -115,29 +121,114 @@ function defaultPing(path: string, timeoutMs = 3_000): Promise<boolean> {
   })
 }
 
+const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
 /**
  * 找到第一个**真能应答**的 socket。找不到返回 undefined（没开 Docker 功能）。
  *
  * 为什么除了 `isSocket` 还要 ping：文件在、dockerd 死了的情况（升级中、宿主重启中）很常见，
  * 只判类型会让 Docker 页显示成「已启用但一用就报连不上」。
  *
- * **ping 会重试**：Windows 命名管道上连续连接会**交替失败**（实测 200 / socket hang up /
- * 200 / socket hang up，同一个服务端、同一个路径）。一次不通不代表它不通 —— 直接判死会让
- * 「同一个 socket 第二次找就说没有」这种烂状态出现。连两次都不通才算真的不通。
+ * **会轮询，不是探一次就走**（`rounds`，默认 3 轮、每轮间隔 1 秒）。
+ * 2026-10-25 真机踩到：宿主重启后容器跟着起来，那一刻 dockerd 还没 listening，
+ * 几秒内没应答就判死，**之后整个进程生命周期都不再重探** —— 容器好好跑着，
+ * 但 Docker 页永久不可用，只能人工重启容器。socket 其实几秒后就恢复了，没人再去问它。
+ *
+ * 探测本身没有副作用（一个 `GET /_ping`），多问几次的代价远小于「一次没问到就永久关掉」。
  */
 export async function findDockerSocket(options: FindOptions = {}): Promise<DockerSocket | undefined> {
   const isSocket = options.isSocket ?? defaultIsSocket
   const ping = options.ping ?? ((path: string) => defaultPing(path))
+  const sleep = options.sleep ?? defaultSleep
+  const delayMs = options.delayMs ?? 1_000
+  const rounds = Math.max(1, options.rounds ?? 3)
   const candidates = socketCandidates(options.env, options.hostRoot ?? hostRoot)
-  for (const candidate of candidates) {
-    if (!isSocket(candidate.path)) continue
-    if (!(await answered(ping, candidate.path))) {
-      options.log?.('发现 docker socket 但没应答，跳过', { 路径: candidate.path })
-      continue
+
+  for (let round = 0; round < rounds; round++) {
+    if (round > 0) {
+      await sleep(delayMs)
+      options.log?.('再探一次 Docker socket', { 第几轮: round + 1, 共几轮: rounds })
     }
-    return candidate
+    for (const candidate of candidates) {
+      if (!isSocket(candidate.path)) continue
+      if (!(await answered(ping, candidate.path))) {
+        options.log?.('发现 docker socket 但没应答，跳过', { 路径: candidate.path })
+        continue
+      }
+      return candidate
+    }
   }
   return undefined
+}
+
+/**
+ * 一个**能自愈**的 socket 解析器。
+ *
+ * 为什么不在启动时探一次就定死：容器跟着宿主重启时，dockerd 往往比容器慢一拍。
+ * 2026-10-25 真机就是这个样子 —— 启动那一刻探不到，然后整个进程再也不问，
+ * Docker 页永久显示「镜像太旧」（其实镜像是最新的，socket 也早就好了）。
+ *
+ * 现在的规则：
+ *  - 探到了就用，并且缓存（不会每次请求都 ping）；
+ *  - 没探到也不判死，**下一次有人要用的时侯再探**（带一点冷却，别让一串失败请求把 socket 打爆）；
+ *  - 已经探到、但实际调用失败（daemon 重启换了 socket）时 `invalidate()`，下次重新探。
+ *
+ * 探测本身只发一个 `GET /_ping`，没有副作用。
+ */
+export class DockerSocketResolver {
+  private found: DockerSocket | undefined
+  private pending: Promise<DockerSocket | undefined> | undefined
+  private lastMissAt = 0
+
+  constructor(
+    private readonly options: FindOptions = {},
+    /** 冷却：探不到之后多久内不再重探（默认 10 秒） */
+    private readonly cooldownMs = 10_000,
+    private readonly now: () => number = () => Date.now(),
+  ) {}
+
+  /** 已经确认能用的 socket（没有就是 undefined，不触发探测）。 */
+  current(): DockerSocket | undefined {
+    return this.found
+  }
+
+  /** 拿 socket；没有就（按冷却）再探一次。并发调用共用同一次探测。 */
+  async get(): Promise<DockerSocket | undefined> {
+    if (this.found) return this.found
+    if (this.pending) return this.pending
+    if (this.now() - this.lastMissAt < this.cooldownMs) return undefined
+    this.pending = (async () => {
+      try {
+        const found = await findDockerSocket(this.options)
+        if (found) this.found = found
+        else this.lastMissAt = this.now()
+        return found
+      } finally {
+        this.pending = undefined
+      }
+    })()
+    return this.pending
+  }
+
+  /**
+   * 同步取**已经探到**的那个；没有就抛。
+   *
+   * 给 engine 的 socketPath getter 用（那两处是同步的）。没探到时先 `get()` 一下把探测
+   * 启起来，再抛出 —— 这一次请求失败，但下一轮就有了。
+   */
+  require(): DockerSocket {
+    if (!this.found) {
+      void this.get()
+      throw new Error('Docker socket 暂时不可用（还连不上 NAS 上的 Docker，再试一次会自动重连）')
+    }
+    return this.found
+  }
+
+  /** 调用方发现 socket 不能用了：丢掉缓存，下次重新探。 */
+  invalidate(): void {
+    this.found = undefined
+    this.lastMissAt = 0
+  }
 }
 
 /** 连两次都失败才算没应答（原因见上面的注释）。 */

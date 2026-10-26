@@ -12,6 +12,21 @@ import type { AutoUpdateRunResult, AutoUpdateStatus, ContainerDetail, ContainerS
 /** kura-server 要求写操作带这个头（挡浏览器里的跨站表单，见 server/src/docker/handler.ts）。 */
 const writeHeaders = { 'x-kura-docker': '1' }
 
+/**
+ * 服务端回 404 时该说什么。
+ *
+ * **别再写「镜像太旧」**：这句话曾经把一个完全不同的故障说成了版本问题 ——
+ * kura-server 启动时没探到 docker.sock，于是整个服务没挂上（当时的行为），
+ * 客户端收到 404 就报「镜像太旧，等 watchtower 换新」。可镜像明明是最新的，
+ * 用户照着提示等 watchtower 永远等不到，真正要做的只是重启一次容器。
+ *
+ * 404 的真实含义只有一条：**服务端没有这条路由**。可能是镜像旧，也可能是它这一轮
+ * 没把 docker 功能挂上。两种都不该让用户去猜，所以把可查的东西直接写出来。
+ */
+const noDockerRoute =
+  'NAS 上的 kura-server 没有容器管理接口：可能镜像版本旧，也可能它启动时没连上 docker.sock。' +
+  '先重启一次 kura-server 容器（通常就好了）；还不行再去 NAS 上看 `/__services` 里有没有 `docker`。'
+
 export class DockerApiError extends Error {
   constructor(
     readonly status: number,
@@ -67,7 +82,7 @@ export class DockerClient {
     try {
       parsed = JSON.parse(body)
     } catch {
-      throw new DockerApiError(status, status === 404 ? 'NAS 上的 kura-server 还没有容器管理（镜像太旧，等 watchtower 换新）' : `kura-server 返回的不是 JSON（HTTP ${status}）`)
+      throw new DockerApiError(status, status === 404 ? noDockerRoute : `kura-server 返回的不是 JSON（HTTP ${status}）`)
     }
     if (status >= 400) throw new DockerApiError(status, (parsed as { error?: string }).error ?? `HTTP ${status}`)
     return parsed as T
@@ -152,7 +167,7 @@ export class DockerClient {
       })
       ws.on('unexpected-response', (_req, res) => {
         res.resume()
-        for (const l of listeners) l(res.statusCode === 404 ? 'NAS 上的 kura-server 还没有这个功能（镜像太旧）\n' : `连接被拒绝：HTTP ${res.statusCode}\n`)
+        for (const l of listeners) l(res.statusCode === 404 ? `${noDockerRoute}\n` : `连接被拒绝：HTTP ${res.statusCode}\n`)
         resolve(undefined)
       })
       ws.on('error', (error) => {
@@ -263,7 +278,7 @@ export class DockerClient {
     try {
       parsed = JSON.parse(text)
     } catch {
-      throw new DockerApiError(status, status === 404 ? 'NAS 上的 kura-server 还没有这个功能（镜像太旧）' : `kura-server 返回的不是 JSON（HTTP ${status}）`)
+      throw new DockerApiError(status, status === 404 ? noDockerRoute : `kura-server 返回的不是 JSON（HTTP ${status}）`)
     }
     if (status >= 400) throw new DockerApiError(status, (parsed as { error?: string }).error ?? `HTTP ${status}`)
     return parsed as T

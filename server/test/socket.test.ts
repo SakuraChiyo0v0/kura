@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { findDockerSocket, socketCandidates } from '../src/docker/socket.js'
+import { DockerSocketResolver, findDockerSocket, socketCandidates } from '../src/docker/socket.js'
 
 /**
  * Docker socket 的自动发现。
@@ -77,10 +77,148 @@ describe('findDockerSocket：文件在 + 真能应答才算找到', () => {
     await findDockerSocket({
       isSocket: () => true,
       ping: async () => false,
+      rounds: 1, // 只看一轮，不然轮询会让条数翻倍
       log: (message) => lines.push(message),
     })
     expect(lines.length).toBe(4)
     expect(lines[0]).toContain('没应答')
+  })
+})
+
+/**
+ * 轮询与自愈。
+ *
+ * 2026-10-25 真机：宿主重启后容器跟着起来，那一刻 dockerd 还没 listening。
+ * 旧实现 6 秒内探不到就**判定整个进程没有 Docker**，此后永不重探 —— 容器健康、socket 早就好了，
+ * 但 Docker 页永久显示「镜像太旧」，只能人工重启容器。
+ */
+describe('findDockerSocket：会轮询，不是探一次就走', () => {
+  it('第一轮没应答、第二轮才通 —— 要能等到', async () => {
+    let round = 0
+    const found = await findDockerSocket({
+      isSocket: () => true,
+      ping: async () => {
+        round++
+        // 每轮 4 个候选（默认）；前两轮（8 次 ping）全失败，从第 9 次起通
+        return round > 8
+      },
+      delayMs: 0,
+      sleep: async () => {},
+    })
+    expect(found).toMatchObject({ source: 'mounted' })
+  })
+
+  it('给 1 轮就只探一轮（不要无限重试）', async () => {
+    let pings = 0
+    const found = await findDockerSocket({
+      isSocket: () => true,
+      ping: async () => {
+        pings++
+        return false
+      },
+      rounds: 1,
+      delayMs: 0,
+      sleep: async () => {},
+    })
+    expect(found).toBeUndefined()
+    expect(pings).toBe(8) // 4 个候选 × answered 内部的 2 次重试
+  })
+})
+
+/**
+ * resolver：启动探不到也**不判死**，下次要用时再探。
+ * 这是「自愈」真正的落点 —— 没有它，轮询只是把「6 秒」变成「9 秒」，仍然是一次性的。
+ */
+describe('DockerSocketResolver：探不到不判死，之后能自愈', () => {
+  it('启动时探不到，冷却过后再问就好了', async () => {
+    let ready = false
+    let now = 0
+    const resolver = new DockerSocketResolver(
+      {
+        isSocket: () => true,
+        ping: async () => ready,
+        rounds: 1,
+        delayMs: 0,
+        sleep: async () => {},
+      },
+      10_000,
+      () => now,
+    )
+
+    expect(await resolver.get()).toBeUndefined() // 启动那一刻：dockerd 还没起来
+    expect(resolver.current()).toBeUndefined()
+
+    // socket 恢复了。但冷却期内不重探（别让一串失败请求把 socket 打爆）
+    ready = true
+    now += 5_000
+    expect(await resolver.get()).toBeUndefined()
+
+    // 过了冷却：自愈
+    now += 6_000
+    const found = await resolver.get()
+    expect(found).toBeDefined()
+    expect(resolver.current()).toBe(found) // 缓存住，后续请求不再 ping
+  })
+
+  it('并发调用共用同一次探测（不会同时 ping 一堆）', async () => {
+    let probes = 0
+    const resolver = new DockerSocketResolver(
+      {
+        isSocket: () => true,
+        ping: async () => {
+          probes++
+          await new Promise((r) => setTimeout(r, 5))
+          return true
+        },
+        rounds: 1,
+        delayMs: 0,
+        sleep: async () => {},
+      },
+      0,
+      () => 0,
+    )
+    const all = await Promise.all([resolver.get(), resolver.get(), resolver.get()])
+    expect(all.every((x) => x !== undefined)).toBe(true)
+    // 4 个候选 × answered 的 2 次，但只有一个"轮次"在跑：只要不是三份各跑一遍即可
+    expect(probes).toBeLessThan(24)
+  })
+
+  it('invalidate 之后会重新探（daemon 重启、原 socket 已失效）', async () => {
+    let probes = 0
+    const resolver = new DockerSocketResolver(
+      {
+        isSocket: () => true,
+        ping: async () => {
+          probes++
+          return true
+        },
+        rounds: 1,
+        delayMs: 0,
+        sleep: async () => {},
+      },
+      0,
+      () => 0,
+    )
+    await resolver.get()
+    const afterFirst = probes
+    // 缓存住：再问不重新 ping
+    await resolver.get()
+    expect(probes).toBe(afterFirst)
+
+    // 调用方发现连不上了 → 丢掉缓存
+    resolver.invalidate()
+    expect(resolver.current()).toBeUndefined()
+    await resolver.get()
+    expect(probes).toBeGreaterThan(afterFirst) // 真的重新探了
+  })
+
+  it('require() 没 socket 时抛出人话错误（不是一句 undefined）', () => {
+    const resolver = new DockerSocketResolver(
+      { isSocket: () => false, ping: async () => false, rounds: 1, delayMs: 0, sleep: async () => {} },
+      10_000,
+      () => 0,
+    )
+    expect(() => resolver.require()).toThrow(/Docker socket 暂时不可用/)
   })
 })
 

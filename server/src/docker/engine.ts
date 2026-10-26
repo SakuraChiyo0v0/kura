@@ -1,6 +1,7 @@
 import http from 'node:http'
 import type net from 'node:net'
 import type { Readable } from 'node:stream'
+import { errorMessage } from '../../../src/core/errors.js'
 
 /**
  * Docker Engine API 的最小客户端（经 unix socket）。
@@ -43,7 +44,15 @@ export class DockerError extends Error {
 }
 
 export interface EngineOptions {
-  socketPath: string
+  /**
+   * docker.sock 的路径。**可以给一个 getter**：每次请求现取。
+   *
+   * 为什么允许 getter 而不是定死：容器常跟着宿主重启，那一刻 dockerd 还没 listening，
+   * 启动时探不到 socket。定死的话整个进程就永远没有 Docker 功能了（2026-10-25 真机）。
+   * 交给 getter 之后，resolver 每次都能重新试，socket 一恢复就自愈。
+   * getter 抛错（还没有可用 socket）时，这个请求按连不上处理。
+   */
+  socketPath: string | (() => string)
   /** 单次请求超时；流式接口（日志、拉镜像）不受它限制 */
   timeoutMs?: number
 }
@@ -279,8 +288,15 @@ export class DockerEngine {
     const id = checkRef(execId)
     const body = JSON.stringify({ Detach: false, Tty: options.tty !== false })
     return new Promise((resolve, reject) => {
+      let socketPath: string
+      try {
+        socketPath = this.socketPath()
+      } catch (error) {
+        reject(new DockerError(503, errorMessage(error)))
+        return
+      }
       const req = http.request({
-        socketPath: this.options.socketPath,
+        socketPath,
         path: `/v1.43/exec/${encodeURIComponent(id)}/start`,
         method: 'POST',
         headers: { host: 'docker', 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), connection: 'Upgrade', upgrade: 'tcp' },
@@ -349,6 +365,12 @@ export class DockerEngine {
 
   // ---- 底层 ----
 
+  /** 现取 socket 路径（getter 可能抛「还没有可用 socket」）。 */
+  private socketPath(): string {
+    const configured = this.options.socketPath
+    return typeof configured === 'function' ? configured() : configured
+  }
+
   private raw(method: string, path: string, body?: string): Promise<http.IncomingMessage> {
     return new Promise((resolve, reject) => {
       const headers: http.OutgoingHttpHeaders = { host: 'docker' }
@@ -356,7 +378,14 @@ export class DockerEngine {
         headers['content-type'] = 'application/json'
         headers['content-length'] = Buffer.byteLength(body)
       }
-      const req = http.request({ socketPath: this.options.socketPath, path: `/v1.43${path}`, method, headers }, resolve)
+      let socketPath: string
+      try {
+        socketPath = this.socketPath()
+      } catch (error) {
+        reject(new DockerError(503, errorMessage(error)))
+        return
+      }
+      const req = http.request({ socketPath, path: `/v1.43${path}`, method, headers }, resolve)
       req.on('error', (error) => reject(new DockerError(502, `连不上 Docker：${error.message}`)))
       req.end(body)
     })

@@ -62,9 +62,18 @@ interface DockerContainer {
 
 export type DockerLister = () => Promise<DockerContainer[]>
 
-export function dockerSocketLister(socketPath = '/var/run/docker.sock'): DockerLister {
-  return () =>
-    new Promise((resolve, reject) => {
+/** 只要能给出「现在用哪个 socket」就够了；`DockerSocketResolver` 和固定路径都满足。 */
+export interface SocketPathSource {
+  /** 只用**已知可用**的那个，不触发探测（清单会被频繁拉取，不能每次都 ping） */
+  current(): { path: string } | undefined
+}
+
+export function dockerSocketLister(source: string | SocketPathSource = '/var/run/docker.sock'): DockerLister {
+  return () => {
+    const socketPath = typeof source === 'string' ? source : source.current()?.path
+    // 还没有 socket 就当「一个容器都没发布」—— 清单照常返回，不因为 docker 没就绪整个清单 500
+    if (!socketPath) return Promise.resolve([])
+    return new Promise((resolve, reject) => {
       const req = http.request({ socketPath, path: '/containers/json', method: 'GET', timeout: 5_000 }, (res) => {
         let body = ''
         res.on('data', (c) => (body += c))
@@ -80,6 +89,7 @@ export function dockerSocketLister(socketPath = '/var/run/docker.sock'): DockerL
       req.on('error', reject)
       req.end()
     })
+  }
 }
 
 export class Registry {
