@@ -92,14 +92,24 @@ export function adminPage(options: {
     )
     .join('') || '<tr><td colspan="4" class="note">还没有 Token</td></tr>'
 
-  const serviceRows = options.registry
-    .list()
-    .map(
-      (s) =>
-        `<tr><td>${escapeHtml(s.name)}</td><td><code>${escapeHtml(s.backend)}</code></td><td>${s.rewriteRedirect ? '是' : ''}</td>
+  const scanning = typeof options.registry.scans === 'function' && options.registry.scans()
+  const serviceRows = scanning
+    ? options.registry
+        .list()
+        .map(
+          (s) =>
+            `<tr><td>${escapeHtml(s.name)}</td><td><code>${escapeHtml(s.backend)}</code></td>
+         <td><form method="post" action="/_kura/services/rewrite"><input type="hidden" name="name" value="${escapeHtml(s.name)}"><label><input type="checkbox" name="rewriteRedirect" value="1" ${s.rewriteRedirect ? 'checked' : ''} style="width:auto"> 改写跳转</label> <button class="ghost" style="margin:0;padding:4px 10px">保存</button></form></td></tr>`,
+        )
+        .join('') || '<tr><td colspan="3" class="note">没有正在运行、且能连上的容器端口</td></tr>'
+    : options.registry
+        .list()
+        .map(
+          (s) =>
+            `<tr><td>${escapeHtml(s.name)}</td><td><code>${escapeHtml(s.backend)}</code></td><td>${s.rewriteRedirect ? '是' : ''}</td>
          <td><form method="post" action="/_kura/services/delete" onsubmit="return confirm(this.dataset.confirm)" data-confirm="删除服务 ${escapeHtml(s.name)}？"><input type="hidden" name="name" value="${escapeHtml(s.name)}"><button class="ghost" style="margin:0;padding:4px 10px">删除</button></form></td></tr>`,
-    )
-    .join('') || '<tr><td colspan="4" class="note">没有配置额外的应用</td></tr>'
+        )
+        .join('') || '<tr><td colspan="4" class="note">没有配置额外的应用</td></tr>'
 
   const auditRows = options.audit
     .map((a) => `<tr><td>${escapeHtml(String(a.at ?? '').slice(0, 19).replace('T', ' '))}</td><td>${escapeHtml(String(a.action ?? ''))}</td><td>${escapeHtml(String(a.user ?? ''))}</td><td><code>${escapeHtml(String(a.detail ?? '').slice(0, 80))}</code></td><td>${a.exitCode === undefined ? '' : escapeHtml(String(a.exitCode))}</td></tr>`)
@@ -146,13 +156,19 @@ export function adminPage(options: {
 
       <section>
         <h2>服务清单</h2>
-        <table><thead><tr><th>名字</th><th>后端</th><th>改写跳转</th><th></th></tr></thead><tbody>${serviceRows}</tbody></table>
+        ${
+          scanning
+            ? `<p class="note">跟着正在运行的容器走。容器删了，这里会消失；新发布的端口会出现。文件里只保留「改写跳转」（hermes 那种绝对路径跳转）。</p>
+        <table><thead><tr><th>名字</th><th>后端</th><th></th></tr></thead><tbody>${serviceRows}</tbody></table>`
+            : `<table><thead><tr><th>名字</th><th>后端</th><th>改写跳转</th><th></th></tr></thead><tbody>${serviceRows}</tbody></table>
         <form method="post" action="/_kura/services/add">
           <label>加一个应用</label>
           <div class="row"><input name="name" placeholder="名字（小写字母数字连字符）"><input name="backend" placeholder="http://容器名:端口"></div>
           <label><input type="checkbox" name="rewriteRedirect" value="1" style="width:auto"> 应用会发绝对路径跳转（如 hermes）</label>
           <button type="submit">添加</button>
         </form>
+        <p class="note">还没扫到 Docker。连上之后，名单改为容器扫描，手写的条目不再决定有哪些服务。</p>`
+        }
       </section>
 
       <section>
@@ -243,6 +259,7 @@ export function createAdminHandler(options: AdminOptions): AdminHandler {
 
     if (path === '/' || path === '') {
       if (req.method === 'GET') {
+        await options.registry.refresh(true)
         html(
           res,
           200,
@@ -320,6 +337,27 @@ export function createAdminHandler(options: AdminOptions): AdminHandler {
       const form = parseForm(await readBodyText())
       redirect(res, '/_kura/?probe=' + encodeURIComponent(form.get('path') ?? ''))
       return
+    }
+
+    if (path === '/services/rewrite' && req.method === 'POST') {
+      const form = parseForm(await readBodyText())
+      const name = (form.get('name') ?? '').trim()
+      try {
+        options.registry.setRewrite(name, form.get('rewriteRedirect') === '1')
+        log('管理页改了改写跳转', { 服务: name })
+        redirect(res, '/_kura/?ok=' + encodeURIComponent(`已更新 ${name}`))
+      } catch (error) {
+        redirect(res, '/_kura/?err=' + encodeURIComponent(errorMessage(error)))
+      }
+      return
+    }
+
+    if ((path === '/services/add' || path === '/services/delete') && req.method === 'POST') {
+      await options.registry.refresh(true)
+      if (options.registry.scans()) {
+        redirect(res, '/_kura/?err=' + encodeURIComponent('名单来自正在运行的容器，不能手写增减'))
+        return
+      }
     }
 
     if (path === '/services/add' && req.method === 'POST') {

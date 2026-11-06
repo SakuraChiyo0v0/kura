@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { request as realRequest, type HttpRequester } from '../../src/core/http.js'
 import { Mirror } from '../../src/core/mirror.js'
 import { FakeUgreen } from '../../src/core/testing/fake-ugreen.js'
-import { Registry, parseServices } from '../src/registry.js'
+import { Registry, parseServices, type DockerContainer } from '../src/registry.js'
 import { createKuraServer, stripCookies } from '../src/server.js'
 
 /**
@@ -39,20 +39,86 @@ describe('registry', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('清单：内置服务 + 配置服务；docker 里发布了的标 published', async () => {
-    const reg = new Registry(undefined, { webdav: 18005, 'nas-console': 8890 }, async () => [
-      { Names: ['/openlist'], Ports: [{ PrivatePort: 5244, PublicPort: 5244, Type: 'tcp' }] },
-    ])
+  it('有 Docker 时名单来自正在运行的容器；文件里多出来的名字不出现，改写跳转还在', async () => {
+    const containers: DockerContainer[] = [
+      { Names: ['/kura-server'], Ports: [{ PrivatePort: 8080, PublicPort: 8898, Type: 'tcp', IP: '0.0.0.0' }], NetworkSettings: { Networks: { 'sso-net': { Gateway: '172.25.0.1' }, 'kura-internal': {} } } },
+      { Names: ['/kura-shell'], Ports: [{ PrivatePort: 8890, Type: 'tcp' }], NetworkSettings: { Networks: { 'kura-internal': {} } } },
+      // 同一网络、端口发布了：后端用容器名，宿主端口另记
+      { Names: ['/hermes'], Ports: [{ PrivatePort: 9119, PublicPort: 9119, Type: 'tcp', IP: '0.0.0.0' }, { PrivatePort: 9119, PublicPort: 9119, Type: 'tcp', IP: '::' }], NetworkSettings: { Networks: { 'sso-net': { Gateway: '172.25.0.1' } } } },
+      // 同一网络、没发布：照样登记，走容器 DNS
+      { Names: ['/navidrome'], Ports: [{ PrivatePort: 4533, Type: 'tcp' }], NetworkSettings: { Networks: { 'sso-net': { Gateway: '172.25.0.1' } } } },
+      // 不在同一网络、发布到了非回环：后端用网关地址 + 宿主端口
+      { Names: ['/nginx'], Ports: [{ PrivatePort: 80, PublicPort: 8730, Type: 'tcp', IP: '0.0.0.0' }], NetworkSettings: { Networks: { bridge: { Gateway: '172.17.0.1' } } } },
+      // 只绑回环，又不在同一网络：不登记
+      { Names: ['/mihomo'], Ports: [{ PrivatePort: 9090, PublicPort: 9090, Type: 'tcp', IP: '127.0.0.1' }], NetworkSettings: { Networks: { 'proxy-net': { Gateway: '172.19.0.1' } } } },
+      // 没发布、也不在同一网络（数据库这种）：不登记
+      { Names: ['/postgres'], Ports: [{ PrivatePort: 5432, Type: 'tcp' }], NetworkSettings: { Networks: { 'proxy-net': { Gateway: '172.19.0.1' } } } },
+      // 下划线收成连字符，后端仍用容器原名
+      { Names: ['/my_site'], Ports: [{ PrivatePort: 8080, Type: 'tcp' }], NetworkSettings: { Networks: { 'sso-net': {} } } },
+    ]
+    const reg = new Registry(undefined, { webdav: 18005, 'nas-console': 8890 }, async () => containers)
     reg.set([
-      { name: 'openlist', backend: 'http://openlist:5244' },
-      { name: 'hermes', backend: 'http://hermes:9119' },
+      { name: 'hermes', backend: 'http://hermes:9119', rewriteRedirect: true },
+      { name: 'astrahub', backend: 'http://astrahub:4310' },
     ])
     expect(await reg.entries()).toEqual([
       { name: 'webdav', container_port: 18005, host_port: 0, published: false },
       { name: 'nas-console', container_port: 8890, host_port: 0, published: false },
-      { name: 'openlist', container_port: 5244, host_port: 5244, published: true },
-      { name: 'hermes', container_port: 9119, host_port: 0, published: false },
+      { name: 'hermes', container_port: 9119, host_port: 9119, published: true },
+      { name: 'my-site', container_port: 8080, host_port: 0, published: false },
+      { name: 'navidrome', container_port: 4533, host_port: 0, published: false },
+      { name: 'nginx', container_port: 8730, host_port: 8730, published: true },
     ])
+    expect(reg.find('hermes')).toEqual({ name: 'hermes', backend: 'http://hermes:9119', rewriteRedirect: true })
+    expect(reg.find('nginx')?.backend).toBe('http://172.17.0.1:8730')
+    expect(reg.find('my-site')?.backend).toBe('http://my_site:8080')
+    expect(reg.find('astrahub')).toBeUndefined()
+    expect(reg.find('kura-server')).toBeUndefined()
+  })
+
+  it('docker 暂时不可用时沿用上一份，不把文件里的幽灵又请回来', async () => {
+    let up = true
+    const reg = new Registry(undefined, {}, async () =>
+      up
+        ? [{ Names: ['/nginx'], Ports: [{ PrivatePort: 80, PublicPort: 8730, Type: 'tcp', IP: '0.0.0.0' }], NetworkSettings: { Networks: { bridge: { Gateway: '172.17.0.1' } } } }]
+        : null,
+    )
+    reg.set([{ name: 'astrahub', backend: 'http://astrahub:4310' }])
+    expect((await reg.entries()).map((entry) => entry.name)).toEqual(['nginx'])
+    up = false
+    expect((await reg.entries()).map((entry) => entry.name)).toEqual(['nginx'])
+  })
+
+  it('还从没扫成过、docker 又不可用：退回文件里的名单', async () => {
+    const reg = new Registry(undefined, { webdav: 1 }, async () => null)
+    reg.set([{ name: 'navidrome', backend: 'http://navidrome:4533' }])
+    expect((await reg.entries()).map((entry) => entry.name)).toEqual(['webdav', 'navidrome'])
+  })
+
+  it('一个容器发布多个端口：仍是多条兼容入口，但共享容器和完整 ports 列表', async () => {
+    const id = 'a'.repeat(64)
+    const reg = new Registry(undefined, {}, async () => [
+      {
+        Id: id,
+        Names: ['/snowluma'],
+        Ports: [
+          { PrivatePort: 3000, PublicPort: 3000, Type: 'tcp', IP: '0.0.0.0' },
+          { PrivatePort: 3001, PublicPort: 3001, Type: 'tcp', IP: '0.0.0.0' },
+          { PrivatePort: 5099, PublicPort: 5099, Type: 'tcp', IP: '0.0.0.0' },
+          { PrivatePort: 5900, Type: 'tcp' },
+        ],
+        NetworkSettings: { Networks: { bridge: { Gateway: '172.17.0.1' } } },
+      },
+    ])
+    const entries = await reg.entries()
+    const ports = [
+      { name: 'snowluma-3000', container_port: 3000, host_port: 3000, published: true },
+      { name: 'snowluma-3001', container_port: 3001, host_port: 3001, published: true },
+      { name: 'snowluma-5099', container_port: 5099, host_port: 5099, published: true },
+    ]
+    expect(entries).toEqual(ports.map((entry) => ({ ...entry, container: 'snowluma', container_id: id, ports })))
+    // 旧客户端读顶部字段仍然拿到入口名、容器端口 / 宿主端口和发布状态。
+    expect(entries.map(({ name, container_port, host_port, published }) => ({ name, container_port, host_port, published }))).toEqual(ports)
   })
 
   it('转发给应用时去掉绿联令牌与旧客户端残留的网关会话，保留应用自己的 cookie', () => {

@@ -97,6 +97,27 @@ describe('Mirror：服务端清单', () => {
     expect(await m.syncNow()).toBe(0)
   })
 
+  it('成功同步后，清单里消失的服务会卸掉；同步失败则留着', async () => {
+    const [keep, drop] = [await freePort(), await freePort()]
+    fake.servicesBody = JSON.stringify({
+      services: [
+        { name: 'navidrome', container_port: keep },
+        { name: 'astrahub', container_port: drop },
+      ],
+    })
+    const m = newMirror()
+    await m.syncNow()
+    expect(m.snapshot().services.map((service) => service.key).sort()).toEqual(['astrahub', 'navidrome'])
+
+    fake.servicesBody = JSON.stringify({ services: [{ name: 'navidrome', container_port: keep }] })
+    expect(await m.syncNow()).toBe(0)
+    expect(m.snapshot().services.map((service) => service.key)).toEqual(['navidrome'])
+
+    fake.servicesBody = 'not json'
+    await expect(m.syncNow()).rejects.toThrow()
+    expect(m.snapshot().services.map((service) => service.key)).toEqual(['navidrome'])
+  })
+
   it('用户手动关掉的服务不会被下一轮同步重新打开，且重启后仍是关的', async () => {
     const port = await freePort()
     fake.servicesBody = JSON.stringify({ services: [{ name: 'navidrome', container_port: port }] })
@@ -110,6 +131,83 @@ describe('Mirror：服务端清单', () => {
     const again = newMirror()
     await again.syncNow()
     expect(again.snapshot().services[0]!.listener).toMatchObject({ enabled: false, running: false })
+  })
+
+  it('同一容器的多个入口：监听仍各占一条，界面模型收成一个应用并求和统计', async () => {
+    const [p3000, p3001, p5099] = [await freePort(), await freePort(), await freePort()]
+    const ports = [
+      { name: 'snowluma-3000', container_port: 3000, host_port: p3000, published: true },
+      { name: 'snowluma-3001', container_port: 3001, host_port: p3001, published: true },
+      { name: 'snowluma-5099', container_port: 5099, host_port: p5099, published: true },
+    ]
+    fake.servicesBody = JSON.stringify({
+      services: ports.map((port) => ({ ...port, container: 'snowluma', container_id: 'a'.repeat(64), ports })),
+    })
+    const m = newMirror()
+    await m.syncNow()
+    const snap = m.snapshot()
+    expect(snap.services.map((service) => service.key).sort()).toEqual(['snowluma-3000', 'snowluma-3001', 'snowluma-5099'])
+    expect(snap.discovery).toMatchObject({ entries: 3, containers: 1 })
+    expect(snap.containers).toHaveLength(1)
+    expect(snap.containers[0]).toMatchObject({ label: 'snowluma', key: 'a'.repeat(64) })
+    expect(snap.containers[0]!.ports.map((port) => port.spec.port)).toEqual([p3000, p3001, p5099])
+    expect(snap.containers[0]!.ports.every((port) => port.listener.running)).toBe(true)
+
+    // 统计是入口级落盘，但容器卡片看到的是总和。
+    const byKey = (m as unknown as { byKey: Map<string, { stats: ServiceStats }> }).byKey
+    byKey.get('snowluma-3000')!.stats.noteRequest()
+    byKey.get('snowluma-5099')!.stats.noteRequest()
+    byKey.get('snowluma-5099')!.stats.noteRequest()
+    byKey.get('snowluma-3001')!.stats.bytesDown = 2048
+    expect(m.snapshot().containers[0]!.stats).toMatchObject({ requests: 3, bytesDown: 2048 })
+    expect(m.snapshot().containers[0]!.stats.recent.requests).toBe(3)
+  })
+
+  it('同步补上容器元数据：启动先用旧缓存挂上，也不会一直停在多条独立服务', async () => {
+    const port = await freePort()
+    writeFileSync(join(dataDir, 'discovered.json'), JSON.stringify({ services: [{ name: 'snowluma-5099', container_port: port }] }))
+    let servicesBody = JSON.stringify({
+      services: [{
+        name: 'snowluma-5099',
+        container: 'snowluma',
+        container_id: 'b'.repeat(64),
+        container_port: port,
+        host_port: port,
+        published: true,
+        ports: [{ name: 'snowluma-5099', container_port: 5099, host_port: port, published: true }],
+      }],
+    })
+    fake.servicesBody = servicesBody
+    const m = newMirror()
+    await m.syncNow() // 留下旧形状的缓存（入口名以 -5099 结尾）
+    await m.stop()
+
+    servicesBody = JSON.stringify({
+      services: [{
+        name: 'snowluma-5099',
+        container: 'snowluma',
+        container_id: 'b'.repeat(64),
+        container_port: port,
+        host_port: port,
+        published: true,
+        ports: [{ name: 'snowluma-5099', container_port: 5099, host_port: port, published: true }],
+      }],
+    })
+    fake.servicesBody = servicesBody
+    const again = newMirror()
+    await again.start()
+    await again.syncNow()
+    expect(again.snapshot().containers[0]?.label).toBe('snowluma')
+    expect(again.snapshot().services[0]!.spec.containerId).toBe('b'.repeat(64))
+  })
+
+  it('旧服务端清单没有容器字段：每条仍显示成一个应用', async () => {
+    const port = await freePort()
+    fake.servicesBody = JSON.stringify({ services: [{ name: 'legacy', container_port: port }] })
+    const m = newMirror()
+    await m.syncNow()
+    expect(m.snapshot().discovery.containers).toBe(1)
+    expect(m.snapshot().containers).toMatchObject([{ key: 'service:legacy', label: 'legacy' }])
   })
 
   it('挂不上的记进 skipped，不影响其它服务', async () => {
@@ -128,6 +226,9 @@ describe('Mirror：服务端清单', () => {
     await m.syncNow()
     const snap = m.snapshot()
     expect(snap.discovery.skipped).toEqual([expect.stringContaining('bad')])
+    // 清单说 3 个应用，但非法端口那条没有挂上：概览按实际挂载数显示，不能虚报 3。
+    expect(snap.discovery.containers).toBe(3)
+    expect(snap.containerCount).toBe(2)
     // 端口被占不算「跳过」：挂上了，只是没在监听（界面要显示原因）
     expect(snap.services.find((s) => s.key === 'a')!.listener).toMatchObject({ enabled: true, running: false })
     expect(snap.services.find((s) => s.key === 'b')!.listener.running).toBe(true)

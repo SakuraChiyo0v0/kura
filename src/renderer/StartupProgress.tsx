@@ -29,7 +29,7 @@ export function startupSteps(snapshot: MirrorSnapshot | null): Step[] {
   const synced = snapshot.phase === 'ready'
   const syncFailed = snapshot.phase === 'failed'
   return [
-    { name: '启动映射核心', state: 'done', detail: snapshot.fromCache ? `已按上次的清单挂上 ${snapshot.services.length} 个服务` : '已启动' },
+    { name: '启动映射核心', state: 'done', detail: snapshot.fromCache ? `已按上次的清单挂上 ${snapshot.containers.length} 个应用、${snapshot.services.length} 个入口` : '已启动' },
     {
       name: '登录 NAS',
       state: authFailed ? 'failed' : loggedIn || synced ? 'done' : 'active',
@@ -39,7 +39,7 @@ export function startupSteps(snapshot: MirrorSnapshot | null): Step[] {
       name: '拉取服务清单',
       state: synced ? 'done' : syncFailed ? 'failed' : authFailed ? 'waiting' : loggedIn ? 'active' : 'waiting',
       detail: synced
-        ? `清单里有 ${snapshot.discovery.entries} 个服务`
+        ? `清单里有 ${snapshot.discovery.containers} 个应用、${snapshot.discovery.entries} 个入口`
         : syncFailed
           ? snapshot.discovery.lastError
           : '从网关取 /__services',

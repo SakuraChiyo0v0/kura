@@ -43,8 +43,8 @@
   旧客户端启动时会先登一次，不回 200 它会直接报错。
 - `X-Nas-Service: <名>` 请求头分流；没有头时按 `/<名>/` 路径前缀。
   头优先，路径前缀用**白名单**（只认清单里的名字，网关自己的 `/api/…`、`/static/…` 不会被当成服务名 —— 现网踩过）。
-- `GET /__services` → `{"services":[{name,container_port,host_port,published}]}`，不再需要认证。
-  数据来源是配置文件 + docker 端口查询，见 §五。
+- `GET /__services` → `{"services":[{name,container,container_id,ports,container_port,host_port,published}]}`，不再需要认证。
+  一条仍对应一个入口；`container / container_id / ports[]` 是新客户端把同一容器的多个入口收拢成一个应用所需，旧字段保留兼容。数据来源见 §五。
 - **不再有会话 cookie**，也不校验 Host 域。客户端仍然照发公网域名 Host —— 旧链路留下的做法，
   顺带让容器应用在两种链路下看到的 Host 一致。
 
@@ -76,6 +76,10 @@ kura-shell 的**内部令牌**仍然保留 —— 那不是这一层认证，是
 - 上传体积不限（现网 nginx 为此改过 `client_max_body_size 20g`，踩坑记录见设计方案）。
 
 ## 五、服务清单
+
+> 已于 2026-11-04 变更：有 Docker 时名单改为扫描正在运行的容器，`services.json` 只保留同名服务的 `rewriteRedirect`。容器删了就不会再出现在 `/__services`。见 `docs/归档/2026-11-04 服务清单改为扫描容器.md`。
+>
+> 已于 2026-11-06 补充：同一个容器发布多个端口时，清单按入口输出，同时带 `container`、`container_id` 和 `ports[]` 供客户端聚合；入口名不能合并，反代分流仍靠它。见 `docs/归档/2026-11-06 服务映射按容器聚合.md`。
 
 `/state/services.yaml`（管理页可编辑，也可手改）：
 

@@ -3,7 +3,7 @@ import { Banner, Button, Section, StatCard, StatusBadge } from '@sakura-ui/react
 import { linkModeLabel } from '../shared/labels.js'
 import type { MirrorSnapshot } from '../core/mirror.js'
 import { humanBytes } from '../core/stats.js'
-import { serviceState } from './MirrorView.js'
+import { containerState } from './MirrorView.js'
 
 const icon = { size: 18, strokeWidth: 1.65, 'aria-hidden': true } as const
 
@@ -16,17 +16,17 @@ function relative(ms: number): string {
 }
 
 export function OverviewView({ snapshot, onOpenMirror }: { snapshot: MirrorSnapshot; onOpenMirror: () => void }) {
-  const states = snapshot.services.map(serviceState)
+  const states = snapshot.containers.map(containerState)
   const running = states.filter((s) => s.tone === 'success').length
   const problems = states.filter((s) => s.tone === 'danger' || s.tone === 'warning').length
   // 概览读**近一天**（最近 24 个小时格），不是装机以来的累计：
   // 累计数只增不减，涨到几 GB 之后再看就不动了，看不出「现在忙不忙」。
-  const recent = snapshot.services.reduce(
-    (sum, s) => ({
-      requests: sum.requests + s.stats.recent.requests,
-      errors: sum.errors + s.stats.recent.errors,
-      bytesUp: sum.bytesUp + s.stats.recent.bytesUp,
-      bytesDown: sum.bytesDown + s.stats.recent.bytesDown,
+  const recent = snapshot.containers.reduce(
+    (sum, container) => ({
+      requests: sum.requests + container.stats.recent.requests,
+      errors: sum.errors + container.stats.recent.errors,
+      bytesUp: sum.bytesUp + container.stats.recent.bytesUp,
+      bytesDown: sum.bytesDown + container.stats.recent.bytesDown,
     }),
     { requests: 0, errors: 0, bytesUp: 0, bytesDown: 0 },
   )
@@ -70,11 +70,11 @@ export function OverviewView({ snapshot, onOpenMirror }: { snapshot: MirrorSnaps
           description={`${snapshot.modeSetting === 'auto' ? '自动' : '手动'} · ${lan}`}
         />
         <StatCard
-          label="服务"
+          label="应用"
           icon={<Activity {...icon} />}
-          value={`${running} / ${snapshot.services.length}`}
+          value={`${running} / ${snapshot.containerCount}`}
           unit="在监听"
-          description={problems ? `${problems} 个有问题` : '全部正常'}
+          description={`${snapshot.services.length} 个入口${problems ? ` · ${problems} 个应用异常` : ' · 已启用入口正常'}`}
           trend={problems ? { label: `${problems} 个异常`, direction: 'down', tone: 'danger' } : undefined}
         />
         <StatCard
@@ -111,28 +111,30 @@ export function OverviewView({ snapshot, onOpenMirror }: { snapshot: MirrorSnaps
         }
       >
         <ul className="kura-service-list">
-          {snapshot.services.map((view, i) => (
+          {snapshot.containers.map((view, i) => (
             <li key={view.key}>
-              <span className="kura-service-list__name">{view.spec.label}</span>
+              <span className="kura-service-list__name">{view.label}</span>
               {/* 只在确实在监听时可点：没起来的服务点开也是打不开，不如让它就是一行地址 */}
-              {states[i]!.tone === 'success' ? (
+              {states[i]!.tone === 'success' && view.ports.length === 1 ? (
                 <button
                   type="button"
                   className="kura-service-list__addr kura-service-list__addr--open"
                   title="在浏览器打开"
-                  onClick={() => void window.kura?.openExternal(view.localUrl)}
+                  onClick={() => void window.kura?.openExternal(view.ports[0]!.localUrl)}
                 >
-                  {view.localUrl.replace('http://', '')}
+                  {view.ports[0]!.localUrl.replace('http://', '')}
                 </button>
+              ) : view.ports.length === 1 ? (
+                <span className="kura-service-list__addr">{view.ports[0]!.localUrl.replace('http://', '')}</span>
               ) : (
-                <span className="kura-service-list__addr">{view.localUrl.replace('http://', '')}</span>
+                <span className="kura-service-list__addr">{view.ports.length} 个入口</span>
               )}
               <StatusBadge tone={states[i]!.tone} dot size="sm">
                 {states[i]!.label}
               </StatusBadge>
             </li>
           ))}
-          {snapshot.services.length === 0 && <li className="kura-service-list__empty">还没有服务，正在等服务端清单</li>}
+          {snapshot.containers.length === 0 && <li className="kura-service-list__empty">还没有服务，正在等服务端清单</li>}
         </ul>
       </Section>
     </div>

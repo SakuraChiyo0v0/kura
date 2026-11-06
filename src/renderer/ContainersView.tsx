@@ -577,7 +577,10 @@ function ProjectsTab({
               {(() => {
                 // Kura 独有：项目里的服务（或项目名）在服务映射里有卡片，就给出本机地址
                 const names = new Set([p.name, ...p.services, ...members.map((m) => m.name)])
-                const links = mapped.filter((s) => s.spec.service && names.has(s.spec.service) && s.listener.enabled)
+                // 多端口容器会为每个入口生成一个名字；同一应用可能来自这里或原容器名，两种都认。
+                const links = mapped.filter(
+                  (s) => s.listener.enabled && ((s.spec.container && names.has(s.spec.container)) || (s.spec.service && names.has(s.spec.service))),
+                )
                 if (links.length === 0) return null
                 return (
                   <p className="kura-docker-project__links" data-testid="project-mapped">

@@ -228,6 +228,8 @@ export function createKuraServer(options: ServerOptions): http.Server {
 
   const server = http.createServer({ requestTimeout: 0 }, (req, res) => {
     void (async () => {
+      // 名单跟着容器走。10 秒内的重复请求不重新扫，/__services 自己会强制扫一次。
+      await registry.refresh()
       const target = resolve(req)
       if (!target) return handlePortal(req, res)
       const builtin = builtins[target.name]
@@ -248,49 +250,54 @@ export function createKuraServer(options: ServerOptions): http.Server {
 
   server.on('upgrade', (req, socket: net.Socket, head) => {
     socket.on('error', () => {})
-    const target = resolve(req)
-    if (!target) {
-      socket.end('HTTP/1.1 401 Unauthorized\r\nconnection: close\r\n\r\n')
-      return
-    }
-    const builtin = builtins[target.name]
-    if (builtin?.upgrade) {
-      req.url = target.path
-      return builtin.upgrade(req, socket, head, target.path)
-    }
-    const entry = registry.find(target.name)
-    if (!entry) {
-      socket.end('HTTP/1.1 404 Not Found\r\nconnection: close\r\n\r\n')
-      return
-    }
-    const backend = new URL(entry.backend)
-    const headers = forwardHeaders(req, source(req), { keepUpgrade: true })
-    const upstream = (backend.protocol === 'https:' ? https : http).request({
-      hostname: backend.hostname,
-      port: backend.port || undefined,
-      path: target.path,
-      method: req.method,
-      headers,
-      agent: false,
-    })
-    upstream.on('upgrade', (up, upSocket, upHead) => {
-      const lines = [`HTTP/1.1 ${up.statusCode} ${up.statusMessage ?? 'Switching Protocols'}`]
-      for (let i = 0; i < up.rawHeaders.length; i += 2) lines.push(`${up.rawHeaders[i]}: ${up.rawHeaders[i + 1]}`)
-      socket.write(lines.join('\r\n') + '\r\n\r\n')
-      if (upHead.length) socket.write(upHead)
-      if (head.length) upSocket.write(head)
-      upSocket.on('error', () => socket.destroy())
-      socket.on('close', () => upSocket.destroy())
-      upSocket.on('close', () => socket.destroy())
-      upSocket.pipe(socket)
-      socket.pipe(upSocket)
-    })
-    upstream.on('response', (up) => {
-      socket.write(`HTTP/1.1 ${up.statusCode} ${up.statusMessage ?? ''}\r\nconnection: close\r\n\r\n`)
-      up.pipe(socket)
-    })
-    upstream.on('error', () => socket.end('HTTP/1.1 502 Bad Gateway\r\nconnection: close\r\n\r\n'))
-    upstream.end()
+    void registry
+      .refresh()
+      .then(() => {
+        const target = resolve(req)
+        if (!target) {
+          socket.end('HTTP/1.1 401 Unauthorized\r\nconnection: close\r\n\r\n')
+          return
+        }
+        const builtin = builtins[target.name]
+        if (builtin?.upgrade) {
+          req.url = target.path
+          return builtin.upgrade(req, socket, head, target.path)
+        }
+        const entry = registry.find(target.name)
+        if (!entry) {
+          socket.end('HTTP/1.1 404 Not Found\r\nconnection: close\r\n\r\n')
+          return
+        }
+        const backend = new URL(entry.backend)
+        const headers = forwardHeaders(req, source(req), { keepUpgrade: true })
+        const upstream = (backend.protocol === 'https:' ? https : http).request({
+          hostname: backend.hostname,
+          port: backend.port || undefined,
+          path: target.path,
+          method: req.method,
+          headers,
+          agent: false,
+        })
+        upstream.on('upgrade', (up, upSocket, upHead) => {
+          const lines = [`HTTP/1.1 ${up.statusCode} ${up.statusMessage ?? 'Switching Protocols'}`]
+          for (let i = 0; i < up.rawHeaders.length; i += 2) lines.push(`${up.rawHeaders[i]}: ${up.rawHeaders[i + 1]}`)
+          socket.write(lines.join('\r\n') + '\r\n\r\n')
+          if (upHead.length) socket.write(upHead)
+          if (head.length) upSocket.write(head)
+          upSocket.on('error', () => socket.destroy())
+          socket.on('close', () => upSocket.destroy())
+          upSocket.on('close', () => socket.destroy())
+          upSocket.pipe(socket)
+          socket.pipe(upSocket)
+        })
+        upstream.on('response', (up) => {
+          socket.write(`HTTP/1.1 ${up.statusCode} ${up.statusMessage ?? ''}\r\nconnection: close\r\n\r\n`)
+          up.pipe(socket)
+        })
+        upstream.on('error', () => socket.end('HTTP/1.1 502 Bad Gateway\r\nconnection: close\r\n\r\n'))
+        upstream.end()
+      })
+      .catch(() => socket.end('HTTP/1.1 502 Bad Gateway\r\nconnection: close\r\n\r\n'))
   })
 
   return server

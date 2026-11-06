@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Copy, ExternalLink, RefreshCw, Search } from 'lucide-react'
 import { Banner, Button, EmptyState, FluidSegmented, StatusBadge, SwitchField, TextField, useToast, type StatusTone } from '@sakura-ui/react'
 import type { LinkModeSetting } from '../shared/labels.js'
-import type { MirrorSnapshot, ServiceView } from '../core/mirror.js'
+import type { MirrorSnapshot, ServiceContainerView, ServiceView } from '../core/mirror.js'
 import { humanBytes, type TrendPoint } from '../core/stats.js'
 
 type Filter = 'all' | 'running' | 'off' | 'problem'
@@ -13,6 +13,18 @@ export function serviceState(view: ServiceView): { tone: StatusTone; label: stri
   if (!view.listener.running) return { tone: 'danger', label: '监听失败' }
   if (view.probe && !view.probe.ok) return { tone: 'warning', label: `探测失败 ×${view.probe.failStreak}` }
   return { tone: 'success', label: '监听中' }
+}
+
+/** 容器状态由入口聚合：有坏入口就是问题，全关才是已关闭。 */
+export function containerState(view: ServiceContainerView): { tone: StatusTone; label: string } {
+  const enabledPorts = view.ports.filter((port) => port.listener.enabled)
+  if (enabledPorts.length === 0) return { tone: 'neutral', label: '已关闭' }
+  const states = enabledPorts.map(serviceState)
+  const problems = states.filter((state) => state.tone === 'danger' || state.tone === 'warning').length
+  const running = states.filter((state) => state.tone === 'success').length
+  if (problems > 0) return { tone: 'warning', label: `${problems} 个入口异常` }
+  if (running === enabledPorts.length) return { tone: 'success', label: `${running} 个入口监听中` }
+  return { tone: 'neutral', label: `${running}/${enabledPorts.length} 个入口监听中` }
 }
 
 /** 最近 30 分钟每分钟一柱：按窗口内峰值归一，失败叠在柱顶。纯 SVG，几何在这里算好。 */
@@ -74,12 +86,9 @@ function PortEditor({ view, onSave }: { view: ServiceView; onSave: (port: number
   )
 }
 
-function ServiceCard({ view, refresh }: { view: ServiceView; refresh: () => Promise<void> }) {
+function ServiceCard({ view, refresh }: { view: ServiceContainerView; refresh: () => Promise<void> }) {
   const toast = useToast()
-  const state = serviceState(view)
-  const [toggling, setToggling] = useState(false)
-  const error = view.listener.enabled && !view.listener.running ? view.listener.lastError : ''
-  const probeError = view.probe && !view.probe.ok ? view.probe.error : ''
+  const state = containerState(view)
 
   const run = async (label: string, action: () => Promise<void>) => {
     try {
@@ -92,50 +101,27 @@ function ServiceCard({ view, refresh }: { view: ServiceView; refresh: () => Prom
   }
 
   return (
-    <article className="kura-card" data-testid="service-card" data-service={view.key}>
+    <article
+      className="kura-card kura-card--container"
+      data-testid="service-card"
+      data-container={view.label}
+      {...(view.ports.length === 1 ? { 'data-service': view.ports[0]!.key } : {})}
+    >
+      {/* data-container 给冒烟脚本找；入口 key 仍保留在 data-service，供开关与改端口定位。 */}
       <header className="kura-card__head">
         <div className="kura-card__title">
-          <h3>{view.spec.label}</h3>
+          <h3>{view.label}</h3>
           <StatusBadge tone={state.tone} dot size="sm">
             {state.label}
           </StatusBadge>
         </div>
-        <SwitchField
-          className="kura-card__switch"
-          label="映射"
-          checked={view.listener.enabled}
-          disabled={toggling}
-          onCheckedChange={(checked) => {
-            setToggling(true)
-            void run('切换失败', () => window.kura!.mirror.setEnabled(view.key, checked))
-              .catch(() => {})
-              .finally(() => setToggling(false))
-          }}
-        />
       </header>
 
-      <div className="kura-card__addr">
-        <a className="kura-card__local" href={view.localUrl} target="_blank" rel="noreferrer">
-          {view.localUrl.replace('http://', '')}
-        </a>
-        <Button
-          size="sm"
-          variant="ghost"
-          icon={<Copy size={14} aria-hidden />}
-          aria-label={`复制 ${view.spec.label} 的本机地址`}
-          onClick={() =>
-            void window.kura
-              ?.copyText(view.localUrl)
-              .then(() => toast.notify({ title: '已复制', description: view.localUrl, tone: 'success' }))
-              .catch((caught: Error) => toast.notify({ title: '复制失败', description: caught.message, tone: 'error' }))
-          }
-        />
-      </div>
-      {view.externalUrl && (
-        <a className="kura-card__external" href={view.externalUrl} target="_blank" rel="noreferrer" title="绿联登录后可达（未验证该端口是否已发布）">
-          <ExternalLink size={12} aria-hidden /> 绿联外链
-        </a>
-      )}
+      <ul className="kura-card__ports" aria-label={`${view.label} 的入口`}>
+        {view.ports.map((port) => (
+          <ServicePortRow key={port.key} view={port} onRun={run} />
+        ))}
+      </ul>
 
       {/* 上排是近一天（和概览同一口径），下排才是装机以来的累计 —— 两排数字不同，
           不写清楚会让人以为其中一个是错的 */}
@@ -177,19 +163,112 @@ function ServiceCard({ view, refresh }: { view: ServiceView; refresh: () => Prom
       </dl>
       <Sparkline trend={view.stats.trend} />
 
-      {(error || probeError || view.stats.lastError) && (
-        <p className="kura-card__error">{error || probeError || `最近一次失败：${view.stats.lastError}`}</p>
-      )}
-
-      <footer className="kura-card__foot">
-        <PortEditor key={view.listener.port} view={view} onSave={(port) => run('改端口失败', () => window.kura!.mirror.setPort(view.key, port))} />
-        <span className="kura-card__meta">
-          NAS {view.spec.port}
-          {view.spec.service ? ` · 网关 ${view.spec.service}` : ' · 直连'}
-          {view.spec.source === 'discovered' ? ' · 服务端发现' : ' · 本地配置'}
-        </span>
-      </footer>
+      <span className="kura-card__meta">
+        {view.ports.length > 1 ? `${view.ports.length} 个入口 · 每个入口独立映射` : '1 个入口'}
+        {view.ports[0]?.spec.source === 'discovered' ? ' · 服务端发现' : ' · 本地配置'}
+      </span>
     </article>
+  )
+}
+
+function ServicePortRow({
+  view,
+  onRun,
+}: {
+  view: ServiceView
+  onRun: (label: string, action: () => Promise<void>) => Promise<void>
+}) {
+  const toast = useToast()
+  const state = serviceState(view)
+  const [toggling, setToggling] = useState(false)
+  const error = view.listener.enabled && !view.listener.running ? view.listener.lastError : ''
+  const probeError = view.probe && !view.probe.ok ? view.probe.error : ''
+  return (
+    <li className="kura-port-row" data-entry={view.key}>
+      <div className="kura-port-row__head">
+        <span className="kura-port-row__name">端口 {view.spec.port}</span>
+        <StatusBadge tone={state.tone} dot size="sm">
+          {state.label}
+        </StatusBadge>
+        <SwitchField
+          className="kura-port-row__switch"
+          label={`映射 ${view.spec.port}`}
+          checked={view.listener.enabled}
+          disabled={toggling}
+          onCheckedChange={(checked) => {
+            setToggling(true)
+            void onRun('切换失败', () => window.kura!.mirror.setEnabled(view.key, checked))
+              .catch(() => {})
+              .finally(() => setToggling(false))
+          }}
+        />
+      </div>
+      <div className="kura-port-row__addr">
+        <a className="kura-card__local" href={view.localUrl} target="_blank" rel="noreferrer">
+          {view.localUrl.replace('http://', '')}
+        </a>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon={<Copy size={14} aria-hidden />}
+          aria-label={`复制 ${view.spec.label} 的本机地址`}
+          onClick={() =>
+            void window.kura
+              ?.copyText(view.localUrl)
+              .then(() => toast.notify({ title: '已复制', description: view.localUrl, tone: 'success' }))
+              .catch((caught: Error) => toast.notify({ title: '复制失败', description: caught.message, tone: 'error' }))
+          }
+        />
+        {view.externalUrl && (
+          <a className="kura-card__external" href={view.externalUrl} target="_blank" rel="noreferrer" title="绿联登录后可达（未验证该端口是否已发布）">
+            <ExternalLink size={12} aria-hidden /> 绿联外链
+          </a>
+        )}
+        <PortEditor view={view} onSave={(port) => onRun('改端口失败', () => window.kura!.mirror.setPort(view.key, port))} />
+      </div>
+      <p className="kura-port-row__meta">
+        NAS {view.spec.port}
+        {view.spec.service ? ` · 网关 ${view.spec.service}` : ' · 直连'}
+      </p>
+      <details className="kura-port-row__details">
+        <summary>此入口流量</summary>
+        <dl className="kura-port-row__stats">
+          <div>
+            <dt>近一天请求</dt>
+            <dd>{view.stats.recent.requests}</dd>
+          </div>
+          <div>
+            <dt>近一天失败</dt>
+            <dd data-bad={view.stats.recent.errors > 0}>{view.stats.recent.errors}</dd>
+          </div>
+          <div>
+            <dt>↑ 近一天</dt>
+            <dd>{humanBytes(view.stats.recent.bytesUp)}</dd>
+          </div>
+          <div>
+            <dt>↓ 近一天</dt>
+            <dd>{humanBytes(view.stats.recent.bytesDown)}</dd>
+          </div>
+          <div>
+            <dt>累计请求</dt>
+            <dd>{view.stats.requests}</dd>
+          </div>
+          <div>
+            <dt>累计失败</dt>
+            <dd data-bad={view.stats.errors > 0}>{view.stats.errors}</dd>
+          </div>
+          <div>
+            <dt>↑ 累计</dt>
+            <dd>{humanBytes(view.stats.bytesUp)}</dd>
+          </div>
+          <div>
+            <dt>↓ 累计</dt>
+            <dd>{humanBytes(view.stats.bytesDown)}</dd>
+          </div>
+        </dl>
+      </details>
+      {(error || probeError || view.stats.lastError) && <p className="kura-card__error">{error || probeError || `最近一次失败：${view.stats.lastError}`}</p>}
+    </li>
   )
 }
 
@@ -227,15 +306,15 @@ export function MirrorView({ snapshot, refresh }: { snapshot: MirrorSnapshot; re
 
   const services = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return snapshot.services.filter((view) => {
-      if (q && !`${view.spec.label} ${view.spec.port} ${view.listener.port}`.toLowerCase().includes(q)) return false
-      const state = serviceState(view)
-      if (filter === 'running') return state.tone === 'success'
-      if (filter === 'off') return !view.listener.enabled
-      if (filter === 'problem') return state.tone === 'danger' || state.tone === 'warning'
+    return snapshot.containers.filter((view) => {
+      const search = `${view.label} ${view.ports.map((port) => `${port.spec.port} ${port.listener.port}`).join(' ')}`.toLowerCase()
+      if (q && !search.includes(q)) return false
+      if (filter === 'running') return containerState(view).tone === 'success'
+      if (filter === 'off') return view.ports.every((port) => !port.listener.enabled)
+      if (filter === 'problem') return containerState(view).tone === 'warning'
       return true
     })
-  }, [snapshot.services, filter, query])
+  }, [snapshot.containers, filter, query])
 
   return (
     <div className="kura-mirror">
@@ -285,7 +364,7 @@ export function MirrorView({ snapshot, refresh }: { snapshot: MirrorSnapshot; re
         <Banner tone="neutral" description={`跳过 ${snapshot.discovery.skipped.length} 个服务：${snapshot.discovery.skipped.join('；')}`} />
       )}
 
-      {snapshot.services.length === 0 ? (
+      {snapshot.containers.length === 0 ? (
         <div className="kura-placeholder">
           <EmptyState
             title="还没有服务"

@@ -6,7 +6,7 @@ import { ServiceListener, type ListenerStatus } from './listener.js'
 import { silentLogger, type Logger } from './log.js'
 import { createServiceProxy } from './proxy.js'
 import { SessionManager, noGateway, type AuthStatus } from './session.js'
-import { ServiceStats, type StatsSnapshot } from './stats.js'
+import { ServiceStats, trendBuckets, type StatsSnapshot } from './stats.js'
 import { NullStatsStore, StatsStore, type StatsSink } from './stats-store.js'
 import { ServiceOverrideStore, readJson, writeJsonAtomic } from './store.js'
 import { UgreenClient, appBase } from './ugreen.js'
@@ -38,6 +38,10 @@ export interface ServiceSpec {
   note?: string
   /** 来源：本地配置 / 服务端清单发现 */
   source: 'local' | 'discovered'
+  /** 所属容器（服务端扫描得到）；旧服务端或本地配置没有。 */
+  container?: string
+  /** Docker 容器 ID。名字改了仍按它把入口收成一个应用。 */
+  containerId?: string
   headers?: Record<string, string>
   localPort?: number
   enabled?: boolean
@@ -55,10 +59,24 @@ export interface ServiceView {
   probe?: ProbeResult
 }
 
+/** 一个容器（或一个无法归组的旧服务）在界面上的一张卡片。 */
+export interface ServiceContainerView {
+  /** 容器 ID 优先；没有时退回入口 key，保证旧服务端也能显示。 */
+  key: string
+  label: string
+  containerId?: string
+  /** 同一容器映射到本机的全部入口，每个入口仍有独立监听。 */
+  ports: ServiceView[]
+  /** 各入口累计数之和；趋势按时间格相加。 */
+  stats: StatsSnapshot
+}
+
 export interface DiscoveryState {
   lastSync: number
   lastError: string
   entries: number
+  /** 本次清单里的应用数（同一容器的多个入口只算一个）。 */
+  containers: number
   added: number
   skipped: string[]
 }
@@ -85,6 +103,10 @@ export interface MirrorSnapshot {
   auth: AuthStatus
   discovery: DiscoveryState
   services: ServiceView[]
+  /** 界面按容器聚合；services 仍是入口级，供监听、路由和 MCP 使用。 */
+  containers: ServiceContainerView[]
+  /** 实际已挂载的应用总数（含本地配置）；与界面卡片数一致。 */
+  containerCount: number
 }
 
 export interface MirrorOptions {
@@ -105,9 +127,17 @@ export interface MirrorOptions {
   discover?: boolean
 }
 
-/** /__services 的一条（字段见服务端 gen-services.sh；host_port 为 0 = 没发布到宿主）。 */
-interface RegistryEntry {
+/** /__services 的一条。host_port 为 0 = 没发布到宿主；container* / ports 是新服务端才有的聚合元数据。 */
+export interface RegistryEntry {
   name: string
+  container?: string
+  container_id?: string
+  ports?: Array<{
+    name: string
+    container_port?: number
+    host_port?: number
+    published?: boolean
+  }>
   container_port?: number
   host_port?: number
   published?: boolean
@@ -122,9 +152,50 @@ function toSpec(entry: RegistryEntry): ServiceSpec {
     service: entry.name,
     label: entry.name,
     group: discoveryGroup,
+    ...(entry.container ? { container: entry.container } : {}),
+    ...(entry.container_id ? { containerId: entry.container_id } : {}),
     note: '来自服务端清单（自动发现）',
     source: 'discovered',
   }
+}
+
+/** 清单里的应用数：新服务端给容器信息，旧服务端只能把每条当独立服务。 */
+export function countManifestContainers(entries: RegistryEntry[]): number {
+  return new Set(entries.map((entry) => entry.container_id || entry.container || `port:${toSpec(entry).port}:${entry.name}`)).size
+}
+
+/** 把同一容器的入口统计相加。趋势按时间戳合并，避免数组下标错位时算错。 */
+export function aggregateStats(views: ServiceView[]): StatsSnapshot {
+  const trends = new Map<number, { at: number; requests: number; errors: number }>()
+  const stats: StatsSnapshot = {
+    requests: 0,
+    errors: 0,
+    lastError: '',
+    bytesUp: 0,
+    bytesDown: 0,
+    recent: { requests: 0, errors: 0, bytesUp: 0, bytesDown: 0 },
+    trend: [],
+  }
+  for (const view of views) {
+    const item = view.stats
+    stats.requests += item.requests
+    stats.errors += item.errors
+    if (!stats.lastError && item.lastError) stats.lastError = item.lastError
+    stats.bytesUp += item.bytesUp
+    stats.bytesDown += item.bytesDown
+    stats.recent.requests += item.recent.requests
+    stats.recent.errors += item.recent.errors
+    stats.recent.bytesUp += item.recent.bytesUp
+    stats.recent.bytesDown += item.recent.bytesDown
+    for (const point of item.trend) {
+      const sum = trends.get(point.at) ?? { at: point.at, requests: 0, errors: 0 }
+      sum.requests += point.requests
+      sum.errors += point.errors
+      trends.set(point.at, sum)
+    }
+  }
+  stats.trend = [...trends.values()].sort((a, b) => a.at - b.at).slice(-trendBuckets)
+  return stats
 }
 
 interface Mounted {
@@ -144,9 +215,10 @@ export class ServiceMissingError extends Error {}
  * 端口映射的总装：会话、链路、反代、监听、发现、探测都在这里接起来。
  *
  * 取舍沿用 Go 版：
- * - 服务端清单**只增不减**：清单里消失的服务不自动关（生成脚本没重跑、临时读不到，都不该停掉本机在用的镜像）
- * - **本地优先**：本地配置先挂，清单里同名 / 同端口的跳过
- * - 拉不到就用**上次的缓存**；已挂上的一律不动（用户手动关掉的不会被下一轮同步重新打开）
+ * - 成功拉到的清单就是名单：从里面消失的「服务端发现」服务会卸掉（容器删了不该继续占着本机端口）
+ * - **同步失败不动已挂上的**：临时读不到清单，不该把正在用的映射停掉
+ * - **本地优先**：本地配置先挂，清单里同名 / 同端口的跳过；本地配置的服务不跟着清单增减
+ * - 拉不到就用**上次的缓存**（用户手动关掉的不会被下一轮同步重新打开）
  */
 export class Mirror {
   readonly sessions: SessionManager
@@ -163,7 +235,7 @@ export class Mirror {
   private stops: Array<() => void> = []
   private running = false
   private modeSetting: LinkModeSetting
-  private discoveryState: DiscoveryState = { lastSync: 0, lastError: '', entries: 0, added: 0, skipped: [] }
+  private discoveryState: DiscoveryState = { lastSync: 0, lastError: '', entries: 0, containers: 0, added: 0, skipped: [] }
   private phase: MirrorPhase = 'starting'
   private fromCache = false
   private readonly changeListeners = new Set<() => void>()
@@ -244,7 +316,12 @@ export class Mirror {
   private attach(spec: ServiceSpec): Mounted {
     const key = this.keyOf(spec)
     const exist = this.byKey.get(key)
-    if (exist) return exist
+    if (exist) {
+      // 启动先按旧缓存挂上时，缓存没有新的容器字段；同步拿到同一入口后必须把元数据补上，
+      // 否则升级后的第一次运行会一直显示成“多条独立服务”，直到重启重读新缓存。
+      exist.spec = spec
+      return exist
+    }
     if (spec.port <= 0 || spec.port > 65535) throw new Error(`端口 ${spec.port} 不合法`)
 
     const override = this.overrides.get(spec.port)
@@ -375,7 +452,21 @@ export class Mirror {
 
   // ---- 服务端清单 ----
 
-  private async applyEntries(entries: RegistryEntry[]): Promise<{ added: number; skipped: string[] }> {
+  private async applyEntries(entries: RegistryEntry[]): Promise<{ added: number; removed: number; skipped: string[] }> {
+    const keep = new Set(entries.map((entry) => entry.name).filter((name) => name.length > 0))
+    let removed = 0
+    for (const [key, mounted] of [...this.byKey]) {
+      // 只卸「服务端发现」的。本地配置、以及这次清单里还有的，不动。
+      if (mounted.spec.source !== 'discovered' || keep.has(key)) continue
+      await mounted.listener.close()
+      if (mounted.internal) await mounted.internal.close()
+      this.byKey.delete(key)
+      for (const [port, occupant] of this.byPort) if (occupant === mounted) this.byPort.delete(port)
+      this.watchdog.forget(key)
+      removed += 1
+    }
+    if (removed > 0) this.log.info('服务端清单里消失的服务已卸下', { 卸下: removed })
+
     let added = 0
     const skipped: string[] = []
     for (const entry of entries) {
@@ -398,7 +489,7 @@ export class Mirror {
         this.log.warn('服务监听失败', { service: entry.name, err: errorMessage(error) })
       }
     }
-    return { added, skipped }
+    return { added, removed, skipped }
   }
 
   private async applyCache(): Promise<void> {
@@ -428,7 +519,14 @@ export class Mirror {
       this.log.warn('缓存服务端清单失败', { err: errorMessage(error) })
     }
     const { added, skipped } = await this.applyEntries(doc.services!)
-    this.discoveryState = { lastSync: Date.now(), lastError: '', entries: doc.services!.length, added, skipped }
+    this.discoveryState = {
+      lastSync: Date.now(),
+      lastError: '',
+      entries: doc.services!.length,
+      containers: countManifestContainers(doc.services!),
+      added,
+      skipped,
+    }
     this.phase = 'ready'
     this.fromCache = false
     if (added > 0) this.log.info('服务端清单里有新服务，已自动挂上', { 新增: added })
@@ -511,6 +609,7 @@ export class Mirror {
       }
     })
     services.sort((a, b) => a.spec.label.localeCompare(b.spec.label))
+    const containers = groupServices(services)
     return {
       running: this.running,
       phase: this.phase,
@@ -523,6 +622,31 @@ export class Mirror {
       auth: this.sessions.authStatus(),
       discovery: { ...this.discoveryState, skipped: [...this.discoveryState.skipped] },
       services,
+      containers,
+      containerCount: containers.length,
     }
   }
+}
+
+/** 容器 ID 是稳定归属；旧服务端没有时，一条入口就是一项。 */
+function groupServices(services: ServiceView[]): ServiceContainerView[] {
+  const groups = new Map<string, ServiceView[]>()
+  for (const service of services) {
+    const key = service.spec.containerId || `service:${service.key}`
+    const list = groups.get(key) ?? []
+    list.push(service)
+    groups.set(key, list)
+  }
+  return [...groups.entries()]
+    .map(([key, ports]): ServiceContainerView => {
+      const first = ports[0]!
+      return {
+        key,
+        label: first.spec.container || first.spec.label,
+        ...(first.spec.containerId ? { containerId: first.spec.containerId } : {}),
+        ports: ports.sort((a, b) => a.spec.port - b.spec.port),
+        stats: aggregateStats(ports),
+      }
+    })
+    .sort((a, b) => a.label.localeCompare(b.label))
 }

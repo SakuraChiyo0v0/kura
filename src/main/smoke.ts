@@ -291,7 +291,7 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     check(
       '清单里的五个服务出现',
       cards,
-      `visibility=${await js<string>('document.visibilityState')} 主进程快照服务数=${await js<number>('window.kura.mirror.snapshot().then(s => s?.services.length ?? -1)')} 卡片数=${await js<number>(`document.querySelectorAll('[data-testid="service-card"]').length`)}`,
+      `visibility=${await js<string>('document.visibilityState')} 主进程快照应用数=${await js<number>('window.kura.mirror.snapshot().then(s => s?.containers.length ?? -1)')} 入口数=${await js<number>('window.kura.mirror.snapshot().then(s => s?.services.length ?? -1)')} 卡片数=${await js<number>(`document.querySelectorAll('[data-testid="service-card"]').length`)}`,
     )
     const portA = Number(process.env.SMOKE_PORT_A)
     const viaMirror = await httpGet(`http://127.0.0.1:${portA}/`)
@@ -300,12 +300,12 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     // 统计分两排：近一天（和概览同口径）与累计。两排都得有数字 —— 只验「有 <dl>」看不出
     // 累计那段是不是被写成了和近一天一样的值，而那正是最容易出错的地方。
     const cardRows = await js<string>(
-      `JSON.stringify([...document.querySelectorAll('[data-service] .kura-card__stats')].map(dl => dl.className + '|' + dl.innerText.replace(/\\s+/g, ' ')))`,
+      `JSON.stringify([...document.querySelectorAll('[data-testid="service-card"] .kura-card__stats')].map(dl => dl.className + '|' + dl.innerText.replace(/\\s+/g, ' ')))`,
     )
     check(
       '服务卡片有「近一天」与「累计」两排数字',
       await js<boolean>(
-        `[...document.querySelectorAll('[data-service]')].every(c => c.querySelectorAll('.kura-card__stats').length === 2 && c.querySelector('.kura-card__stats--total') !== null)`,
+        `[...document.querySelectorAll('[data-testid="service-card"]')].every(c => c.querySelectorAll(':scope > .kura-card__stats').length === 2 && c.querySelector(':scope > .kura-card__stats--total') !== null)`,
       ),
       cardRows,
     )
@@ -347,13 +347,13 @@ export async function runSmoke(ctx: SmokeContext): Promise<boolean> {
     check('链路恢复后「最近一次失败」消失', cleared, `卡片=${JSON.stringify(await js<string>(webdavCard))}`)
 
     // ⑥ 关掉 openlist：端口真的释放
-    await js(`document.querySelector('[data-service="openlist"] [role="switch"]')?.click()`)
-    const off = await waitFor(`document.querySelector('[data-service="openlist"]')?.innerText.includes('已关闭')`)
+    await js(`document.querySelector('[data-container="openlist"] [role="switch"]')?.click()`)
+    const off = await waitFor(`document.querySelector('[data-container="openlist"]')?.innerText.includes('已关闭')`)
     const afterOff = await httpGet(`http://127.0.0.1:${portA}/`)
     check(
       '关闭服务后端口释放',
       off && afterOff.status === 0,
-      `界面=${off} 请求=${afterOff.status} 卡片=${JSON.stringify(await js<string>(`document.querySelector('[data-service="openlist"]')?.innerText.slice(0, 160) ?? '无'`))} 开关=${await js<string>(`document.querySelector('[data-service="openlist"] [role="switch"]')?.outerHTML.slice(0, 200) ?? '无'`)}`,
+      `界面=${off} 请求=${afterOff.status} 卡片=${JSON.stringify(await js<string>(`document.querySelector('[data-container="openlist"]')?.innerText.slice(0, 160) ?? '无'`))} 开关=${await js<string>(`document.querySelector('[data-container="openlist"] [role="switch"]')?.outerHTML.slice(0, 200) ?? '无'`)}`,
     )
 
     // ⑦ 概览

@@ -259,9 +259,12 @@ function quitApp(): void {
 function trayTooltip(): string {
   const snap = connection.current()?.snapshot()
   if (!snap) return connection.summary().configured ? 'Kura · 正在启动' : 'Kura · 尚未连接 NAS'
-  const running = snap.services.filter((s) => s.listener.running).length
+  const running = snap.containers.filter((view) => {
+    const enabled = view.ports.filter((port) => port.listener.enabled)
+    return enabled.length > 0 && enabled.every((port) => port.listener.running && (!port.probe || port.probe.ok))
+  }).length
   const auth = snap.auth.blocked ? ' · 连接退避中' : ''
-  return `Kura · ${linkModeLabel[snap.mode]} · ${running}/${snap.services.length} 个服务${auth}`
+  return `Kura · ${linkModeLabel[snap.mode]} · ${running}/${snap.containerCount} 个应用 · ${snap.services.length} 个入口${auth}`
 }
 
 const tray = createTrayManager<Tray>({
