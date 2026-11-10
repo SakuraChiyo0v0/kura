@@ -3,7 +3,15 @@ import { Button, FocusDialog, SwitchField, useToast } from '@sakura-ui/react'
 import { SettingsSection, UpdateBanner } from '@sakura-ui/electron-react'
 import type { AppInfo } from '../shared/ipc.js'
 import { useKuraUpdater } from './use-updater.js'
-import { entriesBetween, parseChangelog, shouldShowWhatsNew, type ChangelogEntry } from '../shared/changelog.js'
+import {
+  entriesBetween,
+  parseChangelog,
+  parseInlineMarkdown,
+  parseReleaseNotes,
+  shouldShowWhatsNew,
+  type ChangelogEntry,
+  type InlineToken
+} from '../shared/changelog.js'
 
 /** 应用版本、是否接了更新源、打进包里的更新日志：只取一次 */
 export function useAppMeta(): { info: AppInfo | undefined; changelog: ChangelogEntry[] } {
@@ -23,6 +31,40 @@ export function useAppMeta(): { info: AppInfo | undefined; changelog: ChangelogE
   return { info, changelog }
 }
 
+/**
+ * 行内 Markdown（粗体 / 行内代码）→ React 节点。
+ *
+ * 更新日志是给 Release 用的 Markdown；这里是应用内的呈现，只认粗体与行内代码两种标记，
+ * 别的一律当普通文本显示（不吞字符、不解析链接）。
+ */
+function InlineTokens({ tokens }: { tokens: readonly InlineToken[] }) {
+  return (
+    <>
+      {tokens.map((token, index) => {
+        if (token.kind === 'code') {
+          return (
+            <code key={index} className="kura-changelog__code">
+              {token.text}
+            </code>
+          )
+        }
+        if (token.kind === 'strong') {
+          return (
+            <strong key={index}>
+              <InlineTokens tokens={token.tokens} />
+            </strong>
+          )
+        }
+        return <span key={index}>{token.text}</span>
+      })}
+    </>
+  )
+}
+
+function InlineMarkdown({ text }: { text: string }) {
+  return <InlineTokens tokens={parseInlineMarkdown(text)} />
+}
+
 function ChangelogList({ entries }: { entries: ChangelogEntry[] }) {
   return (
     <div className="kura-changelog">
@@ -34,7 +76,9 @@ function ChangelogList({ entries }: { entries: ChangelogEntry[] }) {
           </h3>
           <ul>
             {entry.items.map((item, index) => (
-              <li key={index}>{item}</li>
+              <li key={index}>
+                <InlineMarkdown text={item} />
+              </li>
             ))}
           </ul>
         </section>
@@ -67,7 +111,13 @@ export function UpdatesSection({
           <>
             <UpdateBanner status={status} onCheck={check} onDownload={download} onInstall={install} />
             {status.state === 'available' && status.releaseNotes && (
-              <pre className="kura-changelog__notes">{status.releaseNotes}</pre>
+              <ul className="kura-changelog__notes">
+                {parseReleaseNotes(status.releaseNotes).map((item, index) => (
+                  <li key={index}>
+                    <InlineMarkdown text={item} />
+                  </li>
+                ))}
+              </ul>
             )}
           </>
         )}

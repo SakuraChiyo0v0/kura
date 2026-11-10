@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { compareVersions, entriesBetween, formatEntry, parseChangelog, shouldShowWhatsNew } from './changelog.js'
+import {
+  compareVersions,
+  entriesBetween,
+  formatEntry,
+  parseChangelog,
+  parseInlineMarkdown,
+  parseReleaseNotes,
+  shouldShowWhatsNew
+} from './changelog.js'
 
 const sample = `# 更新日志
 
@@ -74,5 +82,56 @@ describe('shouldShowWhatsNew', () => {
   it('没记过：老用户（从 0.4 升上来）弹，全新安装不弹', () => {
     expect(shouldShowWhatsNew({ lastSeen: '', current: '0.5.0', existingUser: true })).toBe(true)
     expect(shouldShowWhatsNew({ lastSeen: '', current: '0.5.0', existingUser: false })).toBe(false)
+  })
+})
+
+describe('行内 Markdown（更新日志的富文本）', () => {
+  it('粗体里套行内代码：0.11.2 那条的实际形状', () => {
+    const tokens = parseInlineMarkdown('**修复网关 `/webdav` 前缀模式**：网关只把前缀剥掉了')
+    expect(tokens).toEqual([
+      {
+        kind: 'strong',
+        tokens: [
+          { kind: 'text', text: '修复网关 ' },
+          { kind: 'code', text: '/webdav' },
+          { kind: 'text', text: ' 前缀模式' }
+        ]
+      },
+      { kind: 'text', text: '：网关只把前缀剥掉了' }
+    ])
+  })
+
+  it('纯文本原样返回，不吞字符', () => {
+    expect(parseInlineMarkdown('客户端本机 WebDAV（无前缀）行为不变')).toEqual([
+      { kind: 'text', text: '客户端本机 WebDAV（无前缀）行为不变' }
+    ])
+  })
+
+  it('没闭合的标记当普通文本，不吞内容', () => {
+    expect(parseInlineMarkdown('**没闭合')).toEqual([{ kind: 'text', text: '**没闭合' }])
+    expect(parseInlineMarkdown('没闭合 `')).toEqual([{ kind: 'text', text: '没闭合 `' }])
+  })
+
+  it('行内代码里的 ** 不当粗体', () => {
+    expect(parseInlineMarkdown('`a**b`')).toEqual([{ kind: 'code', text: 'a**b' }])
+  })
+
+  it('多个行内代码混排', () => {
+    const tokens = parseInlineMarkdown('`MOVE` / `COPY` 的 `Destination` 反过来剥掉前缀')
+    const flat = tokens.map((token) =>
+      token.kind === 'code' ? `<${token.text}>` : token.kind === 'text' ? token.text : '?'
+    )
+    expect(flat).toEqual(['<MOVE>', ' / ', '<COPY>', ' 的 ', '<Destination>', ' 反过来剥掉前缀'])
+  })
+})
+
+describe('parseReleaseNotes', () => {
+  it('把发布正文的列表拆成条目，折行接上', () => {
+    expect(parseReleaseNotes('- 第一条\n- 第二条\n  折行接上\n\n')).toEqual(['第一条', '第二条 折行接上'])
+  })
+
+  it('不是列表的文字不产生条目', () => {
+    expect(parseReleaseNotes('说明文字\n\n- 只有这条')).toEqual(['只有这条'])
+    expect(parseReleaseNotes('')).toEqual([])
   })
 })

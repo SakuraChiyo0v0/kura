@@ -1802,13 +1802,29 @@ body {
 
 .kura-changelog__notes {
   margin: 0;
-  padding: 10px 12px;
+  padding: 10px 12px 10px 30px;
   border: 1px solid var(--sk-line);
   border-radius: var(--sk-radius-control);
   background: var(--sk-surface);
-  font-family: var(--sk-font);
   font-size: 12px;
-  white-space: pre-wrap;
+  display: grid;
+  gap: 4px;
+}
+
+/* 行内代码：更新日志里的路径与文件名（/webdav、req.url 之类） */
+.kura-changelog__code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--sk-surface-sunken);
+  border: 1px solid var(--sk-line);
+  font-family: ui-monospace, Consolas, 'Courier New', monospace;
+  font-size: 0.94em;
+  overflow-wrap: anywhere;
+}
+
+/* 更新日志条目里的粗体不要抢戏：与正文同色，只加粗 */
+.kura-changelog li strong {
+  font-weight: 600;
 }
 
 .kura-whats-new .kura-form__actions {

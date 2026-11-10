@@ -75,3 +75,75 @@ export function shouldShowWhatsNew(input: { lastSeen: string; current: string; e
   if (!input.lastSeen) return input.existingUser
   return compareVersions(input.current, input.lastSeen) > 0
 }
+
+/**
+ * 更新日志里用到的**行内 Markdown 子集**：粗体与行内代码。
+ *
+ * 为什么不在界面上直接显示原文：CHANGELOG 是给 GitHub Release 用的 Markdown，
+ * 应用里如果整段当纯文本渲染，用户看到的是 `**修复……**` 和一串反引号（0.11.2 就是这样）。
+ * 这里只认发布正文实际会用到的两种标记，不引入 Markdown 引擎：
+ * - 反引号包住的行内代码不参与其它标记（代码里的 `**` 不会被当成粗体）；
+ * - 粗体里面还能套行内代码（"**修复 `/webdav` 前缀模式……**" 这种）。
+ * 认不出来的标记原样留作文本，不吞字符。
+ */
+export type InlineToken =
+  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'code'; readonly text: string }
+  | { readonly kind: 'strong'; readonly tokens: readonly InlineToken[] }
+
+export function parseInlineMarkdown(text: string): InlineToken[] {
+  const tokens: InlineToken[] = []
+  let buffer = ''
+  const flush = (): void => {
+    if (buffer.length > 0) {
+      tokens.push({ kind: 'text', text: buffer })
+      buffer = ''
+    }
+  }
+
+  let index = 0
+  while (index < text.length) {
+    if (text[index] === '`') {
+      const end = text.indexOf('`', index + 1)
+      if (end > index + 1) {
+        flush()
+        tokens.push({ kind: 'code', text: text.slice(index + 1, end) })
+        index = end + 1
+        continue
+      }
+    }
+    if (text.startsWith('**', index)) {
+      const end = text.indexOf('**', index + 2)
+      if (end > index + 2) {
+        flush()
+        tokens.push({ kind: 'strong', tokens: parseInlineMarkdown(text.slice(index + 2, end)) })
+        index = end + 2
+        continue
+      }
+    }
+    buffer += text[index]
+    index += 1
+  }
+  flush()
+  return tokens
+}
+
+/**
+ * 更新源（latest.yml 的 releaseNotes）给的正文是 `- 条目` 形式的 Markdown 列表，
+ * 应用里要按列表渲染而不是整段塞进 `<pre>`。规则与 parseChangelog 收集条目一致。
+ */
+export function parseReleaseNotes(markdown: string): string[] {
+  const items: string[] = []
+  for (const raw of markdown.split(/\r?\n/)) {
+    const line = raw.trimEnd()
+    const item = /^\s*[-*]\s+(.*)$/.exec(line)
+    if (item) {
+      items.push(item[1]!.trim())
+      continue
+    }
+    if (line.trim().length > 0 && items.length > 0) {
+      items[items.length - 1] += ` ${line.trim()}`
+    }
+  }
+  return items
+}
