@@ -1,9 +1,19 @@
 import http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { PassThrough, Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DavClient, encodeDavPath, parseMultistatus } from './dav-client.js'
 import { excludeMatches, normalizeDavPath, normalizeRules, visibilityOf, writeDenial } from './dav-scope.js'
-import { DavServer, davServerDefaults, filterMultistatus, isLoopbackHost, type DavServerSettings } from './dav-server.js'
+import {
+  DavServer,
+  davServerDefaults,
+  filterMultistatus,
+  handleDavRequest,
+  isLoopbackHost,
+  rewriteHrefBase,
+  stripHrefBase,
+  type DavServerSettings,
+} from './dav-server.js'
 import { FakeWebdav } from './testing/fake-webdav.js'
 
 describe('dav-scope', () => {
@@ -227,5 +237,96 @@ describe('DavServer：范围裁剪', () => {
     const out = filterMultistatus(xml, { include: ['/volume1/docs'], exclude: [] })
     expect(out).not.toContain('movies')
     expect(out).toContain('/volume1/docs/')
+  })
+})
+
+
+describe('handleDavRequest：网关路径前缀（/webdav）', () => {
+  let dav: FakeWebdav
+  let gateway: http.Server
+  let base: string
+
+  /** 照 kura-server 的做法：先把前缀从 req.url 剥掉，再把前缀当参数交给内置处理器。 */
+  const startGateway = async (hrefBase: string): Promise<void> => {
+    gateway = http.createServer((req, res) => {
+      const url = req.url ?? '/'
+      req.url = url === hrefBase ? '/' : url.slice(hrefBase.length) || '/'
+      void handleDavRequest(req, res, {
+        limits: () => ({ include: ['/'], exclude: [], readOnly: false }),
+        upstream: async () => dav.url,
+        hrefBase,
+      })
+    })
+    await new Promise<void>((resolve) => gateway.listen(0, '127.0.0.1', resolve))
+    base = `http://127.0.0.1:${(gateway.address() as AddressInfo).port}/webdav`
+  }
+
+  const send = (method: string, path: string, headers: Record<string, string> = {}, body?: string) =>
+    new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const url = new URL(base)
+      const req = http.request(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          method,
+          path: encodeDavPath(path),
+          headers,
+        },
+        (res) => {
+          let text = ''
+          res.on('data', (c) => (text += c))
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: text }))
+        },
+      )
+      req.on('error', reject)
+      req.end(body)
+    })
+
+  beforeEach(async () => {
+    dav = await new FakeWebdav().start()
+    dav.mkdirp('/home/u').file('/home/u/a.txt', 'A')
+    await startGateway('/webdav')
+  })
+  afterEach(async () => {
+    gateway.closeAllConnections()
+    await new Promise<void>((resolve) => gateway.close(() => resolve()))
+    await dav.stop()
+  })
+
+  it('列表 href 补上网关前缀：客户端按 href 拼下一跳能落在入口上', async () => {
+    const res = await send('PROPFIND', '/webdav/home/u', { depth: '1' })
+    expect(res.status).toBe(207)
+    // 上游给的是 /home/u/a.txt，客户端看到必须是 /webdav/home/u/a.txt
+    expect(res.body).toContain('<D:href>/webdav/home/u/')
+    expect(res.body).toContain('<D:href>/webdav/home/u/a.txt')
+    expect(res.body).not.toContain('<D:href>/home/')
+    const paths = parseMultistatus(res.body).map((e) => e.path)
+    expect(paths.sort()).toEqual(['/webdav/home/u', '/webdav/home/u/a.txt'])
+    // 客户端用 new URL(href, 入口) 拼下一跳时必须真的能取到
+    const viaHref = new URL('/webdav/home/u/a.txt', base).toString()
+    expect(viaHref).toBe(`${base}/home/u/a.txt`)
+    expect((await send('GET', '/webdav/home/u/a.txt')).body).toBe('A')
+  })
+
+  it('MOVE 的 Destination 带着前缀也照样能对上（剥掉前缀再转发）', async () => {
+    const res = await send('MOVE', '/webdav/home/u/a.txt', { destination: `${base}/home/u/b.txt` })
+    expect(res.status).toBe(201)
+    expect(dav.requests.find((r) => r.method === 'MOVE')!.destination).toBe('/home/u/b.txt')
+    expect(dav.nodes.has('/home/u/b.txt')).toBe(true)
+  })
+
+  it('stripHrefBase / rewriteHrefBase 各管一个方向', () => {
+    expect(stripHrefBase('/webdav/home/u/a.txt', '/webdav')).toBe('/home/u/a.txt')
+    expect(stripHrefBase('/webdav', '/webdav')).toBe('/')
+    expect(stripHrefBase('/other/x', '/webdav')).toBe('/other/x')
+    expect(stripHrefBase('/home/u', '')).toBe('/home/u')
+
+    const xml = '<D:response><D:href>/volume1/x/</D:href></D:response>'
+    expect(rewriteHrefBase(xml, '/webdav')).toContain('<D:href>/webdav/volume1/x/</D:href>')
+    // 没有前缀、或已经带前缀时不动
+    expect(rewriteHrefBase(xml, '')).toBe(xml)
+    expect(rewriteHrefBase('<d:href>/webdav/a</d:href>', '/webdav')).toBe('<d:href>/webdav/a</d:href>')
+    // 绝对 URL 原样保留
+    expect(rewriteHrefBase('<d:href>http://nas/a</d:href>', '/webdav')).toBe('<d:href>http://nas/a</d:href>')
   })
 })

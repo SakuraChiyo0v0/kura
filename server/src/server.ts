@@ -68,7 +68,8 @@ export function stripCookies(header: string | undefined): string {
 }
 
 export interface BuiltinHandler {
-  request(req: http.IncomingMessage, res: http.ServerResponse, path: string): void
+  /** path 是剥掉前缀后的路径；prefix 是该内置服务在网关上的路径前缀（'/' 表示头模式，无前缀） */
+  request(req: http.IncomingMessage, res: http.ServerResponse, path: string, prefix?: string): void
   upgrade?(req: http.IncomingMessage, socket: net.Socket, head: Buffer, path: string): void
 }
 
@@ -234,9 +235,11 @@ export function createKuraServer(options: ServerOptions): http.Server {
       if (!target) return handlePortal(req, res)
       const builtin = builtins[target.name]
       if (builtin) {
-        // 路径前缀模式（/webdav/foo）下 req.url 还带着前缀，内置处理器只认 WebDAV 自己的路径
+        // 路径前缀模式（/webdav/foo）下 req.url 还带着前缀，内置处理器只认 WebDAV 自己的路径；
+        // 前缀本身也传下去：处理器要把它补回 href、从 Destination 里剥掉，否则前端拿到的
+        // 路径与它实际访问的入口对不上（现网 /webdav 下 MOVE/COPY 与列表 href 都踩过）
         req.url = target.path
-        return builtin.request(req, res, target.path)
+        return builtin.request(req, res, target.path, target.prefix)
       }
       if (!registry.find(target.name)) return send(res, 404, `kura-server：没有「${target.name}」这个服务`)
       forward(req, res, target)

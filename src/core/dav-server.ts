@@ -81,6 +81,44 @@ export function filterMultistatus(xml: string, scope: DavScope): string {
   })
 }
 
+/**
+ * 路径前缀模式（网关把 `/webdav/<路径>` 交进来）下列表与目标路径要怎么对齐。
+ *
+ * 网关在把请求交给内置处理器之前已经把前缀从 `req.url` 里剥掉，所以这里看到的
+ * 是 WebDAV 自己的路径；但客户端发来的 Destination 和它看到的 href 都还带着前缀。
+ * 两个方向都要处理，否则前缀模式下 MOVE/COPY 必然对不上、列表里的 href 指到入口根上。
+ */
+
+/** 把客户端给的路径前缀剥掉（不在前缀之下就原样返回）。 */
+export function stripHrefBase(path: string, hrefBase: string): string {
+  const base = normalizeDavPath(hrefBase || '/')
+  if (base === '/') return path
+  if (path === base) return '/'
+  if (!path.startsWith(`${base}/`)) return path
+  return normalizeDavPath(path.slice(base.length))
+}
+
+/**
+ * 把 multistatus 里的 href 补上网关前缀。
+ *
+ * 上游 rclone 只会给出它自己根上的路径（`/volume1/x/`），而 href 按协议必须是
+ * 客户端请求的那个资源的绝对路径。不补前缀，任何按 href 解析的客户端（按 href 取子项名、
+ * 或者用 `new URL(href, endpoint)` 拼下一跳）都会跑到入口根上拿到 404。
+ */
+export function rewriteHrefBase(xml: string, hrefBase: string): string {
+  const base = normalizeDavPath(hrefBase || '/')
+  if (base === '/') return xml
+  return xml.replace(
+    /<((?:[\w-]+:)?)href(\s[^>]*)?>([\s\S]*?)<\/(?:[\w-]+:)?href\s*>/g,
+    (whole, prefix: string, attrs: string | undefined, raw: string) => {
+      const text = raw.trim()
+      // 只补路径形式的 href；绝对 URL 是上游自己的地址，留给客户端自己判断
+      if (!text.startsWith('/') || text === base || text.startsWith(`${base}/`)) return whole
+      return `<${prefix}href${attrs ?? ''}>${base}${text}</${prefix}href>`
+    },
+  )
+}
+
 function reply(res: http.ServerResponse, status: number, message: string): void {
   if (res.headersSent) {
     res.destroy()
@@ -106,6 +144,11 @@ export interface DavHandlerOptions {
   stats?: ServiceStats
   /** 校验 Host 必须是回环（本机服务防 DNS 重绑定）。网关转进来的不校验 */
   checkHost?: boolean
+  /**
+   * 网关的路径前缀（如 `/webdav`），没有前缀模式时为空。
+   * 给了就按它改写 PROPFIND 的 href、并剥掉 Destination 里的同一前缀。
+   */
+  hrefBase?: string
   /** 上游可用性变化时回调（'' = 正常），供调用方在状态里显示 */
   onUpstreamResult?: (error: string) => void
 }
@@ -166,7 +209,8 @@ export async function handleDavRequest(req: http.IncomingMessage, res: http.Serv
       return
     }
     try {
-      destination = destinationPath(header)
+      // 前缀模式下 Destination 还带着网关前缀，范围判断与转发都按剥掉后的路径算
+      destination = stripHrefBase(destinationPath(header), options.hrefBase ?? '')
     } catch (error) {
       reply(res, 400, errorMessage(error))
       return
@@ -237,7 +281,8 @@ export async function handleDavRequest(req: http.IncomingMessage, res: http.Serv
       const chunks: Buffer[] = []
       up.on('data', (chunk: Buffer) => chunks.push(chunk))
       up.on('end', () => {
-        const body = Buffer.from(filterMultistatus(Buffer.concat(chunks).toString('utf8'), limits))
+        const filtered = filterMultistatus(Buffer.concat(chunks).toString('utf8'), limits)
+        const body = Buffer.from(rewriteHrefBase(filtered, options.hrefBase ?? ''))
         delete outHeaders['content-length']
         outHeaders['content-length'] = body.length
         res.writeHead(status, outHeaders)

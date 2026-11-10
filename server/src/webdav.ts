@@ -210,13 +210,19 @@ export class WebdavFeature {
     })
   }
 
-  /** 网关转进来的 WebDAV 请求（认证已由 kura-server 做完，不经本机回环）。 */
-  handle(req: http.IncomingMessage, res: http.ServerResponse): void {
+  /**
+   * 网关转进来的 WebDAV 请求（认证已由 kura-server 做完，不经本机回环）。
+   *
+   * `hrefBase` 是网关上的路径前缀（如 `/webdav`）：客户端看到的 href 与它发的 Destination
+   * 都带这个前缀，而这里收到的 req.url 已经被剥掉了，所以要把前缀交回给范围层对齐。
+   */
+  handle(req: http.IncomingMessage, res: http.ServerResponse, hrefBase = ''): void {
     void handleDavRequest(req, res, {
       limits: () => this.limits(),
       upstream: () => this.upstream(),
       log: this.log,
       checkHost: false,
+      hrefBase,
       stats: this.stats,
       onUpstreamResult: (error) => {
         this.lastProbeError = error

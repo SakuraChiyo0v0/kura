@@ -239,7 +239,7 @@ async function serve(): Promise<void> {
   })()
 
   const builtins: Record<string, BuiltinHandler> = {
-    webdav: { request: (req, res) => webdav.handle(req, res) },
+    webdav: { request: (req, res, _path, prefix) => webdav.handle(req, res, prefix) },
     ...(consoleHandler ? { 'nas-console': { request: (req, res) => consoleHandler!.handle(req, res), upgrade: (req, socket, head) => consoleHandler!.upgrade(req, socket, head) } } : {}),
     // 先等一次 socket 探测再进 handler：启动时没探到的情况下，用户第一次点进 Docker 页
     // 不该看到「第一次失败、第二次才好」。探到就缓存，后续请求没有额外开销。
