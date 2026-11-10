@@ -257,19 +257,48 @@ export class AutoUpdate {
     return { ok: true, reason: '' }
   }
 
-  /** 项目里容器用到的镜像，去重。 */
+  /**
+   * 项目里容器用到的镜像，去重。
+   *
+   * 容器的 `Image` 字段**不保证**是标签：compose 重建过一次之后，有的容器会记成
+   * `sha256:<id>`（实测 kura-shell 就是这样）。按 ID 问仓库永远问不到，于是整个项目被判定成
+   * 「unknown」，自更新直接放弃 —— 0.11.3 在 NAS 上就是这么卡住的。
+   * 这里把 ID 换回镜像表里的一个标签；换不回来（悬空镜像）就**跳过**：
+   * 它没有可比的东西，不该拖累项目里其它镜像的更新判断。
+   */
   private async projectImages(name: string): Promise<string[]> {
     const raw = await this.options.engine.listContainers()
-    const seen = new Set<string>()
+    const refs = new Set<string>()
     for (const c of raw) {
       // 自己的容器可能没有 compose 项目标签（`docker run` 起的那种），按容器名认
       // —— 与 DockerService.projectsFrom 认自己的口径保持一致
       const isSelfContainer = name === selfProject && (c.Names ?? []).some((n) => n.replace(/^\//, '') === selfProject)
       if (!isSelfContainer && c.Labels?.['com.docker.compose.project'] !== name) continue
-      if (c.Image) seen.add(c.Image)
+      if (c.Image) refs.add(c.Image)
     }
+
+    const idLike = [...refs].filter((ref) => /^sha256:/.test(ref) || /^[0-9a-f]{64}$/.test(ref))
+    if (idLike.length > 0) {
+      const tagsById = new Map<string, string[]>()
+      try {
+        for (const image of await this.options.engine.listImages()) {
+          const tags = (image.RepoTags ?? []).filter((tag) => tag !== '<none>:<none>').sort()
+          if (tags.length > 0) tagsById.set(image.Id, tags)
+        }
+      } catch (error) {
+        // 读不到镜像表：保留原样，让 checkUpdate 照旧标 unknown —— 不猜
+        this.log('自动更新：读不到镜像表', { err: (error as Error).message })
+      }
+      for (const ref of idLike) {
+        refs.delete(ref)
+        const id = ref.startsWith('sha256:') ? ref : `sha256:${ref}`
+        const tags = tagsById.get(id)
+        if (tags && tags[0]) refs.add(tags[0])
+      }
+    }
+
     // 一个容器都没起过的项目（刚建、还没 up）没有镜像可比，跳过
-    return [...seen].sort()
+    return [...refs].sort()
   }
 
   /** pull + up -d。先拉再起 —— 拉失败就不该动在跑的那些。 */

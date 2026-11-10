@@ -262,6 +262,34 @@ describe('自动更新的开关', () => {
     expect(results.every((r) => /起不来/.test(r.reason))).toBe(true)
   })
 
+  it('容器记的是镜像 ID（sha256:）时换成标签再查：不再整项目放弃', async () => {
+    // 实测形状：compose 重建过一次之后，容器的 Image 字段变成 sha256:<id>
+    docker.addContainer('openlist-app-1', { project: 'openlist', dir: `${root.replace(/\\/g, '/')}/openlist`, image: 'sha256:abc123' })
+    docker.images.push({ Id: 'sha256:abc123', RepoTags: ['ghcr.io/x/kura:latest'], Size: 1024, Created: 1_700_000_000 })
+    docker.repoDigests.set('ghcr.io/x/kura:latest', ['ghcr.io/x/kura@sha256:old'])
+    docker.remoteDigests.set('ghcr.io/x/kura:latest', 'sha256:new')
+    const auto = make()
+    auto.set('openlist', true)
+
+    const results = await auto.tick()
+
+    // 换回标签后能问出「有更新」，于是照常 pull + up，而不是报「问不到仓库」
+    expect(composeCalls.map((c) => c.action)).toEqual(['pull', 'up'])
+    expect(results).toEqual([expect.objectContaining({ project: 'openlist', images: ['ghcr.io/x/kura:latest'], ok: true })])
+  })
+
+  it('镜像按 ID 引用且本地没有标签（悬空）时跳过它，不拖累同一项目的其它镜像', async () => {
+    docker.addContainer('openlist-app-1', { project: 'openlist', dir: `${root.replace(/\\/g, '/')}/openlist`, image: 'sha256:dangling' })
+    docker.addContainer('openlist-side-1', { project: 'openlist', dir: `${root.replace(/\\/g, '/')}/openlist`, image: 'ghcr.io/x/kura:latest' })
+    registerImage('ghcr.io/x/kura:latest')
+    const auto = make()
+    auto.set('openlist', true)
+
+    const results = await auto.tick()
+
+    expect(results).toEqual([expect.objectContaining({ project: 'openlist', images: ['ghcr.io/x/kura:latest'], ok: true })])
+  })
+
   it('仓库问不到（unknown）不算「都是最新的」：如实报出来', async () => {
     manageable('openlist')
     // 把仓库那条路掐掉：inspectImage 拿得到（有本地 digest），但问不到远端
