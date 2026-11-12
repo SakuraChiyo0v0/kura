@@ -401,6 +401,17 @@ body {
   gap: 14px;
 }
 
+/* 瀑布流：行高取 2px 的小单位，每张卡跨几行由 MirrorView 的 useMasonry 按实际高度算；
+   竖向间距算进跨行数里，所以这里行距为 0、用 margin 补。数值和 masonryRow / masonryGap 一致。 */
+.kura-grid--masonry {
+  grid-auto-rows: 2px;
+  row-gap: 0;
+}
+
+.kura-grid--masonry > * {
+  margin-bottom: 14px;
+}
+
 .kura-card {
   display: grid;
   gap: 10px;

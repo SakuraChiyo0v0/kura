@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { ChevronDown, Copy, ExternalLink, Pencil, RefreshCw, Search } from 'lucide-react'
 import { Banner, Button, EmptyState, FluidSegmented, StatusBadge, SwitchField, TextField, useToast, type StatusTone } from '@sakura-ui/react'
 import type { LinkModeSetting } from '../shared/labels.js'
@@ -340,6 +340,46 @@ function ServicePortRow({
   )
 }
 
+/** 瀑布流的行单位（px），和 .kura-grid--masonry 的 grid-auto-rows 保持一致 */
+const masonryRow = 2
+/** 卡片之间的竖向间距（px），和 .kura-grid 的 gap 保持一致 */
+const masonryGap = 14
+
+/**
+ * 瀑布流：网格行高取一个很小的单位，按每张卡的实际高度算它跨几行，矮卡下面的空位由下一张卡补上。
+ * 阅读顺序仍是从左到右；CSS 原生 masonry 在当前 Chromium 里还没正式可用，所以用 ResizeObserver 量高。
+ * 卡片展开折叠、数字变化都会触发重算。
+ */
+function useMasonry(gridRef: RefObject<HTMLDivElement | null>, mounted: boolean) {
+  useLayoutEffect(() => {
+    const grid = gridRef.current
+    if (!grid) return
+    const fit = (card: HTMLElement) => {
+      card.style.gridRowEnd = `span ${Math.ceil((card.getBoundingClientRect().height + masonryGap) / masonryRow)}`
+    }
+    const resize = new ResizeObserver((entries) => {
+      for (const entry of entries) fit(entry.target as HTMLElement)
+    })
+    const watch = () => {
+      for (const card of Array.from(grid.children) as HTMLElement[]) {
+        resize.observe(card)
+        fit(card)
+      }
+    }
+    // 卡片增减（同步、筛选、搜索）时重新登记
+    const children = new MutationObserver(() => {
+      resize.disconnect()
+      watch()
+    })
+    watch()
+    children.observe(grid, { childList: true })
+    return () => {
+      children.disconnect()
+      resize.disconnect()
+    }
+  }, [gridRef, mounted])
+}
+
 const modeOptions = [
   { value: 'auto', label: '自动' },
   { value: 'lan', label: '局域网' },
@@ -372,6 +412,8 @@ export function MirrorView({ snapshot, refresh }: { snapshot: MirrorSnapshot; re
     }
   }
 
+  const gridRef = useRef<HTMLDivElement>(null)
+
   const services = useMemo(() => {
     const q = query.trim().toLowerCase()
     return snapshot.containers.filter((view) => {
@@ -383,6 +425,8 @@ export function MirrorView({ snapshot, refresh }: { snapshot: MirrorSnapshot; re
       return true
     })
   }, [snapshot.containers, filter, query])
+  // 网格只在有卡片时渲染；出现 / 消失时重新挂上瀑布流
+  useMasonry(gridRef, snapshot.containers.length > 0 && services.length > 0)
 
   return (
     <div className="kura-mirror">
@@ -449,7 +493,7 @@ export function MirrorView({ snapshot, refresh }: { snapshot: MirrorSnapshot; re
           <EmptyState title="没有符合条件的服务" description="换个筛选条件或清空搜索" action={<Button variant="secondary" onClick={() => { setFilter('all'); setQuery('') }}>清除筛选</Button>} />
         </div>
       ) : (
-        <div className="kura-grid">
+        <div className="kura-grid kura-grid--masonry" ref={gridRef}>
           {services.map((view) => (
             <ServiceCard key={view.key} view={view} refresh={refresh} />
           ))}
