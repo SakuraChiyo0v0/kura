@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Copy, ExternalLink, RefreshCw, Search } from 'lucide-react'
+import { ChevronDown, Copy, ExternalLink, Pencil, RefreshCw, Search } from 'lucide-react'
 import { Banner, Button, EmptyState, FluidSegmented, StatusBadge, SwitchField, TextField, useToast, type StatusTone } from '@sakura-ui/react'
 import type { LinkModeSetting } from '../shared/labels.js'
 import type { MirrorSnapshot, ServiceContainerView, ServiceView } from '../core/mirror.js'
@@ -54,41 +54,71 @@ function Sparkline({ trend }: { trend: TrendPoint[] }) {
   )
 }
 
-function PortEditor({ view, onSave }: { view: ServiceView; onSave: (port: number) => Promise<void> }) {
+/** 行内改本机端口：平时只显示地址，点铅笔才换成一个小输入框；回车应用，Esc 或失焦放弃。 */
+function PortEditor({ view, onSave, onDone }: { view: ServiceView; onSave: (port: number) => Promise<void>; onDone: () => void }) {
   const [draft, setDraft] = useState(String(view.listener.port))
   const [busy, setBusy] = useState(false)
-  const dirty = draft !== String(view.listener.port)
+  const submit = () => {
+    const port = Number(draft)
+    if (busy) return
+    if (draft === String(view.listener.port) || !port) return onDone()
+    setBusy(true)
+    void onSave(port)
+      .then(onDone)
+      .catch(() => setDraft(String(view.listener.port)))
+      .finally(() => setBusy(false))
+  }
   return (
     <form
-      className="kura-card__port"
+      className="kura-entry__editor"
       onSubmit={(event) => {
         event.preventDefault()
-        const port = Number(draft)
-        if (!dirty || busy) return
-        setBusy(true)
-        void onSave(port)
-          .catch(() => setDraft(String(view.listener.port)))
-          .finally(() => setBusy(false))
+        submit()
       }}
     >
-      <TextField
-        label="本机端口"
+      <span className="kura-entry__host">127.0.0.1:</span>
+      <input
+        className="kura-entry__port-input"
+        aria-label="本机端口"
         inputMode="numeric"
+        autoFocus
+        disabled={busy}
         value={draft}
         onChange={(e) => setDraft(e.target.value.replace(/\D/g, '').slice(0, 5))}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') onDone()
+        }}
+        onBlur={() => {
+          if (!busy && draft === String(view.listener.port)) onDone()
+        }}
       />
-      {dirty && (
-        <Button type="submit" size="sm" variant="secondary" disabled={busy}>
-          {busy ? '应用中…' : '应用'}
-        </Button>
-      )}
+      <Button type="submit" size="sm" variant="secondary" disabled={busy}>
+        {busy ? '应用中…' : '应用'}
+      </Button>
     </form>
   )
+}
+
+/** 卡片默认露出的入口数；超过的收进「还有 N 个入口」。 */
+const COLLAPSED_ENTRIES = 5
+
+function isProblem(port: ServiceView): boolean {
+  const tone = serviceState(port).tone
+  return tone === 'danger' || tone === 'warning'
 }
 
 function ServiceCard({ view, refresh }: { view: ServiceContainerView; refresh: () => Promise<void> }) {
   const toast = useToast()
   const state = containerState(view)
+  const [expanded, setExpanded] = useState(false)
+  // 入口多时只露前几个；有问题的入口永远显示，别让故障藏在折叠里。
+  // 只多出一个时直接全显示，免得为一行加一个「还有 1 个」。
+  const collapsible = view.ports.length > COLLAPSED_ENTRIES + 1
+  const shownPorts =
+    collapsible && !expanded
+      ? view.ports.filter((port, index) => index < COLLAPSED_ENTRIES || isProblem(port))
+      : view.ports
+  const hiddenCount = view.ports.length - shownPorts.length
 
   const run = async (label: string, action: () => Promise<void>) => {
     try {
@@ -117,10 +147,18 @@ function ServiceCard({ view, refresh }: { view: ServiceContainerView; refresh: (
         </div>
       </header>
 
-      <ul className="kura-card__ports" aria-label={`${view.label} 的入口`}>
-        {view.ports.map((port) => (
+      <ul className="kura-entries" aria-label={`${view.label} 的入口`}>
+        {shownPorts.map((port) => (
           <ServicePortRow key={port.key} view={port} onRun={run} />
         ))}
+        {collapsible && (
+          <li className="kura-entries__more">
+            <button type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+              {expanded ? '收起' : `还有 ${hiddenCount} 个入口`}
+              <ChevronDown size={13} aria-hidden data-open={expanded} />
+            </button>
+          </li>
+        )}
       </ul>
 
       {/* 上排是近一天（和概览同一口径），下排才是装机以来的累计 —— 两排数字不同，
@@ -162,15 +200,50 @@ function ServiceCard({ view, refresh }: { view: ServiceContainerView; refresh: (
         </div>
       </dl>
       <Sparkline trend={view.stats.trend} />
+      {view.ports.length > 1 && <EntryStats ports={view.ports} />}
 
       <span className="kura-card__meta">
-        {view.ports.length > 1 ? `${view.ports.length} 个入口 · 每个入口独立映射` : '1 个入口'}
+        {view.ports.length > 1 ? `${view.ports.length} 个入口` : '1 个入口'}
         {view.ports[0]?.spec.source === 'discovered' ? ' · 服务端发现' : ' · 本地配置'}
       </span>
     </article>
   )
 }
 
+/** 多入口时，各入口的流量放在卡片底部一张小表里，不在每一行重复四格数字。 */
+function EntryStats({ ports }: { ports: ServiceView[] }) {
+  return (
+    <details className="kura-entry-stats">
+      <summary>按入口查看流量</summary>
+      <table>
+        <thead>
+          <tr>
+            <th>入口</th>
+            <th>近一天请求</th>
+            <th>失败</th>
+            <th>↑ / ↓ 近一天</th>
+            <th>累计请求</th>
+          </tr>
+        </thead>
+        <tbody>
+          {ports.map((port) => (
+            <tr key={port.key}>
+              <td>{port.listener.port}</td>
+              <td>{port.stats.recent.requests}</td>
+              <td data-bad={port.stats.recent.errors > 0}>{port.stats.recent.errors}</td>
+              <td>
+                {humanBytes(port.stats.recent.bytesUp)} / {humanBytes(port.stats.recent.bytesDown)}
+              </td>
+              <td>{port.stats.requests}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </details>
+  )
+}
+
+/** 一个入口一行：状态点 · 本机地址 · 操作 · 开关。正常时只给圆点，出问题才显示文字。 */
 function ServicePortRow({
   view,
   onRun,
@@ -181,37 +254,45 @@ function ServicePortRow({
   const toast = useToast()
   const state = serviceState(view)
   const [toggling, setToggling] = useState(false)
+  const [editing, setEditing] = useState(false)
   const error = view.listener.enabled && !view.listener.running ? view.listener.lastError : ''
   const probeError = view.probe && !view.probe.ok ? view.probe.error : ''
+  const route = `NAS ${view.spec.port}${view.spec.service ? ` · 网关 ${view.spec.service}` : ' · 直连'}`
+  const remapped = view.listener.port !== view.spec.port
+  const problem = state.tone === 'danger' || state.tone === 'warning'
   return (
-    <li className="kura-port-row" data-entry={view.key}>
-      <div className="kura-port-row__head">
-        <span className="kura-port-row__name">端口 {view.spec.port}</span>
-        <StatusBadge tone={state.tone} dot size="sm">
-          {state.label}
-        </StatusBadge>
-        <SwitchField
-          className="kura-port-row__switch"
-          label={`映射 ${view.spec.port}`}
-          checked={view.listener.enabled}
-          disabled={toggling}
-          onCheckedChange={(checked) => {
-            setToggling(true)
-            void onRun('切换失败', () => window.kura!.mirror.setEnabled(view.key, checked))
-              .catch(() => {})
-              .finally(() => setToggling(false))
-          }}
-        />
+    <li className="kura-entry" data-entry={view.key} data-off={!view.listener.enabled}>
+      <span className="kura-entry__dot" data-tone={state.tone} title={state.label} aria-label={state.label} role="img" />
+      <div className="kura-entry__main" title={route}>
+        {editing ? (
+          <PortEditor
+            view={view}
+            onSave={(port) => onRun('改端口失败', () => window.kura!.mirror.setPort(view.key, port))}
+            onDone={() => setEditing(false)}
+          />
+        ) : (
+          <a className="kura-card__local kura-entry__addr" href={view.localUrl} target="_blank" rel="noreferrer">
+            {view.localUrl.replace('http://', '')}
+          </a>
+        )}
+        {(remapped || problem) && (
+          <span className="kura-entry__sub">
+            {problem && (
+              <StatusBadge tone={state.tone} size="sm">
+                {state.label}
+              </StatusBadge>
+            )}
+            {remapped && <span>→ NAS {view.spec.port}</span>}
+          </span>
+        )}
       </div>
-      <div className="kura-port-row__addr">
-        <a className="kura-card__local" href={view.localUrl} target="_blank" rel="noreferrer">
-          {view.localUrl.replace('http://', '')}
-        </a>
+      <div className="kura-entry__actions">
         <Button
           size="sm"
           variant="ghost"
           icon={<Copy size={14} aria-hidden />}
           aria-label={`复制 ${view.spec.label} 的本机地址`}
+          title="复制本机地址"
           onClick={() =>
             void window.kura
               ?.copyText(view.localUrl)
@@ -219,55 +300,42 @@ function ServicePortRow({
               .catch((caught: Error) => toast.notify({ title: '复制失败', description: caught.message, tone: 'error' }))
           }
         />
+        {!editing && (
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<Pencil size={14} aria-hidden />}
+            aria-label={`改 ${view.spec.label} 的本机端口`}
+            title="改本机端口"
+            onClick={() => setEditing(true)}
+          />
+        )}
         {view.externalUrl && (
-          <a className="kura-card__external" href={view.externalUrl} target="_blank" rel="noreferrer" title="绿联登录后可达（未验证该端口是否已发布）">
-            <ExternalLink size={12} aria-hidden /> 绿联外链
+          <a
+            className="kura-entry__icon-link"
+            href={view.externalUrl}
+            target="_blank"
+            rel="noreferrer"
+            aria-label="绿联外链"
+            title="绿联外链：绿联登录后可达（未验证该端口是否已发布）"
+          >
+            <ExternalLink size={14} aria-hidden />
           </a>
         )}
-        <PortEditor view={view} onSave={(port) => onRun('改端口失败', () => window.kura!.mirror.setPort(view.key, port))} />
       </div>
-      <p className="kura-port-row__meta">
-        NAS {view.spec.port}
-        {view.spec.service ? ` · 网关 ${view.spec.service}` : ' · 直连'}
-      </p>
-      <details className="kura-port-row__details">
-        <summary>此入口流量</summary>
-        <dl className="kura-port-row__stats">
-          <div>
-            <dt>近一天请求</dt>
-            <dd>{view.stats.recent.requests}</dd>
-          </div>
-          <div>
-            <dt>近一天失败</dt>
-            <dd data-bad={view.stats.recent.errors > 0}>{view.stats.recent.errors}</dd>
-          </div>
-          <div>
-            <dt>↑ 近一天</dt>
-            <dd>{humanBytes(view.stats.recent.bytesUp)}</dd>
-          </div>
-          <div>
-            <dt>↓ 近一天</dt>
-            <dd>{humanBytes(view.stats.recent.bytesDown)}</dd>
-          </div>
-          <div>
-            <dt>累计请求</dt>
-            <dd>{view.stats.requests}</dd>
-          </div>
-          <div>
-            <dt>累计失败</dt>
-            <dd data-bad={view.stats.errors > 0}>{view.stats.errors}</dd>
-          </div>
-          <div>
-            <dt>↑ 累计</dt>
-            <dd>{humanBytes(view.stats.bytesUp)}</dd>
-          </div>
-          <div>
-            <dt>↓ 累计</dt>
-            <dd>{humanBytes(view.stats.bytesDown)}</dd>
-          </div>
-        </dl>
-      </details>
-      {(error || probeError || view.stats.lastError) && <p className="kura-card__error">{error || probeError || `最近一次失败：${view.stats.lastError}`}</p>}
+      <SwitchField
+        className="kura-entry__switch"
+        label={`映射 ${view.spec.port}`}
+        checked={view.listener.enabled}
+        disabled={toggling}
+        onCheckedChange={(checked) => {
+          setToggling(true)
+          void onRun('切换失败', () => window.kura!.mirror.setEnabled(view.key, checked))
+            .catch(() => {})
+            .finally(() => setToggling(false))
+        }}
+      />
+      {(error || probeError || view.stats.lastError) && <p className="kura-card__error kura-entry__error">{error || probeError || `最近一次失败：${view.stats.lastError}`}</p>}
     </li>
   )
 }
