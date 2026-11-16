@@ -64,7 +64,13 @@ export class UgreenClient {
       throw new Error(`请求 RSA 公钥失败：${(error as Error).message}`)
     }
     const rsaToken = headerValue(check.headers, 'x-rsa-token')
-    if (!rsaToken) throw new Error(`未取到 X-Rsa-Token（HTTP ${check.status}）`)
+    if (!rsaToken) {
+      // HTTP 200 却没有这个头，最常见的原因是设备域已经失效：绿联换了中继节点后，
+      // 旧域照样响应 200，只是不再吐公钥。凭据本身没问题，别再让用户去查账号密码。
+      throw new Error(
+        `未取到 X-Rsa-Token（HTTP ${check.status}）：设备域名可能已失效（绿联换过中继节点），在设置里重新保存一次连接即可`,
+      )
+    }
     const encrypted = encryptPassword(this.password, rsaToken)
 
     let res

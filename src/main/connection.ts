@@ -190,8 +190,12 @@ export class ConnectionService {
   }
 
   async start(): Promise<void> {
-    const config = this.loadConfig()
-    if (!config || this.mirror) return
+    const stored = this.loadConfig()
+    if (!stored || this.mirror) return
+    // 启动前先确认设备域还有效：绿联会换中继节点，存下来的 base 会静默失效，
+    // 表现成「未取到 X-Rsa-Token（HTTP 200）」而且怎么重启都好不了。
+    // 查不到（绿联云不通）就沿用存下来的，不让一次外网抖动挡住开机自启。
+    const config = await this.refreshBase(stored)
     const mirror = new Mirror({ ...this.mirrorOptions, config })
     this.mirror = mirror
     this.onMirrorCreated?.(mirror)
@@ -213,6 +217,46 @@ export class ConnectionService {
     this.log.info('映射已启动', { 模式: config.mode, 网关端口: config.gatewayPort })
   }
 
+  /**
+   * 启动前刷一次设备域。绿联换中继节点后旧域仍然返回 200、只是不给 X-Rsa-Token，
+   * 登录会一直失败且无法自愈，所以每次启动都问一次绿联云（一次 HTTP，很快）。
+   * 查不到就原样返回，不影响离线 / 外网抖动时的启动。
+   */
+  private async refreshBase(config: ConnectionConfig): Promise<ConnectionConfig> {
+    if (!config.uglinkId) return config
+    // 刚刚（测试连接 / 保存）已经查过同一个 ID：直接用那次结果，别为同一次操作再查一遍
+    const recent = this.lastResolved
+    if (recent && recent.info.id === config.uglinkId && Date.now() - recent.at < resolveReuseMs) {
+      const base = recent.info.base || config.base
+      const lanHost = recent.info.lanHost || config.lanHost
+      if (base !== config.base || lanHost !== config.lanHost) {
+        const next: ConnectionConfig = { ...config, base, lanHost }
+        this.vault.save(next)
+        this.config = next
+        this.loaded = true
+        return next
+      }
+      return config
+    }
+    try {
+      const fresh = await lookupUglink(config.uglinkId, this.mirrorOptions.request)
+      if (!fresh.base) return config
+      const lanHost = fresh.lanHost || config.lanHost
+      if (fresh.base.replace(/\/+$/, '') === config.base.replace(/\/+$/, '') && lanHost === config.lanHost) {
+        return config
+      }
+      const next: ConnectionConfig = { ...config, base: fresh.base, lanHost }
+      this.log?.info('启动前校对了设备域', { 旧: config.base, 新: fresh.base })
+      this.vault.save(next)
+      this.config = next
+      this.loaded = true
+      return next
+    } catch (error) {
+      this.log?.warn('启动前查设备域失败，沿用已保存的', { 错误: errorMessage(error), base: config.base })
+      return config
+    }
+  }
+
   async stop(): Promise<void> {
     const mirror = this.mirror
     this.mirror = undefined
@@ -222,9 +266,14 @@ export class ConnectionService {
 
   /**
    * 查 ID 拿设备域与局域网地址。
-   * 已经存过同一个 ID 时就复用存下来的 base —— 设置页改密码、改链路模式不该因为
-   * 绿联云接口一时不通就改不了配置（base 是我们自己存过的事实，不是要重新猜的东西）。
-   * 局域网地址仍然用新查到的：换网段、换路由器后它会变，而这个值本来就是可选的。
+   *
+   * **设备域是绿的联随时会换的，不是「存过一次就永远对」的事实。** 实测过一次：
+   * 中继节点从 cn30 换到 cn8，旧域照样返回 200，只是响应里没有 X-Rsa-Token，
+   * 表现成「未取到 X-Rsa-Token（HTTP 200）」的登录失败，而且重试永远好不了。
+   * 所以只要绿联云能查到，就一律以新查到的 base 为准。
+   *
+   * 查不到（绿联云接口一时不通）时才退回存下来的 base：设置页改密码、改链路模式
+   * 不该被一次外网抖动挡住。
    */
   private async resolve(form: ConnectionForm): Promise<UglinkInfo> {
     const id = normalizeAlias(form.uglinkId)
@@ -238,16 +287,29 @@ export class ConnectionService {
 
   private async lookup(form: ConnectionForm, id: string): Promise<UglinkInfo> {
     const saved = this.loadConfig()
-    if (saved?.base && saved.uglinkId === id && id) {
-      let lanHost = saved.lanHost
-      try {
-        lanHost = (await lookupUglink(id, this.mirrorOptions.request)).lanHost || saved.lanHost
-      } catch {
-        // 查不到就沿用存下来的（只走外网也能跑）
+    // 只在「同一个 ID」时才复用 / 回写保存的配置
+    const same: ConnectionConfig | undefined =
+      saved && saved.base && id && saved.uglinkId === id ? saved : undefined
+    try {
+      const fresh = await lookupUglink(form.uglinkId, this.mirrorOptions.request)
+      // 节点域变了：把新的写回去，否则下次启动又拿到旧的
+      if (same && same.base.replace(/\/+$/, '') !== fresh.base.replace(/\/+$/, '')) {
+        this.log?.info('设备域变了，已更新', { 旧: same.base, 新: fresh.base })
+        const next: ConnectionConfig = { ...same, base: fresh.base, lanHost: fresh.lanHost || same.lanHost }
+        this.vault.save(next)
+        this.config = next
+        this.loaded = true
       }
-      return { id, base: saved.base, lanHost }
+      // 局域网地址只在这台机器和 NAS 同网时才有意义，查到哪里就算哪里
+      return same && !fresh.lanHost ? { ...fresh, lanHost: same.lanHost } : fresh
+    } catch (error) {
+      if (same) {
+        // 绿联云查不到：沿用存下来的（只走外网也能跑），但要说一声，别让人以为查过了
+        this.log?.warn('查 UGREENlink 失败，沿用已保存的设备域', { 错误: errorMessage(error), base: same.base })
+        return { id, base: same.base, lanHost: same.lanHost }
+      }
+      throw error
     }
-    return lookupUglink(form.uglinkId, this.mirrorOptions.request)
   }
 
   /**

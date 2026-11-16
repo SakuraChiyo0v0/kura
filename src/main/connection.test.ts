@@ -180,12 +180,31 @@ describe('ConnectionService.resolve', () => {
     return realRequest({ ...req, url: `${fake.url}${url.pathname}${url.search}`, host: req.host ?? url.host })
   }
 
-  const service = (request: HttpRequester): ConnectionService =>
+  const service = (request: HttpRequester, stored?: unknown): ConnectionService =>
     new ConnectionService(
-      { load: () => undefined, save: () => {}, clear: () => {} } as never,
+      { load: () => stored, save: () => {}, clear: () => {} } as never,
       { dataDir: '', log: undefined, request } as never,
       undefined as never,
     )
+
+  it('启动时也会自愈：存的是旧节点，启动后改用新节点', async () => {
+    // 绿联把中继从 cn30 换到 cn8，旧节点返回 200 但不给 X-Rsa-Token
+    fake.staleNode = 'cn30'
+    fake.uglinkAlias = 'dev-1'
+    fake.uglinkRelay = 'cn8.ug.link'
+    const stored = {
+      uglinkId: 'dev-1',
+      base: 'https://dev-1.cn30.ug.link',
+      ugreenUser: 'u',
+      ugreenPassword: 'p',
+    }
+    const svc = service(viaFake(), stored)
+    // refreshBase 是 start() 启动前做的事：跑完配置就该指向 cn8，并且已经写回磁盘
+    const refresh = (svc as unknown as { refreshBase: (c: unknown) => Promise<{ base: string }> }).refreshBase
+    const next = await refresh.call(svc, stored)
+    expect(next.base).toContain('cn8')
+    expect((svc as unknown as { loadConfig: () => { base: string } }).loadConfig().base).toContain('cn8')
+  })
 
   it('第一次要查绿联云拿设备域', async () => {
     fake.uglinkAlias = 'dev-1'
@@ -209,6 +228,29 @@ describe('ConnectionService.resolve', () => {
     fake.uglinkAlias = 'dev-2'
     await svc.test({ ...form, uglinkId: 'dev-2' })
     expect(fake.uglinkLookups).toBe(2)
+  })
+
+  it('节点域换了：保存的 base 已失效时，自动重新查节点域并连上', async () => {
+    // 绿联把中继从 cn30 换到了 cn8。旧节点返回 200 但没有 X-Rsa-Token。
+    fake.staleNode = 'cn30'
+    fake.uglinkAlias = 'dev-1'
+    fake.uglinkRelay = 'cn8.ug.link' // 绿联云现在给的是 cn8
+    // 模拟用户机器上存着旧的 cn30
+    const stored = {
+      uglinkId: 'dev-1',
+      base: 'https://dev-1.cn30.ug.link',
+      ugreenUser: 'u',
+      ugreenPassword: 'p',
+    }
+    const svc = service(viaFake(), stored)
+    ;(svc as unknown as { start: () => Promise<void> }).start = async () => {}
+
+    const result = await svc.test(form)
+    expect(result.ok).toBe(true)
+    // 关键：不能死守存下来的 base，必须去问绿联云
+    expect(fake.uglinkLookups).toBeGreaterThan(0)
+    const idStep = result.steps[0]!
+    expect(idStep.detail).toContain('cn8')
   })
 
   it('ID 不存在时就地报错，不去连一个不存在的设备', async () => {

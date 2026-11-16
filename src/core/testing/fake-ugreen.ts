@@ -51,6 +51,11 @@ export class FakeUgreen {
   uglinkRelay = 'cn30.ug.link'
   uglinkIpv4: string[] = []
   uglinkLookups = 0
+  /**
+   * 模拟「节点域已失效」：请求带这个 host 段时返回 200 但不给 X-Rsa-Token。
+   * 绿联换中继节点后的真实表现（实测 cn30 → cn8）。
+   */
+  staleNode = ''
 
   constructor() {
     const keys = sharedKeys()
@@ -104,6 +109,11 @@ export class FakeUgreen {
         return
       }
       case '/ugreen/v1/verify/check':
+        // 旧节点：200 但没有 X-Rsa-Token —— 这正是「未取到 X-Rsa-Token（HTTP 200）」
+        if (this.staleNode && (req.headers.host ?? '').includes(this.staleNode)) {
+          res.end()
+          return
+        }
         res.setHeader('X-Rsa-Token', this.publicPemB64)
         res.end()
         return
