@@ -7,6 +7,8 @@
 启动即提供：服务端口映射（nas-mirror 能力的 TS 重写）、文件管理器 + 本机 WebDAV、NAS 终端（接 nas-console）；
 进阶功能（如 rclone 挂载为磁盘）做成按需安装的模块。
 
+<img width="2880" height="1704" alt="image" src="https://github.com/user-attachments/assets/f76b80dd-f7c9-4939-9cbc-63e0445c35a7" />
+
 ## 状态
 
 | 版本 | 内容 |
